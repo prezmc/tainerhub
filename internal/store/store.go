@@ -610,3 +610,128 @@ func (s *Store) RenameHost(ctx context.Context, id, name string) error {
 	}
 	return err
 }
+
+// ---------------- users and invites ----------------
+
+func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+userCols+` FROM users ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// SetUserRole changes a user's role. The owner's role can't change here.
+func (s *Store) SetUserRole(ctx context.Context, id, role string) error {
+	tag, err := s.db.Exec(ctx, `UPDATE users SET role = $2 WHERE id = $1::uuid AND role <> 'owner'`, id, role)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
+// DeleteUser removes a user with their sessions, passkeys and recovery codes
+// (signing them out everywhere). The owner can't be removed.
+func (s *Store) DeleteUser(ctx context.Context, id string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid AND role <> 'owner'`, id)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
+type Invite struct {
+	ID        string     `json:"id"`
+	Role      string     `json:"role"`
+	Note      string     `json:"note"`
+	CreatedBy string     `json:"createdBy"` // username
+	CreatedAt time.Time  `json:"createdAt"`
+	ExpiresAt time.Time  `json:"expiresAt"`
+	UsedAt    *time.Time `json:"usedAt"`
+}
+
+func (s *Store) CreateInvite(ctx context.Context, tokenHash []byte, role, note, createdBy string, expires time.Time) (Invite, error) {
+	var inv Invite
+	err := s.db.QueryRow(ctx, `INSERT INTO invites (token_hash, role, note, created_by, expires_at) VALUES ($1, $2, $3, $4::uuid, $5)
+		RETURNING id::text, role, note, created_at, expires_at`, tokenHash, role, note, createdBy, expires).
+		Scan(&inv.ID, &inv.Role, &inv.Note, &inv.CreatedAt, &inv.ExpiresAt)
+	return inv, err
+}
+
+// PendingInvites lists unused, unexpired invites, newest first.
+func (s *Store) PendingInvites(ctx context.Context) ([]Invite, error) {
+	rows, err := s.db.Query(ctx, `SELECT i.id::text, i.role, i.note, coalesce(u.username, ''), i.created_at, i.expires_at, i.used_at
+		FROM invites i LEFT JOIN users u ON u.id = i.created_by
+		WHERE i.used_at IS NULL AND i.expires_at > now() ORDER BY i.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Invite
+	for rows.Next() {
+		var inv Invite
+		if err := rows.Scan(&inv.ID, &inv.Role, &inv.Note, &inv.CreatedBy, &inv.CreatedAt, &inv.ExpiresAt, &inv.UsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteInvite(ctx context.Context, id string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM invites WHERE id = $1::uuid AND used_at IS NULL`, id)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}
+
+// InviteRole returns the role of a usable invite, or ErrNotFound.
+func (s *Store) InviteRole(ctx context.Context, tokenHash []byte) (string, error) {
+	var role string
+	err := s.db.QueryRow(ctx, `SELECT role FROM invites WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()`, tokenHash).Scan(&role)
+	return role, notFound(err)
+}
+
+// AcceptInvite creates the user an invite is for and marks the invite used,
+// in one transaction, so a link works exactly once. ErrNotFound if the invite
+// is unknown, used or expired; ErrConflict if the username is taken.
+func (s *Store) AcceptInvite(ctx context.Context, tokenHash []byte, u User, recoveryHashes [][]byte) (User, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var inviteID, role string
+	err = tx.QueryRow(ctx, `SELECT id::text, role FROM invites WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, tokenHash).Scan(&inviteID, &role)
+	if err != nil {
+		return User{}, notFound(err)
+	}
+	created, err := scanUser(tx.QueryRow(ctx,
+		`INSERT INTO users (username, display_name, role, webauthn_id, password_hash) VALUES ($1, $2, $3, $4, $5) RETURNING `+userCols,
+		u.Username, u.DisplayName, role, u.WebAuthnID, u.PasswordHash))
+	if isUniqueViolation(err) {
+		return User{}, ErrConflict
+	}
+	if err != nil {
+		return User{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE invites SET used_at = now(), used_by = $2::uuid WHERE id = $1::uuid`, inviteID, created.ID); err != nil {
+		return User{}, err
+	}
+	for _, h := range recoveryHashes {
+		if _, err := tx.Exec(ctx, `INSERT INTO recovery_codes (user_id, code_hash) VALUES ($1::uuid, $2)`, created.ID, h); err != nil {
+			return User{}, err
+		}
+	}
+	return created, tx.Commit(ctx)
+}

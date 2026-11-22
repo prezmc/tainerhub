@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowDown, ChevronDown, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
-import { can, isUnhealthy, mem, type Container, type Host } from '../api'
-import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, type Action, type SortKey } from '../fleet'
-import { Button, IconButton, Menu, StatusDot, cx, toneOf } from '../ui'
+import { useQueryClient } from '@tanstack/react-query'
+import { ArrowDown, Boxes, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
+import { api, can, isUnhealthy, mem, type Container, type Host } from '../api'
+import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, useOpenTerminal, type Action, type SortKey } from '../fleet'
+import { Button, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { StackLink } from '../stacks'
 
-type View = 'all' | 'running' | 'stopped' | 'issues'
+type View = 'all' | 'running' | 'stopped' | 'issues' | 'updates'
 type Group = 'host' | 'stack' | 'state'
 
 type Section = { key: string; title: string; subtitle: string; items: Container[]; host?: Host; accent: string }
@@ -58,6 +59,7 @@ export function ContainersPage() {
     running: containers.filter((c) => c.state === 'running').length,
     stopped: containers.filter((c) => c.state !== 'running').length,
     issues: containers.filter(isUnhealthy).length,
+    updates: containers.filter((c) => c.update).length,
   }
 
   const sections = useMemo<Section[]>(() => {
@@ -67,6 +69,7 @@ export function ContainersPage() {
         if (view === 'running' && c.state !== 'running') return false
         if (view === 'stopped' && c.state === 'running') return false
         if (view === 'issues' && !isUnhealthy(c)) return false
+        if (view === 'updates' && !c.update) return false
         return !f || [c.name, c.image, c.project ?? '', c.hostName].some((s) => s.toLowerCase().includes(f))
       })
       .sort(sortFns[sort])
@@ -122,8 +125,11 @@ export function ContainersPage() {
             ['running', 'Running', 'text-emerald-300'],
             ['stopped', 'Stopped', 'text-ink-300'],
             ['issues', 'Issues', 'text-rose-300'],
+            ['updates', 'Updates', 'text-lime-300'],
           ] as const
-        ).map(([k, label, dot]) => (
+        )
+          .filter(([k]) => k !== 'updates' || counts.updates > 0 || view === 'updates')
+          .map(([k, label, dot]) => (
           <button
             key={k}
             onClick={() => setView(k)}
@@ -163,6 +169,7 @@ export function ContainersPage() {
               </button>
             ))}
           </div>
+          {operator && <CheckUpdatesButton hosts={hosts} />}
           {admin && (
             <Button variant="primary" icon={Plus} onClick={() => navigate({ to: '/containers/new' })}>
               New container
@@ -239,7 +246,10 @@ function stateLabel(c: Container) {
 }
 
 function Row({ c, operator, showHost }: { c: Container; operator: boolean; showHost: boolean }) {
+  const navigate = useNavigate()
   const openLogs = useOpenLogs()
+  const openTerminal = useOpenTerminal()
+  const admin = can(useMe().user, 'admin')
   const openDetails = useOpenDetails()
   const { run, pendingId } = useContainerAction()
   const bad = isUnhealthy(c)
@@ -269,8 +279,15 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
         {/* phones: state + actions on the first line */}
         <span className="ml-auto shrink-0 font-mono text-[11px] uppercase text-ink-100/60 md:hidden">{stateLabel(c)}</span>
       </div>
-      <div className="mono mt-1 truncate text-xs text-ink-100/60 md:mt-0" title={c.image}>
-        {c.image}
+      <div className="mt-1 flex min-w-0 items-center gap-1.5 md:mt-0">
+        <span className="mono truncate text-xs text-ink-100/60" title={c.image}>
+          {c.image}
+        </span>
+        {c.update && (
+          <span title="A newer image is available for this tag" className="shrink-0 rounded-[2px] bg-lime-400/15 px-1 py-[2px] font-mono text-[10px] uppercase leading-none tracking-wider text-lime-300 ring-1 ring-inset ring-lime-400/30">
+            update
+          </span>
+        )}
       </div>
       <div className="mono hidden truncate text-xs text-ink-100/70 md:block" title={ports.join(', ')}>
         {ports.length === 0 ? <span className="text-ink-100/30">–</span> : ports.slice(0, 2).join(', ') + (ports.length > 2 ? ` +${ports.length - 2}` : '')}
@@ -296,9 +313,17 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
               trigger={(toggle) => <IconButton icon={Ellipsis} label="More actions" disabled={busy} onClick={toggle} />}
               items={[
                 { label: 'Details', icon: Info, onClick: () => openDetails(c) },
+                { label: 'Terminal', icon: SquareTerminal, onClick: () => openTerminal(c), hidden: !admin || !running },
                 { label: 'Pause', icon: Pause, onClick: () => act('pause'), hidden: !running },
                 { label: 'Resume', icon: Play, onClick: () => act('unpause'), hidden: !paused },
                 { label: 'Kill', icon: Zap, onClick: () => act('kill'), danger: true, hidden: !running },
+                { label: 'Pull & recreate', icon: Download, onClick: () => act('recreate'), hidden: !!c.project || c.name.startsWith('tainerhub') },
+                {
+                  label: 'Update via its stack',
+                  icon: Boxes,
+                  onClick: () => navigate({ to: '/stacks', search: { q: c.project } }),
+                  hidden: !c.project || c.name.startsWith('tainerhub'),
+                },
               ]}
             />
           </>
@@ -306,5 +331,37 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
         {!operator && <IconButton icon={Info} label="Details" onClick={() => openDetails(c)} />}
       </div>
     </div>
+  )
+}
+
+/** Asks every online host to check for newer images now. */
+function CheckUpdatesButton({ hosts }: { hosts: Host[] }) {
+  const toast = useToast()
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const run = async () => {
+    setBusy(true)
+    let found = 0
+    const failed: string[] = []
+    await Promise.all(
+      hosts
+        .filter((h) => h.online)
+        .map(async (h) => {
+          try {
+            const r = await api<{ images: Record<string, boolean> }>(`/api/hosts/${h.id}/check-updates`, { method: 'POST' })
+            found += Object.values(r.images ?? {}).filter(Boolean).length
+          } catch {
+            failed.push(h.name)
+          }
+        }),
+    )
+    setBusy(false)
+    setTimeout(() => qc.invalidateQueries({ queryKey: ['containers'] }), 1500)
+    toast(failed.length ? 'bad' : 'good', `${found ? `${found} newer image${found === 1 ? '' : 's'} available` : 'Everything is up to date'}${failed.length ? ` (couldn't check ${failed.join(', ')})` : ''}`)
+  }
+  return (
+    <Button icon={RefreshCw} loading={busy} onClick={run} title="Ask each host's registry for newer images now (also happens every 6 hours)">
+      Check for updates
+    </Button>
   )
 }

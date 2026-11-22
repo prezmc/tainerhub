@@ -304,8 +304,9 @@ func (a *Agent) Operate(ctx context.Context, op wire.Operation) (json.RawMessage
 		return nil, err
 	}
 	timeout := 70 * time.Second
-	if op.Kind == wire.OpImagePull {
-		timeout = 16 * time.Minute
+	switch op.Kind {
+	case wire.OpImagePull, wire.OpContainerRecreate, wire.OpImagesCheckUpdates:
+		timeout = 16 * time.Minute // the agent gives up after 15
 	}
 	res, err := a.call(ctx, wire.Command{Op: &op}, timeout)
 	return res.Data, err
@@ -358,7 +359,30 @@ func (a *Agent) forget(id string) {
 // Logs starts a log stream. The returned channel closes at EOF. Call stop
 // when the consumer goes away; it tells the agent to stop following.
 func (a *Agent) Logs(ctx context.Context, req wire.LogsRequest) (<-chan wire.LogChunk, func(), error) {
-	return a.stream(ctx, wire.Command{Logs: &req})
+	_, ch, stop, err := a.stream(ctx, wire.Command{Logs: &req})
+	return ch, stop, err
+}
+
+// Exec opens a terminal in a container. Output arrives on the channel (the
+// final chunk, EOF, carries any error); send keystrokes with ExecInput and
+// size changes with ExecResize using the returned session ID; stop closes it.
+func (a *Agent) Exec(ctx context.Context, e wire.ExecStart) (string, <-chan wire.LogChunk, func(), error) {
+	if err := wire.ValidExecStart(e); err != nil {
+		return "", nil, nil, err
+	}
+	return a.stream(ctx, wire.Command{Exec: &e})
+}
+
+func (a *Agent) ExecInput(ctx context.Context, session string, data []byte) error {
+	return a.send(ctx, wire.HubMessage{Command: &wire.Command{ID: newID(), ExecInput: &wire.ExecInput{Session: session, Data: data}}})
+}
+
+func (a *Agent) ExecResize(ctx context.Context, session string, cols, rows int) error {
+	r := wire.ExecResize{Session: session, Cols: cols, Rows: rows}
+	if !wire.ValidExecResize(r) {
+		return errors.New("invalid terminal size")
+	}
+	return a.send(ctx, wire.HubMessage{Command: &wire.Command{ID: newID(), ExecResize: &r}})
 }
 
 // Stack starts a compose operation on the host. Its output arrives on the
@@ -370,7 +394,7 @@ func (a *Agent) Stack(ctx context.Context, c wire.StackCommand) (<-chan wire.Log
 	if err := wire.ValidStackCommand(c); err != nil {
 		return nil, err
 	}
-	ch, _, err := a.stream(ctx, wire.Command{Stack: &c})
+	_, ch, _, err := a.stream(ctx, wire.Command{Stack: &c})
 	return ch, err
 }
 
@@ -391,7 +415,7 @@ func deliverFinal(ch chan wire.LogChunk, c wire.LogChunk) {
 }
 
 // stream sends a command whose output comes back as LogChunks.
-func (a *Agent) stream(ctx context.Context, cmd wire.Command) (<-chan wire.LogChunk, func(), error) {
+func (a *Agent) stream(ctx context.Context, cmd wire.Command) (string, <-chan wire.LogChunk, func(), error) {
 	id := newID()
 	cmd.ID = id
 	ch := make(chan wire.LogChunk, 256)
@@ -399,12 +423,12 @@ func (a *Agent) stream(ctx context.Context, cmd wire.Command) (<-chan wire.LogCh
 	select {
 	case <-a.done:
 		a.mu.Unlock()
-		return nil, nil, ErrOffline
+		return "", nil, nil, ErrOffline
 	default:
 	}
 	if len(a.logs) >= MaxLogStreams {
 		a.mu.Unlock()
-		return nil, nil, ErrTooManyLogs
+		return "", nil, nil, ErrTooManyLogs
 	}
 	a.logs[id] = ch
 	a.mu.Unlock()
@@ -412,7 +436,7 @@ func (a *Agent) stream(ctx context.Context, cmd wire.Command) (<-chan wire.LogCh
 		a.mu.Lock()
 		delete(a.logs, id)
 		a.mu.Unlock()
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 	var once sync.Once
 	stop := func() {
@@ -428,7 +452,7 @@ func (a *Agent) stream(ctx context.Context, cmd wire.Command) (<-chan wire.LogCh
 			}
 		})
 	}
-	return ch, stop, nil
+	return id, ch, stop, nil
 }
 
 func newID() string {

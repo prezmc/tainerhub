@@ -100,6 +100,8 @@ export interface Container {
   ports?: string[]
   hostId: string
   hostName: string
+  /** A newer image is available for this container's tag. */
+  update?: boolean
   cpu?: number // % of one core
   mem?: number // bytes
   mem_limit?: number

@@ -163,3 +163,61 @@ func (s *Service) ChangePassword(ctx context.Context, u store.User, current, nex
 	}
 	return s.Store.SetPasswordHash(ctx, u.ID, HashPassword(next))
 }
+
+// ---------------- invites ----------------
+
+var ErrBadInvite = errors.New("this invite link is invalid, already used or expired; ask for a new one")
+
+// NewInviteToken returns a link token and the hash to store for it.
+func NewInviteToken() (token string, hash []byte) {
+	t := randToken(24)
+	return t, Hash(t)
+}
+
+// InviteRole tells the invite page which role a link is for.
+func (s *Service) InviteRole(ctx context.Context, token string) (string, error) {
+	role, err := s.Store.InviteRole(ctx, Hash(strings.TrimSpace(token)))
+	if errors.Is(err, store.ErrNotFound) {
+		return "", ErrBadInvite
+	}
+	return role, err
+}
+
+type AcceptInvite struct {
+	Token       string `json:"token"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	Password    string `json:"password"`
+}
+
+// AcceptInvite creates the invited user, signs them in and returns their
+// recovery codes. Failed attempts count toward the sign-in rate limit.
+func (s *Service) AcceptInvite(w http.ResponseWriter, r *http.Request, in AcceptInvite) (store.User, []string, error) {
+	ip := s.ClientIP(r)
+	if !s.Limiter.Allow(ip) {
+		return store.User{}, nil, ErrRateLimited
+	}
+	in.Username = strings.TrimSpace(in.Username)
+	if !validUsername(in.Username) {
+		return store.User{}, nil, errors.New("username must be 2-32 letters, digits, dots, dashes or underscores")
+	}
+	if err := checkPasswordPolicy(in.Password); err != nil {
+		return store.User{}, nil, errors.New("password: " + err.Error())
+	}
+	if strings.TrimSpace(in.DisplayName) == "" {
+		in.DisplayName = in.Username
+	}
+	codes, hashes := newRecoveryCodes()
+	u := store.User{Username: in.Username, DisplayName: strings.TrimSpace(in.DisplayName), WebAuthnID: []byte(randToken(32)), PasswordHash: HashPassword(in.Password)}
+	created, err := s.Store.AcceptInvite(r.Context(), Hash(strings.TrimSpace(in.Token)), u, hashes)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.Limiter.Fail(ip)
+		return store.User{}, nil, ErrBadInvite
+	case errors.Is(err, store.ErrConflict):
+		return store.User{}, nil, errors.New("that username is taken; pick another")
+	case err != nil:
+		return store.User{}, nil, err
+	}
+	return created, codes, s.startSession(w, r, created)
+}

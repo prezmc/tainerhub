@@ -3,13 +3,17 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { Fingerprint, LogOut, Search, TriangleAlert } from 'lucide-react'
 import { api, ApiError, can, type Activity, type Container, type Host, type Me } from '../api'
-import { DetailsContext, LogsContext, PaletteContext } from '../fleet'
+import { DetailsContext, LogsContext, PaletteContext, TerminalContext } from '../fleet'
 import { Kbd, Menu, cx } from '../ui'
 import { CommandPalette } from './CommandPalette'
 import { Logo } from './Logo'
 import { LogsPanel } from './LogsPanel'
 import { DetailsPanel } from './DetailsPanel'
 import { JobContext, JobPanel } from '../stacks'
+import { lazy, Suspense } from 'react'
+
+// xterm.js is big: load the terminal only when one is opened.
+const TerminalPanel = lazy(() => import('./TerminalPanel').then((m) => ({ default: m.TerminalPanel })))
 
 const MeContext = createContext<Me | null>(null)
 export const useMe = () => useContext(MeContext)!
@@ -48,7 +52,7 @@ function useFleetStream() {
   return live
 }
 
-type NavTo = '/' | '/containers' | '/stacks' | '/resources' | '/hosts' | '/audit'
+type NavTo = '/' | '/containers' | '/stacks' | '/resources' | '/hosts' | '/users' | '/audit'
 
 function NavPill({ to, label, exact }: { to: NavTo; label: string; exact?: boolean }) {
   return (
@@ -73,14 +77,23 @@ export function AppLayout() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const openPalette = useCallback(() => setPaletteOpen(true), [])
   const [jobId, setJobId] = useState<string | null>(null)
-  // The logs and job drawers share the bottom of the screen: one at a time.
+  const [termFor, setTermFor] = useState<Container | null>(null)
+  // The logs, job and terminal drawers share the bottom of the screen: one at a time.
   const openJob = useCallback((id: string) => {
     setLogsFor(null)
+    setTermFor(null)
     setJobId(id)
   }, [])
   const openLogs = useCallback((c: Container) => {
     setJobId(null)
+    setTermFor(null)
     setLogsFor(c)
+  }, [])
+  const openTerminal = useCallback((c: Container) => {
+    setJobId(null)
+    setLogsFor(null)
+    setDetailsFor(null)
+    setTermFor(c)
   }, [])
 
   useEffect(() => {
@@ -117,9 +130,10 @@ export function AppLayout() {
     <MeContext.Provider value={me.data}>
       <LogsContext.Provider value={openLogs}>
         <JobContext.Provider value={openJob}>
+        <TerminalContext.Provider value={openTerminal}>
         <DetailsContext.Provider value={setDetailsFor}>
         <PaletteContext.Provider value={openPalette}>
-          <div className={cx('min-h-screen', (logsFor || jobId) && 'pb-[48vh]')}>
+          <div className={cx('min-h-screen', (logsFor || jobId) && 'pb-[48vh]', termFor && 'pb-[54vh]')}>
             <header className="sticky top-0 z-30 border-b border-line bg-canvas/85 backdrop-blur-md">
               <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-3 px-4 py-3 sm:px-8">
                 <Link to="/" aria-label="TainerHub home">
@@ -131,6 +145,7 @@ export function AppLayout() {
                   <NavPill to="/stacks" label="Stacks" />
                   <NavPill to="/resources" label="Resources" />
                   <NavPill to="/hosts" label="Hosts" />
+                  {can(me.data.user, 'admin') && <NavPill to="/users" label="Users" />}
                   {can(me.data.user, 'admin') && <NavPill to="/audit" label="Audit" />}
                 </nav>
                 <button
@@ -183,9 +198,15 @@ export function AppLayout() {
           {detailsFor && <LiveDetails c={detailsFor} onClose={() => setDetailsFor(null)} />}
           {logsFor && <LogsPanel container={logsFor} onClose={() => setLogsFor(null)} />}
           {jobId && <JobPanel jobId={jobId} onClose={() => setJobId(null)} />}
+          {termFor && (
+            <Suspense fallback={null}>
+              <TerminalPanel key={termFor.hostId + termFor.id} container={termFor} onClose={() => setTermFor(null)} />
+            </Suspense>
+          )}
           <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onLogs={openLogs} onDetails={setDetailsFor} />
         </PaletteContext.Provider>
         </DetailsContext.Provider>
+        </TerminalContext.Provider>
         </JobContext.Provider>
       </LogsContext.Provider>
     </MeContext.Provider>

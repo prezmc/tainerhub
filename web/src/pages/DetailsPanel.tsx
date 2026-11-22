@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
+import { Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
 import { api, can, errorText, mem, timeAgo, type Container, type DetailResponse } from '../api'
-import { useContainerAction, useOpenLogs } from '../fleet'
+import { useContainerAction, useOpenLogs, useOpenTerminal } from '../fleet'
 import { StackLink } from '../stacks'
 import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf } from '../ui'
 import { useMe } from './AppLayout'
@@ -27,6 +27,8 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
   const d = q.data?.detail
   const running = container.state === 'running'
   const operator = can(me.user, 'operator')
+  const admin = can(me.user, 'admin')
+  const openTerminal = useOpenTerminal()
 
   return (
     <div className="fixed inset-0 z-40">
@@ -58,6 +60,11 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
             <Button icon={ScrollText} onClick={() => openLogs(container)}>
               Logs
             </Button>
+            {admin && running && (
+              <Button icon={SquareTerminal} onClick={() => openTerminal(container)}>
+                Terminal
+              </Button>
+            )}
             {operator &&
               (running ? (
                 <Button icon={Square} loading={pendingId === container.id} onClick={() => run(container, 'stop')}>

@@ -25,9 +25,12 @@ Design doc: see the "TainerHub: A Portainer Alternative — Design" doc.
 | Containers list: grouped by host, stack or state, sortable, with start, stop, restart, remove and logs on every row | Done |
 | The hub's own server is managed automatically (its compose file includes a self-enrolling agent) | Done |
 | Update TainerHub from the UI (per server or everything at once), and collapsible sections on the Containers list | Done |
+| Terminal into any running container in the browser (admins; xterm.js over the agent's existing connection) | Done |
+| Image update checks (every 6 hours or on demand) with an "update" badge, and Pull & recreate for standalone containers with automatic rollback | Done |
+| Users: invite by one-time link with a role, change roles, remove users | Done |
 | Resources: images, volumes, networks across hosts with "used by", pull/update, remove, prune (volume deletion admin-only) | Done |
 | Live CPU and memory per container (sampled every 10 s by the agent, same formulas as `docker stats`) | Done |
-| Roles (owner/admin/operator/viewer) | Enforced by the API; only the owner account exists until user management lands |
+| Roles (owner/admin/operator/viewer) | Enforced by the API and the UI |
 | Compose stacks: create, edit and deploy compose files per host from the browser, with streamed output; start / stop / restart / down / pull & redeploy; projects started outside TainerHub are listed and can be taken over (see below) | Done; agent side tested against a real Docker Engine |
 | Not yet: exec console, user invites, password + TOTP fallback, agent cert auto-renewal (certs last 1 year), private registries, metrics history, alerts | Phases 2 to 4 |
 
