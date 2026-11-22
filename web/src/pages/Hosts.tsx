@@ -14,11 +14,14 @@ export function HostsPage() {
   const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api<Host[]>('/api/hosts'), refetchInterval: 30000 })
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
+  // Agents dial the hub directly (not through a reverse proxy) on port 7443.
+  // The address this page was opened on is the right guess for a plain install.
+  const [agentAddr, setAgentAddr] = useState(() => `${window.location.hostname}:7443`)
   const [join, setJoin] = useState<JoinTokenResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const create = useMutation({
-    mutationFn: () => api<JoinTokenResponse>('/api/hosts', { method: 'POST', body: { name: name.trim() } }),
+    mutationFn: () => api<JoinTokenResponse>('/api/hosts', { method: 'POST', body: { name: name.trim(), agentAddr: agentAddr.trim() } }),
     onSuccess: (res) => {
       setAdding(false)
       setName('')
@@ -28,7 +31,7 @@ export function HostsPage() {
     onError: (e) => setError(errorText(e)),
   })
   const reissue = useMutation({
-    mutationFn: (h: Host) => api<JoinTokenResponse>(`/api/hosts/${h.id}/token`, { method: 'POST' }),
+    mutationFn: (h: Host) => api<JoinTokenResponse>(`/api/hosts/${h.id}/token`, { method: 'POST', body: { agentAddr: agentAddr.trim() } }),
     onSuccess: setJoin,
     onError: (e) => toast('bad', errorText(e)),
   })
@@ -92,6 +95,14 @@ export function HostsPage() {
           }}
         >
           <Input label="Name" placeholder="server-2" value={name} onChange={(e) => setName(e.target.value)} autoFocus required maxLength={64} hint="How this server appears in TainerHub." />
+          <Input
+            label="Hub address for agents"
+            value={agentAddr}
+            onChange={(e) => setAgentAddr(e.target.value)}
+            required
+            className="mono"
+            hint="The hub server's IP or name, port 7443. The agent connects here directly, never through a reverse proxy."
+          />
           <ErrorNote error={error} />
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => setAdding(false)}>
@@ -222,7 +233,8 @@ function JoinInstructions({ join }: { join: JoinTokenResponse }) {
       <code className="mono text-lime-300">compose.yml</code>.
     </>,
     <>
-      Run <code className="mono text-lime-300">docker compose up -d</code>. The host turns green here within a few seconds.
+      Run <code className="mono text-lime-300">docker compose up -d</code>. The agent connects to <code className="mono text-lime-300">{join.agentAddr}</code>, so that port must be reachable
+      from the server. The host turns green here within a few seconds.
     </>,
     <>
       The token works once and expires at <strong className="text-white">{new Date(join.expiresAt).toLocaleTimeString()}</strong>. Afterwards you can delete the{' '}

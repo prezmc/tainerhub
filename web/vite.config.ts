@@ -2,11 +2,11 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// In development, run the hub on :8080 and `npm run dev` here; API calls are proxied.
+// In development, run the hub on :8585 and `npm run dev` here; API calls are proxied.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    proxy: { '/api': 'http://localhost:8080' },
+    proxy: { '/api': 'http://localhost:8585' },
   },
   build: {
     outDir: 'dist',

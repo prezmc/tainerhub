@@ -13,7 +13,7 @@ const STARTER = `services:
     image: nginx:alpine
     restart: unless-stopped
     ports:
-      - "8585:80"
+      - "8090:80"
     volumes:
       - ./html:/usr/share/nginx/html:ro
 `

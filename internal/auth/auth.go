@@ -1,6 +1,7 @@
-// Package auth implements TainerHub's local identity: passkeys (WebAuthn)
-// as the primary sign-in, single-use recovery codes as break-glass, and
-// server-side sessions.
+// Package auth implements TainerHub's local identity: passwords (work on any
+// install, even plain HTTP), passkeys (WebAuthn; need HTTPS and a configured
+// public URL), single-use recovery codes as break-glass, and server-side
+// sessions.
 package auth
 
 import (
@@ -38,13 +39,14 @@ var (
 	ErrSetupDone    = errors.New("setup already completed")
 	ErrBadSetup     = errors.New("setup link invalid or expired; check the hub logs for a new one")
 	ErrCeremony     = errors.New("sign-in attempt expired; try again")
+	ErrNoPasskeys   = errors.New("passkeys need HTTPS: put TainerHub behind your reverse proxy and set TAINERHUB_PUBLIC_URL to its https:// address")
 )
 
 type Service struct {
 	Store         *store.Store
-	WA            *webauthn.WebAuthn
+	WA            *webauthn.WebAuthn // nil when passkeys are unavailable (no public URL)
 	Log           *slog.Logger
-	PublicURL     *url.URL
+	PublicURL     *url.URL // nil until TAINERHUB_PUBLIC_URL is set
 	SecureCookies bool
 	Trusted       []netip.Prefix // proxies allowed to set X-Forwarded-For
 
@@ -64,22 +66,27 @@ type ceremony struct {
 	expires time.Time
 }
 
+// New builds the auth service. publicURL may be nil: then only passwords and
+// recovery codes work, and cookies are not marked Secure (plain HTTP).
 func New(st *store.Store, publicURL *url.URL, trusted []netip.Prefix, log *slog.Logger) (*Service, error) {
-	origin := publicURL.Scheme + "://" + publicURL.Host
-	wa, err := webauthn.New(&webauthn.Config{
-		RPID:          publicURL.Hostname(), // passkeys are bound to this name: don't change it later
-		RPDisplayName: "TainerHub",
-		RPOrigins:     []string{origin},
-	})
-	if err != nil {
-		return nil, err
+	var wa *webauthn.WebAuthn
+	if publicURL != nil {
+		var err error
+		wa, err = webauthn.New(&webauthn.Config{
+			RPID:          publicURL.Hostname(), // passkeys are bound to this name: don't change it later
+			RPDisplayName: "TainerHub",
+			RPOrigins:     []string{publicURL.Scheme + "://" + publicURL.Host},
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Service{
 		Store:         st,
 		WA:            wa,
 		Log:           log,
 		PublicURL:     publicURL,
-		SecureCookies: publicURL.Scheme == "https",
+		SecureCookies: publicURL != nil && publicURL.Scheme == "https",
 		Trusted:       trusted,
 		ceremonies:    map[string]*ceremony{},
 		Limiter:       NewLimiter(10, 15*time.Minute),
@@ -259,8 +266,11 @@ func (s *Service) RotateSetupToken() string {
 	s.setupToken = tok
 	s.setupExp = time.Now().Add(setupTokenTTL)
 	s.mu.Unlock()
-	link := strings.TrimSuffix(s.PublicURL.String(), "/") + "/setup?token=" + tok
-	s.Log.Warn("No users yet. Open this link within 15 minutes to create the owner account with a passkey", "url", link)
+	base := "http://<this server's IP>:8585"
+	if s.PublicURL != nil {
+		base = strings.TrimSuffix(s.PublicURL.String(), "/")
+	}
+	s.Log.Warn("No users yet. Open this link within 15 minutes to create the owner account", "url", base+"/setup?token="+tok)
 	return tok
 }
 
@@ -296,7 +306,13 @@ type SetupBegin struct {
 	PasskeyName string `json:"passkeyName"`
 }
 
+// PasskeysEnabled reports whether passkeys can be used (a public URL is set).
+func (s *Service) PasskeysEnabled() bool { return s.WA != nil }
+
 func (s *Service) BeginSetup(w http.ResponseWriter, r *http.Request, in SetupBegin) (*protocol.CredentialCreation, error) {
+	if s.WA == nil {
+		return nil, ErrNoPasskeys
+	}
 	if need, err := s.SetupRequired(r.Context()); err != nil {
 		return nil, err
 	} else if !need {
@@ -324,6 +340,9 @@ func (s *Service) BeginSetup(w http.ResponseWriter, r *http.Request, in SetupBeg
 // FinishSetup verifies the passkey, creates the owner, signs them in and
 // returns their recovery codes (shown once).
 func (s *Service) FinishSetup(w http.ResponseWriter, r *http.Request) (store.User, []string, error) {
+	if s.WA == nil {
+		return store.User{}, nil, ErrNoPasskeys
+	}
 	c, err := s.takeCeremony(w, r, "setup")
 	if err != nil {
 		return store.User{}, nil, err
@@ -334,7 +353,7 @@ func (s *Service) FinishSetup(w http.ResponseWriter, r *http.Request) (store.Use
 	}
 	credJSON, _ := json.Marshal(cred)
 	codes, hashes := newRecoveryCodes()
-	u, err := s.Store.CreateFirstOwner(r.Context(), c.user, store.Passkey{ID: cred.ID, Name: c.keyName, Credential: credJSON}, hashes)
+	u, err := s.Store.CreateFirstOwner(r.Context(), c.user, &store.Passkey{ID: cred.ID, Name: c.keyName, Credential: credJSON}, hashes)
 	if errors.Is(err, store.ErrConflict) {
 		return store.User{}, nil, ErrSetupDone
 	}
@@ -353,6 +372,9 @@ func (s *Service) FinishSetup(w http.ResponseWriter, r *http.Request) (store.Use
 // ---------------- sign-in ----------------
 
 func (s *Service) BeginLogin(w http.ResponseWriter, r *http.Request) (*protocol.CredentialAssertion, error) {
+	if s.WA == nil {
+		return nil, ErrNoPasskeys
+	}
 	opts, data, err := s.WA.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
 	if err != nil {
 		return nil, err
@@ -362,6 +384,9 @@ func (s *Service) BeginLogin(w http.ResponseWriter, r *http.Request) (*protocol.
 }
 
 func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) (store.User, error) {
+	if s.WA == nil {
+		return store.User{}, ErrNoPasskeys
+	}
 	ip := s.ClientIP(r)
 	if !s.Limiter.Allow(ip) {
 		return store.User{}, ErrRateLimited
@@ -428,6 +453,9 @@ func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, 
 // ---------------- adding passkeys ----------------
 
 func (s *Service) BeginAddPasskey(w http.ResponseWriter, r *http.Request, u store.User, name string) (*protocol.CredentialCreation, error) {
+	if s.WA == nil {
+		return nil, ErrNoPasskeys
+	}
 	wu, err := s.loadWAUser(r.Context(), u)
 	if err != nil {
 		return nil, err
@@ -441,6 +469,9 @@ func (s *Service) BeginAddPasskey(w http.ResponseWriter, r *http.Request, u stor
 }
 
 func (s *Service) FinishAddPasskey(w http.ResponseWriter, r *http.Request, u store.User) error {
+	if s.WA == nil {
+		return ErrNoPasskeys
+	}
 	c, err := s.takeCeremony(w, r, "add-passkey")
 	if err != nil {
 		return err

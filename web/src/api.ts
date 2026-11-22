@@ -50,7 +50,19 @@ export interface Me {
   user: User
   passkeys: Passkey[]
   recoveryCodesLeft: number
+  hasPassword: boolean
+  /** False until the hub has an https:// public URL (passkeys need HTTPS). */
+  passkeysEnabled: boolean
 }
+
+export interface HubState {
+  setupRequired: boolean
+  version: string
+  passkeys: boolean
+}
+
+/** Passkeys work only when the hub has them on and this page is a secure context (HTTPS or localhost). */
+export const passkeysUsable = (hubEnabled: boolean | undefined) => !!hubEnabled && window.isSecureContext
 
 export interface Hello {
   hostname: string
@@ -107,6 +119,7 @@ export interface JoinTokenResponse {
   host: Host
   joinToken: string
   expiresAt: string
+  agentAddr: string
   compose: string
 }
 

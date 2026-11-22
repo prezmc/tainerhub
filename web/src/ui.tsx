@@ -268,7 +268,7 @@ export function RecoveryCodes({ codes }: { codes: string[] }) {
   return (
     <div className="space-y-4">
       <p className="text-sm text-ink-100/80">
-        Store these in your password manager. Each code signs you in once if you lose your passkeys.{' '}
+        Store these in your password manager. Each code signs you in once if you lose your password or passkeys.{' '}
         <strong className="text-white">They won't be shown again.</strong>
       </p>
       <div className="mono grid grid-cols-2 gap-x-6 gap-y-2 rounded-md bg-black/30 p-4 text-sm tracking-wider text-ink-50 ring-1 ring-white/10">

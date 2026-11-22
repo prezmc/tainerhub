@@ -1,11 +1,11 @@
-# TainerHub hub stack. Run on the server that also runs Nginx Proxy Manager (Server 1).
+# TainerHub hub. Install:
 #
-#   mkdir -p secrets && chmod 700 secrets
-#   openssl rand -base64 32 | tr -d '\n' > secrets/db_password && chmod 644 secrets/db_password
-#   docker compose up -d && docker compose logs -f tainerhub   # prints the one-time setup link
+#   mkdir -p ~/tainerhub && cd ~/tainerhub
+#   curl -fsSLO https://raw.githubusercontent.com/prezmc/tainerhub/main/deploy/hub/compose.yml
+#   docker compose up -d && docker compose logs tainerhub    # prints the one-time setup link
 #
-# Then in NPM add a proxy host: tainerhub.example.com -> http://tainerhub:8080
-# (Websockets on, Force SSL, HTTP/2, HSTS; certificate via Cloudflare DNS challenge).
+# Then open http://<this server's IP>:8585/setup?token=... and create your account.
+# HTTPS through a reverse proxy, and passkeys, can be added later (see the README).
 
 services:
   tainerhub:
@@ -24,22 +24,19 @@ services:
       timeout: 5s
       retries: 3
     ports:
-      - "7443:7443"            # agent gateway (mTLS). Do NOT route this through NPM.
-    expose:
-      - "8080"                 # web UI + API, reached only through NPM
-    networks: [default, npm]
+      - "8585:8585"   # web UI and API (plain HTTP until you add a reverse proxy)
+      - "7443:7443"   # agents connect here (mTLS); never put this behind a proxy
+    networks: [default, db]
     volumes:
-      - tainerhub-data:/data   # hub CA keys live here: back this volume up
-    secrets: [db_password]
+      - tainerhub-data:/data   # holds the hub's certificate authority: back this up
     environment:
-      TAINERHUB_PUBLIC_URL: https://tainerhub.example.com
-      TAINERHUB_AGENT_ADDR: tainerhub.example.com:7443
-      # Extra names/IPs agents may dial, e.g. this server's LAN IP:
-      # TAINERHUB_AGENT_SANS: 192.168.1.10
-      TAINERHUB_TRUSTED_PROXIES: 172.16.0.0/12   # Docker networks (NPM); narrow to NPM's subnet if you like
-      TAINERHUB_DATABASE_URL: postgres://tainerhub@postgres:5432/tainerhub?sslmode=disable
-      TAINERHUB_DATABASE_PASSWORD_FILE: /run/secrets/db_password
+      TAINERHUB_DATABASE_URL: postgres://tainerhub:${DB_PASSWORD:-tainerhub}@postgres:5432/tainerhub?sslmode=disable
       TAINERHUB_LOG_LEVEL: info
+      # ---- optional, after install ----
+      # HTTPS address once a reverse proxy serves TainerHub; turns on passkeys:
+      # TAINERHUB_PUBLIC_URL: https://tainerhub.example.com
+      # The reverse proxy's IP, so sign-in limits and the audit log see real client IPs:
+      # TAINERHUB_TRUSTED_PROXIES: 192.168.1.20
 
   postgres:
     image: postgres:17-alpine
@@ -47,11 +44,13 @@ services:
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     shm_size: 128mb
-    secrets: [db_password]
+    networks: [db]   # internal only: nothing outside this stack can reach the database
     environment:
       POSTGRES_USER: tainerhub
       POSTGRES_DB: tainerhub
-      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      # Only reachable from the hub. To use your own, set DB_PASSWORD in a .env
+      # file next to this one before the first start.
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tainerhub}
     volumes:
       - tainerhub-db:/var/lib/postgresql/data
     healthcheck:
@@ -60,23 +59,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # Phase 3 (metrics): uncomment when the analytics pipeline lands.
-  # victoriametrics:
-  #   image: victoriametrics/victoria-metrics:latest
-  #   restart: unless-stopped
-  #   command: ["-retentionPeriod=90d", "-storageDataPath=/storage"]
-  #   volumes: ["tainerhub-metrics:/storage"]
-
 networks:
-  npm:
-    external: true
-    name: ${NPM_NETWORK:-npm_default}   # the Docker network your NPM container is on
+  db:
+    internal: true
 
 volumes:
   tainerhub-data:
   tainerhub-db:
-  # tainerhub-metrics:
-
-secrets:
-  db_password:
-    file: ./secrets/db_password
