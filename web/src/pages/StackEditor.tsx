@@ -32,10 +32,10 @@ function useUnsavedWarning(dirty: boolean) {
 
 function FilesHelp({ name }: { name: string }) {
   return (
-    <p className="text-xs leading-relaxed text-indigo-100/50">
-      Relative paths such as <code className="mono text-sky-300">./data</code> live in{' '}
-      <code className="mono text-sky-300">/opt/tainerhub/stacks/{name || '<name>'}/</code> on the host. Variables like{' '}
-      <code className="mono text-sky-300">{'${DB_PASSWORD}'}</code> are filled in from .env, which is stored on the hub and written next to the compose file.
+    <p className="text-xs leading-relaxed text-ink-100/50">
+      Relative paths such as <code className="mono text-lime-300">./data</code> live in{' '}
+      <code className="mono text-lime-300">/opt/tainerhub/stacks/{name || '<name>'}/</code> on the host. Variables like{' '}
+      <code className="mono text-lime-300">{'${DB_PASSWORD}'}</code> are filled in from .env, which is stored on the hub and written next to the compose file.
     </p>
   )
 }
@@ -96,7 +96,7 @@ export function NewStackPage() {
           <Card className="space-y-3 p-5">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-lg font-bold text-white">compose.yaml</h2>
-              <span className="text-xs text-indigo-100/40">{compose.length.toLocaleString()} bytes</span>
+              <span className="text-xs text-ink-100/40">{compose.length.toLocaleString()} bytes</span>
             </div>
             <CodeEditor label="compose.yaml" value={compose} onChange={setCompose} placeholder={adopting ? `Paste the compose file that ${search.name} was started with.` : undefined} />
           </Card>
@@ -110,21 +110,21 @@ export function NewStackPage() {
         <div className="space-y-4">
           <Card className="space-y-4 p-5">
             <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-indigo-100/80">Host</span>
+              <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Host</span>
               <select
                 value={hostId}
                 onChange={(e) => setHostId(e.target.value)}
-                className="w-full rounded-xl bg-white/[0.05] px-3 py-2.5 text-sm text-white ring-1 ring-inset ring-white/10 outline-none focus:ring-sky-500/60"
+                className="w-full rounded-[3px] bg-white/[0.05] px-3 py-2.5 text-sm text-white ring-1 ring-inset ring-white/10 outline-none focus:ring-lime-500/60"
               >
                 {hosts.map((h) => (
-                  <option key={h.id} value={h.id} className="bg-[#140f33]">
+                  <option key={h.id} value={h.id} className="bg-panel">
                     {h.name}
                     {!h.online ? ' (offline)' : stackProblem(h) ? ' (stacks not set up)' : ''}
                   </option>
                 ))}
               </select>
             </label>
-            {problem && host?.online && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100 ring-1 ring-inset ring-amber-500/20">{problem}</p>}
+            {problem && host?.online && <p className="rounded-[3px] bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100 ring-1 ring-inset ring-amber-500/20">{problem}</p>}
             <Input
               label="Name"
               value={name}
@@ -136,7 +136,7 @@ export function NewStackPage() {
               hint={name && !validName ? 'Use lowercase letters, digits, - and _, starting with a letter or digit.' : NAME_HINT}
             />
             {existing && !existing.managed && (
-              <p className="rounded-lg bg-sky-500/10 px-3 py-2 text-xs leading-relaxed text-sky-100 ring-1 ring-inset ring-sky-500/20">
+              <p className="rounded-[3px] bg-lime-500/10 px-3 py-2 text-xs leading-relaxed text-lime-100 ring-1 ring-inset ring-lime-500/20">
                 <strong>{name}</strong> is already running on {existing.hostName}, started outside TainerHub. Deploying takes it over: compose recreates its containers from
                 this file. Named volumes are reused; relative paths now point into the stack folder, so move bind-mounted data there first.
               </p>
@@ -152,7 +152,7 @@ export function NewStackPage() {
               </Button>
             </div>
           </Card>
-          <p className="px-1 text-xs leading-relaxed text-indigo-100/50">
+          <p className="px-1 text-xs leading-relaxed text-ink-100/50">
             <Lock className="mr-1 inline size-3" />
             Only admins can create or edit stacks: a compose file can mount the host's disks or run privileged containers. Operators can deploy, start and stop saved stacks.
           </p>
@@ -164,7 +164,7 @@ export function NewStackPage() {
 
 function BackLink() {
   return (
-    <Link to="/stacks" className="mb-4 inline-flex items-center gap-1.5 text-sm text-indigo-100/60 hover:text-white">
+    <Link to="/stacks" className="mb-4 inline-flex items-center gap-1.5 text-sm text-ink-100/60 hover:text-white">
       <ArrowLeft className="size-4" />
       Stacks
     </Link>
@@ -183,7 +183,7 @@ export function StackPage() {
   const { containers, hosts } = useFleet()
   const live = stacks.data?.find((s) => s.id === stackId) ?? (detail.data && withLive(detail.data.summary, containers, hosts))
 
-  if (detail.isPending) return <p className="text-sm text-indigo-100/60">Loading…</p>
+  if (detail.isPending) return <p className="text-sm text-ink-100/60">Loading…</p>
   if (detail.isError)
     return (
       <div>
@@ -203,7 +203,7 @@ export function StackPage() {
             <span>{s.hostName}</span>
             <StackStatusBadge s={s} />
             {s.pending && d.stack.deployedAt && <Badge tone="warn">changes not deployed</Badge>}
-            <span className="text-indigo-100/50">{d.stack.deployedAt ? `Deployed ${timeAgo(d.stack.deployedAt)}` : 'Never deployed'}</span>
+            <span className="text-ink-100/50">{d.stack.deployedAt ? `Deployed ${timeAgo(d.stack.deployedAt)}` : 'Never deployed'}</span>
           </span>
         }
       >
@@ -259,10 +259,10 @@ function StackContainers({ s }: { s: StackSummary }) {
     <Card>
       <div className="flex items-center justify-between px-5 pt-4">
         <h2 className="font-display text-lg font-bold text-white">Containers</h2>
-        <span className="text-xs text-indigo-100/50">{mine.length > 0 ? `${s.running} of ${mine.length} running` : ''}</span>
+        <span className="text-xs text-ink-100/50">{mine.length > 0 ? `${s.running} of ${mine.length} running` : ''}</span>
       </div>
       {mine.length === 0 ? (
-        <p className="px-5 pb-5 pt-2 text-sm text-indigo-100/60">
+        <p className="px-5 pb-5 pt-2 text-sm text-ink-100/60">
           {!s.online ? `${s.hostName} is offline.` : s.deployedAt ? 'No containers. Deploy to start the stack again.' : 'Not deployed yet.'}
         </p>
       ) : (
@@ -271,7 +271,7 @@ function StackContainers({ s }: { s: StackSummary }) {
             <div key={c.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
               <button onClick={() => openDetails(c)} className="min-w-0 flex-1 text-left">
                 <div className="truncate text-sm font-semibold text-white hover:underline">{c.name}</div>
-                <div className="mono truncate text-xs text-indigo-100/50">
+                <div className="mono truncate text-xs text-ink-100/50">
                   {c.image}
                   {c.ports && c.ports.length > 0 && ` · ${c.ports.join(', ')}`}
                 </div>
@@ -288,8 +288,8 @@ function StackContainers({ s }: { s: StackSummary }) {
 
 function FilesLocked() {
   return (
-    <Card className="flex items-start gap-3 p-5 text-sm text-indigo-100/70">
-      <Lock className="mt-0.5 size-4 shrink-0 text-indigo-100/50" />
+    <Card className="flex items-start gap-3 p-5 text-sm text-ink-100/70">
+      <Lock className="mt-0.5 size-4 shrink-0 text-ink-100/50" />
       Only admins can view this stack's compose file and .env, because they often hold passwords and can grant access to the whole host.
     </Card>
   )
@@ -342,12 +342,12 @@ function FilesEditor({ d }: { d: StackDetail }) {
   return (
     <Card className="p-5">
       <div className="mb-3 flex flex-wrap items-center gap-3">
-        <div className="flex gap-1 rounded-full bg-white/[0.06] p-1 ring-1 ring-white/10">
+        <div className="flex gap-1 rounded-[3px] bg-ink-950/60 p-0.5 ring-1 ring-line">
           {(['compose', 'env'] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={cx('flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium', tab === t ? 'bg-white/15 text-white' : 'text-indigo-100/60 hover:text-white')}
+              className={cx('flex items-center gap-1.5 rounded-[2px] px-3 py-1 text-sm font-medium', tab === t ? 'bg-lime-400 text-ink-950' : 'text-ink-100/60 hover:text-white')}
             >
               <FileText className="size-3.5" />
               {t === 'compose' ? 'compose.yaml' : '.env'}
@@ -355,7 +355,7 @@ function FilesEditor({ d }: { d: StackDetail }) {
             </button>
           ))}
         </div>
-        <span className="text-xs text-indigo-100/50">
+        <span className="text-xs text-ink-100/50">
           Last edited by {base.updatedBy || 'unknown'} {timeAgo(base.updatedAt)}
           {dirty && lines > 0 && ` · ${lines} line${lines === 1 ? '' : 's'} changed`}
         </span>
@@ -418,18 +418,18 @@ function DangerZone({ s }: { s: StackSummary }) {
     <Card className="flex flex-wrap items-center gap-4 p-5 ring-rose-500/20">
       <div className="min-w-0 flex-1">
         <h2 className="font-display text-lg font-bold text-white">Delete stack</h2>
-        <p className="text-sm text-indigo-100/60">Removes its containers and networks from {s.hostName}, then the stack itself.</p>
+        <p className="text-sm text-ink-100/60">Removes its containers and networks from {s.hostName}, then the stack itself.</p>
       </div>
       <Button variant="dangerGhost" icon={Trash2} onClick={() => setOpen(true)}>
         Delete…
       </Button>
       <Modal open={open} onClose={() => setOpen(false)} title={`Delete ${s.name}?`}>
-        <div className="space-y-4 text-sm text-indigo-100/80">
+        <div className="space-y-4 text-sm text-ink-100/80">
           <p>
-            Runs <code className="mono text-sky-300">docker compose down</code> on {s.hostName}, deletes the compose file and .env there, and removes the stack from TainerHub. Files
+            Runs <code className="mono text-lime-300">docker compose down</code> on {s.hostName}, deletes the compose file and .env there, and removes the stack from TainerHub. Files
             the stack wrote into its folder (bind-mounted data) are left on the host.
           </p>
-          <label className="flex items-start gap-2.5 rounded-xl bg-rose-500/[0.07] p-3 ring-1 ring-inset ring-rose-500/20">
+          <label className="flex items-start gap-2.5 rounded-[3px] bg-rose-500/[0.07] p-3 ring-1 ring-inset ring-rose-500/20">
             <input type="checkbox" checked={volumes} onChange={(e) => setVolumes(e.target.checked)} className="mt-0.5 accent-rose-500" />
             <span>
               Also delete its named volumes. <strong className="text-rose-200">Their data is gone for good.</strong>

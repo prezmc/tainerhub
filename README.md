@@ -19,7 +19,7 @@ Design doc: see the "TainerHub: A Portainer Alternative — Design" doc.
 | Agent: container list, Docker events, start/stop/restart/pause/kill/remove, log streaming | Done, tested against a fake Docker Engine |
 | First-run setup link, passkey registration and sign-in, recovery codes, sessions, rate limiting | Done, needs a first real-browser test |
 | Postgres store with migrations, audit log | Done |
-| Web UI (Aurora theme, Space Grotesk + Outfit): Overview with live fleet map, sortable by CPU / memory / name / status, attention card, top consumers and activity feed; Containers board grouped by host, stack or state; ⌘K command palette ("restart pihole"); live logs; hosts; passkeys; audit log | Done |
+| Web UI (Forest theme: green-black with a lime accent and clipped-corner "tag" buttons; Space Grotesk + Outfit): Overview with live fleet map, sortable by CPU / memory / name / status, attention card, top consumers and activity feed; Containers board grouped by host, stack or state; ⌘K command palette ("restart pihole"); live logs; hosts; passkeys; audit log | Done |
 | Container details (ports, mounts, networks, health-check history, restart policy, labels; environment values admin-only) | Done |
 | Resources: images, volumes, networks across hosts with "used by", pull/update, remove, prune (volume deletion admin-only) | Done |
 | Live CPU and memory per container (sampled every 10 s by the agent, same formulas as `docker stats`) | Done |

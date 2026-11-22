@@ -6,19 +6,38 @@
   --font-sans: "Outfit Variable", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Space Grotesk Variable", "Outfit Variable", ui-sans-serif, sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Forest + lime. "ink" is the green-gray neutral for text, lines and
+     surfaces; lime is the one accent; emerald/amber/rose stay for status. */
+  --color-ink-50: #eef5f1;
+  --color-ink-100: #dbe7e0;
+  --color-ink-200: #bccdc4;
+  --color-ink-300: #98aea3;
+  --color-ink-400: #7a9187;
+  --color-ink-500: #5f756b;
+  --color-ink-600: #485b53;
+  --color-ink-700: #34443d;
+  --color-ink-800: #22302a;
+  --color-ink-900: #15201b;
+  --color-ink-950: #0b1310;
+  --color-lime-200: #e4fbab;
+  --color-lime-300: #d4f77a;
+  --color-lime-400: #c4f04a;
+  --color-lime-500: #a6d62a;
+  --color-lime-600: #7fa81a;
+  --color-canvas: #0a1210;
+  --color-panel: #111c18;
+  --color-line: #22322b;
 }
 
 :root {
   color-scheme: dark;
 }
 
-/* Aurora: deep indigo night lit by sky, magenta and mint */
+/* Forest: flat green-black with a faint lime haze at the top */
 body {
-  background-color: #0a0720;
-  background-image:
-    radial-gradient(60rem 32rem at 8% -6%, rgb(14 165 233 / 0.28), transparent 60%),
-    radial-gradient(55rem 34rem at 96% -2%, rgb(192 38 211 / 0.26), transparent 60%),
-    radial-gradient(65rem 34rem at 50% 112%, rgb(16 185 129 / 0.20), transparent 60%);
+  background-color: var(--color-canvas);
+  background-image: radial-gradient(70rem 26rem at 50% -12%, rgb(196 240 74 / 0.07), transparent 70%);
   background-attachment: fixed;
   font-feature-settings: "ss01";
 }
@@ -28,10 +47,21 @@ body {
 }
 
 .text-aurora {
-  background: linear-gradient(90deg, #34d399, #38bdf8 50%, #d946ef);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--color-lime-400);
+}
+
+/* Buttons and other controls are "tags": square, with the top-right and
+   bottom-left corners clipped. The outer layer paints the edge, the inner
+   layer the fill, so the 1px edge follows the cut corners too. */
+.tag {
+  --cut: 9px;
+  clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut)));
+}
+.tag-sm { --cut: 6px; }
+/* inner fill: same shape, inset by the 1px edge (cut shrinks by ~0.4px) */
+.tag-fill {
+  --c: calc(var(--cut) - 0.4px);
+  clip-path: polygon(0 0, calc(100% - var(--c)) 0, 100% var(--c), 100% 100%, var(--c) 100%, 0 calc(100% - var(--c)));
 }
 
 /* faint grid used behind the sign-in screens */
@@ -60,7 +90,7 @@ body {
   to   { opacity: 1; transform: none; }
 }
 
-::selection { background: rgb(217 70 239 / 0.35); }
+::selection { background: rgb(196 240 74 / 0.3); }
 
 * { scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / 0.18) transparent; }
 

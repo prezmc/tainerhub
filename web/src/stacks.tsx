@@ -193,22 +193,22 @@ export function JobPanel({ jobId, onClose }: { jobId: string; onClose: () => voi
     ) : state === 'failed' ? (
       <CircleX className="size-5 text-rose-400" />
     ) : (
-      <LoaderCircle className="size-5 animate-spin text-sky-300" />
+      <LoaderCircle className="size-5 animate-spin text-lime-300" />
     )
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 mx-auto flex h-[46vh] max-w-[1500px] flex-col rounded-t-3xl bg-[#0d0a24]/95 shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/15 backdrop-blur-xl animate-[drawer_200ms_ease-out]">
+    <div className="fixed inset-x-0 bottom-0 z-40 mx-auto flex h-[46vh] max-w-[1500px] flex-col rounded-t-md border-t-2 border-lime-400 bg-panel shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/15 animate-[drawer_200ms_ease-out]">
       <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-5 py-3">
-        {state === 'gone' ? <CircleX className="size-5 text-indigo-100/40" /> : icon}
+        {state === 'gone' ? <CircleX className="size-5 text-ink-100/40" /> : icon}
         <div className="min-w-0">
           <div className="truncate font-display text-base font-bold text-white">{title}</div>
-          <div className="text-xs text-indigo-100/50">
+          <div className="text-xs text-ink-100/50">
             {meta ? `${meta.host} · by ${meta.actor} · ` : ''}
             {{ connecting: 'connecting', running: 'running', ok: 'finished', failed: 'failed', gone: 'output expired' }[state]}
           </div>
         </div>
         <div className="ml-auto flex items-center gap-0.5">
-          <IconButton icon={ArrowDownToLine} label={follow ? 'Auto-scroll on' : 'Auto-scroll off'} className={cx(follow && 'bg-sky-500/15 text-sky-300')} onClick={() => setFollow((f) => !f)} />
+          <IconButton icon={ArrowDownToLine} label={follow ? 'Auto-scroll on' : 'Auto-scroll off'} className={cx(follow && 'bg-lime-500/15 text-lime-300')} onClick={() => setFollow((f) => !f)} />
           <IconButton icon={Download} label="Download output" onClick={() => download(`${meta?.stack ?? 'stack'}-${meta?.action ?? 'job'}.log`, text)} />
           <IconButton icon={X} label="Close (keeps running)" onClick={onClose} />
         </div>
@@ -219,7 +219,7 @@ export function JobPanel({ jobId, onClose }: { jobId: string; onClose: () => voi
           const el = e.currentTarget
           if (el.scrollHeight - el.scrollTop - el.clientHeight >= 24 && follow) setFollow(false)
         }}
-        className="mono flex-1 overflow-auto whitespace-pre-wrap break-all px-5 py-3 text-[12px] leading-relaxed text-indigo-100/80"
+        className="mono flex-1 overflow-auto whitespace-pre-wrap break-all px-5 py-3 text-[12px] leading-relaxed text-ink-100/80"
       >
         {text || (state === 'gone' ? 'This operation finished a while ago and its output is no longer kept.' : 'Waiting for output…')}
         {state === 'failed' && error && <span className="mt-2 block font-semibold text-rose-300">✗ {error}</span>}
@@ -259,8 +259,8 @@ export function CodeEditor({
     requestAnimationFrame(() => el.setSelectionRange(a + 2, a + 2))
   }
   return (
-    <div className="flex overflow-hidden rounded-xl bg-black/40 ring-1 ring-inset ring-white/10 focus-within:ring-sky-500/60">
-      <div ref={gutter} aria-hidden className="mono select-none overflow-hidden border-r border-white/[0.06] px-2 py-3 text-right text-[12px] leading-[1.6] text-indigo-100/25">
+    <div className="flex overflow-hidden rounded-[3px] bg-black/40 ring-1 ring-inset ring-white/10 focus-within:ring-lime-500/60">
+      <div ref={gutter} aria-hidden className="mono select-none overflow-hidden border-r border-white/[0.06] px-2 py-3 text-right text-[12px] leading-[1.6] text-ink-100/25">
         {Array.from({ length: lines }, (_, i) => (
           <div key={i}>{i + 1}</div>
         ))}
@@ -281,7 +281,7 @@ export function CodeEditor({
         autoComplete="off"
         autoCorrect="off"
         wrap="off"
-        className="mono min-w-0 flex-1 resize-y bg-transparent px-3 py-3 text-[12px] leading-[1.6] text-indigo-50 outline-none placeholder:text-indigo-100/25"
+        className="mono min-w-0 flex-1 resize-y bg-transparent px-3 py-3 text-[12px] leading-[1.6] text-ink-50 outline-none placeholder:text-ink-100/25"
       />
     </div>
   )

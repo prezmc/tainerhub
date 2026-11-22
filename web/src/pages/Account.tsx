@@ -52,21 +52,21 @@ export function AccountPage() {
       <div className="space-y-6">
         <Card className="p-6">
           <div className="mb-5 flex items-start gap-3">
-            <div className="rounded-xl bg-amber-500/10 p-2.5 text-amber-300 ring-1 ring-inset ring-amber-500/20">
+            <div className="rounded-[3px] bg-amber-500/10 p-2.5 text-amber-300 ring-1 ring-inset ring-amber-500/20">
               <Fingerprint className="size-5" />
             </div>
             <div>
               <h2 className="font-semibold text-white">Passkeys</h2>
-              <p className="text-sm text-indigo-100/60">Register one on each device you use, so losing a single device never locks you out.</p>
+              <p className="text-sm text-ink-100/60">Register one on each device you use, so losing a single device never locks you out.</p>
             </div>
           </div>
-          <ul className="mb-5 divide-y divide-white/[0.05] overflow-hidden rounded-xl ring-1 ring-white/[0.07]">
+          <ul className="mb-5 divide-y divide-white/[0.05] overflow-hidden rounded-[3px] ring-1 ring-white/[0.07]">
             {me.passkeys.map((p) => (
               <li key={p.id} className="flex items-center gap-3 bg-white/[0.015] px-4 py-3">
-                <KeyRound className="size-4 text-indigo-100/50" />
+                <KeyRound className="size-4 text-ink-100/50" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-white">{p.name}</div>
-                  <div className="text-xs text-indigo-100/50">
+                  <div className="text-xs text-ink-100/50">
                     Added {new Date(p.createdAt).toLocaleDateString()} · last used {timeAgo(p.lastUsedAt)}
                   </div>
                 </div>
@@ -103,16 +103,16 @@ export function AccountPage() {
             <div className="flex flex-1 items-start gap-3">
               <div
                 className={cx(
-                  'rounded-xl p-2.5 ring-1 ring-inset',
-                  low ? 'bg-rose-500/10 text-rose-300 ring-rose-500/20' : 'bg-purple-500/10 text-purple-300 ring-purple-500/20',
+                  'rounded-[3px] p-2.5 ring-1 ring-inset',
+                  low ? 'bg-rose-500/10 text-rose-300 ring-rose-500/20' : 'bg-cyan-500/10 text-cyan-300 ring-cyan-500/20',
                 )}
               >
                 <KeyRound className="size-5" />
               </div>
               <div>
                 <h2 className="font-semibold text-white">Recovery codes</h2>
-                <p className="text-sm text-indigo-100/60">
-                  <span className={low ? 'font-medium text-rose-300' : 'text-indigo-50'}>{me.recoveryCodesLeft}</span> unused. Making new codes cancels the old ones.
+                <p className="text-sm text-ink-100/60">
+                  <span className={low ? 'font-medium text-rose-300' : 'text-ink-50'}>{me.recoveryCodesLeft}</span> unused. Making new codes cancels the old ones.
                 </p>
               </div>
             </div>

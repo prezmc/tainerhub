@@ -58,10 +58,10 @@ export function SetupPage() {
   if (!token) {
     return (
       <AuthShell title="Set up TainerHub" subtitle="One more step to secure your hub">
-        <div className="space-y-3 text-sm text-indigo-100/80">
+        <div className="space-y-3 text-sm text-ink-100/80">
           <p>Open the one-time setup link printed in the hub's logs. It's valid for 15 minutes, and a fresh link is printed every 15 minutes until setup is done.</p>
-          <div className="mono flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs text-indigo-100/80 ring-1 ring-white/10">
-            <Terminal className="size-3.5 text-indigo-100/50" />
+          <div className="mono flex items-center gap-2 rounded-[3px] bg-black/40 px-3 py-2 text-xs text-ink-100/80 ring-1 ring-white/10">
+            <Terminal className="size-3.5 text-ink-100/50" />
             docker logs tainerhub
           </div>
         </div>

@@ -115,10 +115,10 @@ function HostCard({ h, admin, onToken, onRemove }: { h: Host; admin: boolean; on
   const stopped = h.containers - h.running
   const pct = h.containers ? Math.round((h.running / h.containers) * 100) : 0
   return (
-    <Card className={cx('relative p-5 transition hover:ring-white/15', !h.online && 'opacity-80')}>
-      <div className={cx('pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent to-transparent', h.online ? 'via-emerald-400/70' : 'via-zinc-500/40')} />
+    <Card className={cx('relative p-5 transition hover:ring-lime-400/30', !h.online && 'opacity-80')}>
+      <div className={cx('pointer-events-none absolute left-0 top-0 h-[2px] w-16', h.online ? 'bg-lime-400' : 'bg-ink-600')} />
       <div className="flex items-start gap-3">
-        <div className={cx('rounded-xl p-2.5 ring-1 ring-inset', h.online ? 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/20' : 'bg-white/[0.04] text-indigo-100/50 ring-white/10')}>
+        <div className={cx('rounded-[3px] p-2.5 ring-1 ring-inset', h.online ? 'bg-emerald-500/10 text-emerald-300 ring-emerald-500/20' : 'bg-white/[0.04] text-ink-100/50 ring-white/10')}>
           <Server className="size-5" />
         </div>
         <div className="min-w-0 flex-1">
@@ -126,7 +126,7 @@ function HostCard({ h, admin, onToken, onRemove }: { h: Host; admin: boolean; on
             <h2 className="truncate text-base font-semibold text-white">{h.name}</h2>
             <StatusDot tone={h.online ? 'good' : 'idle'} pulse={h.online} />
           </div>
-          <p className="truncate text-xs text-indigo-100/50">
+          <p className="truncate text-xs text-ink-100/50">
             {h.hello ? `${h.hello.os} · ${h.hello.arch}` : h.enrolledAt ? `Last seen ${timeAgo(h.lastSeenAt)}` : 'Waiting for its agent to connect'}
           </p>
         </div>
@@ -147,9 +147,9 @@ function HostCard({ h, admin, onToken, onRemove }: { h: Host; admin: boolean; on
             <Ring pct={pct} />
             <div className="space-y-1 text-sm">
               <div>
-                <span className="font-semibold tabular-nums text-white">{h.running}</span> <span className="text-indigo-100/60">running</span>
+                <span className="font-semibold tabular-nums text-white">{h.running}</span> <span className="text-ink-100/60">running</span>
               </div>
-              <div className="text-indigo-100/50">
+              <div className="text-ink-100/50">
                 <span className="tabular-nums">{stopped}</span> stopped
                 {h.unhealthy > 0 && (
                   <Badge tone="bad" className="ml-2">
@@ -160,19 +160,19 @@ function HostCard({ h, admin, onToken, onRemove }: { h: Host; admin: boolean; on
             </div>
           </div>
           <dl className="mt-5 grid grid-cols-3 gap-2 border-t border-white/[0.06] pt-4 text-xs">
-            <Fact icon={Cpu} tint="text-sky-400" label="CPU" value={`${h.hello.ncpu} cores`} />
-            <Fact icon={MemoryStick} tint="text-purple-400" label="Memory" value={bytes(h.hello.mem_total)} />
+            <Fact icon={Cpu} tint="text-lime-400" label="CPU" value={`${h.hello.ncpu} cores`} />
+            <Fact icon={MemoryStick} tint="text-cyan-400" label="Memory" value={bytes(h.hello.mem_total)} />
             <Fact icon={ShieldCheck} tint="text-emerald-400" label="Docker" value={h.hello.docker_version} />
           </dl>
           {stackProblem(h) && (
-            <p className="mt-4 flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100 ring-1 ring-inset ring-amber-500/20">
+            <p className="mt-4 flex items-start gap-2 rounded-[3px] bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100 ring-1 ring-inset ring-amber-500/20">
               <Layers className="mt-0.5 size-3.5 shrink-0" />
               <span>Stacks unavailable: {stackProblem(h)}</span>
             </p>
           )}
         </>
       ) : (
-        <div className="mt-5 flex items-center gap-2 rounded-lg bg-white/[0.03] px-3 py-2.5 text-xs text-indigo-100/60 ring-1 ring-inset ring-white/[0.06]">
+        <div className="mt-5 flex items-center gap-2 rounded-[3px] bg-white/[0.03] px-3 py-2.5 text-xs text-ink-100/60 ring-1 ring-inset ring-white/[0.06]">
           <Clock className="size-3.5 shrink-0" />
           {h.enrolledAt ? 'Agent offline. Check docker logs tainerhub-agent on this host.' : 'Run the agent with its join token to connect.'}
         </div>
@@ -184,11 +184,11 @@ function HostCard({ h, admin, onToken, onRemove }: { h: Host; admin: boolean; on
 function Fact({ icon: Icon, label, value, tint }: { icon: typeof Cpu; label: string; value: string; tint: string }) {
   return (
     <div className="min-w-0">
-      <dt className="flex items-center gap-1 text-indigo-100/50">
+      <dt className="flex items-center gap-1 text-ink-100/50">
         <Icon className={cx('size-3', tint)} />
         {label}
       </dt>
-      <dd className="mt-0.5 truncate font-medium text-indigo-50">{value}</dd>
+      <dd className="mt-0.5 truncate font-medium text-ink-50">{value}</dd>
     </div>
   )
 }
@@ -202,13 +202,13 @@ function Ring({ pct }: { pct: number }) {
       <svg viewBox="0 0 56 56" className="size-14 -rotate-90">
         <defs>
           <linearGradient id="ring-g">
-            <stop offset="0" stopColor="#34d399" />
-            <stop offset=".6" stopColor="#38bdf8" />
-            <stop offset="1" stopColor="#818cf8" />
+            <stop offset="0" stopColor="#d4f77a" />
+            <stop offset=".6" stopColor="#c4f04a" />
+            <stop offset="1" stopColor="#7fa81a" />
           </linearGradient>
         </defs>
         <circle cx="28" cy="28" r={r} fill="none" stroke="rgb(255 255 255 / 0.07)" strokeWidth="6" />
-        <circle cx="28" cy="28" r={r} fill="none" stroke="url(#ring-g)" strokeWidth="6" strokeLinecap="round" strokeDasharray={`${(pct / 100) * c} ${c}`} className="transition-all duration-700" />
+        <circle cx="28" cy="28" r={r} fill="none" stroke="url(#ring-g)" strokeWidth="6" strokeLinecap="butt" strokeDasharray={`${(pct / 100) * c} ${c}`} className="transition-all duration-700" />
       </svg>
       <span className="absolute inset-0 flex items-center justify-center text-[12px] font-semibold tabular-nums text-white">{pct}%</span>
     </div>
@@ -218,28 +218,28 @@ function Ring({ pct }: { pct: number }) {
 function JoinInstructions({ join }: { join: JoinTokenResponse }) {
   const steps = [
     <>
-      On <strong className="text-white">{join.host.name}</strong>, create a folder such as <code className="mono text-sky-300">~/tainerhub-agent</code> and save this as{' '}
-      <code className="mono text-sky-300">compose.yml</code>.
+      On <strong className="text-white">{join.host.name}</strong>, create a folder such as <code className="mono text-lime-300">~/tainerhub-agent</code> and save this as{' '}
+      <code className="mono text-lime-300">compose.yml</code>.
     </>,
     <>
-      Run <code className="mono text-sky-300">docker compose up -d</code>. The host turns green here within a few seconds.
+      Run <code className="mono text-lime-300">docker compose up -d</code>. The host turns green here within a few seconds.
     </>,
     <>
       The token works once and expires at <strong className="text-white">{new Date(join.expiresAt).toLocaleTimeString()}</strong>. Afterwards you can delete the{' '}
-      <code className="mono text-sky-300">TAINERHUB_JOIN_TOKEN</code> line.
+      <code className="mono text-lime-300">TAINERHUB_JOIN_TOKEN</code> line.
     </>,
   ]
   return (
     <div className="space-y-5">
       <ol className="space-y-3">
         {steps.map((s, i) => (
-          <li key={i} className="flex gap-3 text-sm text-indigo-100/80">
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-sky-500/15 text-xs font-semibold text-sky-300 ring-1 ring-inset ring-sky-500/30">{i + 1}</span>
+          <li key={i} className="flex gap-3 text-sm text-ink-100/80">
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-lime-500/15 text-xs font-semibold text-lime-300 ring-1 ring-inset ring-lime-500/30">{i + 1}</span>
             <span className="pt-0.5">{s}</span>
           </li>
         ))}
       </ol>
-      <pre className="mono max-h-72 overflow-auto rounded-xl bg-black/50 p-4 text-xs leading-relaxed text-indigo-100/80 ring-1 ring-white/10">{join.compose}</pre>
+      <pre className="mono max-h-72 overflow-auto rounded-[3px] bg-black/50 p-4 text-xs leading-relaxed text-ink-100/80 ring-1 ring-white/10">{join.compose}</pre>
       <div className="flex justify-end">
         <CopyButton text={join.compose} label="Copy compose file" />
       </div>

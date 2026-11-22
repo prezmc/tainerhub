@@ -29,11 +29,11 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
 
   return (
     <div className="fixed inset-0 z-40">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/50-[2px]" onClick={onClose} />
       <aside
         role="dialog"
         aria-label={`${container.name} details`}
-        className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-[#0f0b2a]/95 shadow-2xl shadow-black/70 ring-1 ring-white/15 backdrop-blur-xl animate-[slide_180ms_ease-out]"
+        className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-panel shadow-2xl shadow-black/70 ring-1 ring-white/15 animate-[slide_180ms_ease-out]"
       >
         <header className="border-b border-white/10 p-6">
           <div className="flex items-start gap-3">
@@ -42,7 +42,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                 <StatusDot tone={toneOf(container.state, container.status)} pulse={running} />
                 <h2 className="truncate font-display text-2xl font-bold text-white">{container.name}</h2>
               </div>
-              <p className="mt-1 truncate text-sm text-indigo-100/60">
+              <p className="mt-1 truncate text-sm text-ink-100/60">
                 {container.hostName} · {container.status}
               </p>
             </div>
@@ -82,7 +82,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
         </header>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
-          {q.isPending && <p className="text-sm text-indigo-100/60">Loading details…</p>}
+          {q.isPending && <p className="text-sm text-ink-100/60">Loading details…</p>}
           <ErrorNote error={q.isError ? errorText(q.error) : null} />
           {d && (
             <>
@@ -110,23 +110,23 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                   {d.state.health.failingStreak > 0 && <p className="mb-2 text-sm text-rose-300">Failed {d.state.health.failingStreak} times in a row.</p>}
                   <ul className="space-y-2">
                     {[...d.state.health.log].reverse().map((p, i) => (
-                      <li key={i} className="rounded-xl bg-black/30 p-3 ring-1 ring-white/[0.07]">
+                      <li key={i} className="rounded-[3px] bg-black/30 p-3 ring-1 ring-white/[0.07]">
                         <div className="flex items-center justify-between text-xs">
                           <span className={p.exitCode === 0 ? 'text-emerald-300' : 'text-rose-300'}>{p.exitCode === 0 ? 'passed' : `failed (exit ${p.exitCode})`}</span>
-                          <span className="text-indigo-100/50">{timeAgo(p.start)}</span>
+                          <span className="text-ink-100/50">{timeAgo(p.start)}</span>
                         </div>
-                        {p.output.trim() && <pre className="mono mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap break-all text-[11px] text-indigo-100/70">{p.output.trim()}</pre>}
+                        {p.output.trim() && <pre className="mono mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap break-all text-[11px] text-ink-100/70">{p.output.trim()}</pre>}
                       </li>
                     ))}
                   </ul>
                 </Section>
               )}
 
-              <Section icon={Network} title="Networking" right={<span className="text-xs text-indigo-100/50">{d.networkMode}</span>}>
+              <Section icon={Network} title="Networking" right={<span className="text-xs text-ink-100/50">{d.networkMode}</span>}>
                 {d.ports.length > 0 && (
                   <div className="mb-3 flex flex-wrap gap-1.5">
                     {d.ports.map((p, i) => (
-                      <span key={i} className="mono rounded-lg bg-sky-400/10 px-2 py-1 text-xs text-sky-200 ring-1 ring-sky-400/25">
+                      <span key={i} className="mono rounded-[3px] bg-lime-400/10 px-2 py-1 text-xs text-lime-200 ring-1 ring-lime-400/25">
                         {p.host ? `${p.host} → ` : ''}
                         {p.container}
                       </span>
@@ -136,20 +136,20 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                 {d.networks.map((n) => (
                   <KV key={n.name} k={n.name} v={<span className="mono text-xs">{n.ip || '–'}</span>} />
                 ))}
-                {d.networks.length === 0 && d.ports.length === 0 && <p className="text-sm text-indigo-100/50">No networks or published ports.</p>}
+                {d.networks.length === 0 && d.ports.length === 0 && <p className="text-sm text-ink-100/50">No networks or published ports.</p>}
               </Section>
 
               <Section icon={HardDrive} title="Mounts">
-                {d.mounts.length === 0 && <p className="text-sm text-indigo-100/50">No volumes or bind mounts.</p>}
+                {d.mounts.length === 0 && <p className="text-sm text-ink-100/50">No volumes or bind mounts.</p>}
                 <ul className="space-y-2">
                   {d.mounts.map((m, i) => (
-                    <li key={i} className="rounded-xl bg-black/30 p-3 text-xs ring-1 ring-white/[0.07]">
+                    <li key={i} className="rounded-[3px] bg-black/30 p-3 text-xs ring-1 ring-white/[0.07]">
                       <div className="flex items-center gap-2">
                         <Badge tone={m.type === 'volume' ? 'accent' : 'info'}>{m.type}</Badge>
                         {!m.rw && <Badge tone="warn">read-only</Badge>}
                         <span className="mono ml-auto truncate text-white">{m.destination}</span>
                       </div>
-                      <div className="mono mt-1.5 truncate text-indigo-100/60" title={m.source}>
+                      <div className="mono mt-1.5 truncate text-ink-100/60" title={m.source}>
                         {m.name || m.source}
                       </div>
                     </li>
@@ -166,16 +166,16 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                       .sort(([a], [b]) => a.localeCompare(b))
                       .map(([k, v]) => (
                         <div key={k} className="mono text-[11px] leading-relaxed">
-                          <span className="text-fuchsia-300">{k}</span>
-                          <span className="text-indigo-100/40">=</span>
-                          <span className="break-all text-indigo-100/80">{v}</span>
+                          <span className="text-cyan-300">{k}</span>
+                          <span className="text-ink-100/40">=</span>
+                          <span className="break-all text-ink-100/80">{v}</span>
                         </div>
                       ))}
                   </div>
                 </Section>
               )}
 
-              <p className="mono flex items-center gap-1.5 text-[11px] text-indigo-100/40">
+              <p className="mono flex items-center gap-1.5 text-[11px] text-ink-100/40">
                 <Clock className="size-3" /> ID {d.id.slice(0, 12)} · refreshed every 15 s
               </p>
             </>
@@ -188,15 +188,15 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
 
 function Gauge({ icon: Icon, label, value, pct }: { icon: LucideIcon; label: string; value: string; pct: number }) {
   return (
-    <div className="rounded-2xl bg-white/[0.05] p-3 ring-1 ring-white/10">
-      <div className="flex items-center justify-between text-xs text-indigo-100/60">
+    <div className="rounded-md bg-white/[0.05] p-3 ring-1 ring-white/10">
+      <div className="flex items-center justify-between text-xs text-ink-100/60">
         <span className="flex items-center gap-1.5">
           <Icon className="size-3.5" /> {label}
         </span>
         <span className="mono text-white">{value}</span>
       </div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
-        <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 via-sky-400 to-fuchsia-500 transition-all duration-700" style={{ width: `${Math.max(pct, 2)}%` }} />
+      <div className="mt-2 h-1.5 overflow-hidden rounded-[2px] bg-white/10">
+        <div className="h-full bg-lime-400 transition-all duration-700" style={{ width: `${Math.max(pct, 2)}%` }} />
       </div>
     </div>
   )
@@ -205,11 +205,11 @@ function Gauge({ icon: Icon, label, value, pct }: { icon: LucideIcon; label: str
 function Section({ icon: Icon, title, right, children, collapsible }: { icon: LucideIcon; title: string; right?: ReactNode; children: ReactNode; collapsible?: boolean }) {
   const [open, setOpen] = useState(!collapsible)
   return (
-    <section className="rounded-2xl bg-white/[0.04] p-4 ring-1 ring-white/10">
+    <section className="rounded-md bg-white/[0.04] p-4 ring-1 ring-white/10">
       <button disabled={!collapsible} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 text-left">
-        <Icon className="size-4 text-sky-300" />
+        <Icon className="size-4 text-lime-300" />
         <h3 className="font-display font-bold text-white">{title}</h3>
-        <span className="ml-auto">{right ?? (collapsible && <span className="text-xs text-indigo-100/50">{open ? 'hide' : 'show'}</span>)}</span>
+        <span className="ml-auto">{right ?? (collapsible && <span className="text-xs text-ink-100/50">{open ? 'hide' : 'show'}</span>)}</span>
       </button>
       {open && <div className="mt-3">{children}</div>}
     </section>
@@ -219,8 +219,8 @@ function Section({ icon: Icon, title, right, children, collapsible }: { icon: Lu
 function KV({ k, v }: { k: string; v: ReactNode }) {
   return (
     <div className="flex gap-4 border-b border-white/[0.05] py-1.5 text-sm last:border-0">
-      <span className="w-32 shrink-0 text-indigo-100/55">{k}</span>
-      <span className="min-w-0 flex-1 text-indigo-50">{v}</span>
+      <span className="w-32 shrink-0 text-ink-100/55">{k}</span>
+      <span className="min-w-0 flex-1 text-ink-50">{v}</span>
     </div>
   )
 }
@@ -234,11 +234,11 @@ function EnvSection({ env, revealed }: { env: string[]; revealed: boolean }) {
       title="Environment"
       right={
         revealed ? (
-          <button onClick={() => setShow((s) => !s)} className="flex items-center gap-1 text-xs text-sky-300 hover:text-sky-200">
+          <button onClick={() => setShow((s) => !s)} className="flex items-center gap-1 text-xs text-lime-300 hover:text-lime-200">
             {show ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />} {show ? 'Hide values' : 'Show values'}
           </button>
         ) : (
-          <span className="text-xs text-indigo-100/50">values visible to admins</span>
+          <span className="text-xs text-ink-100/50">values visible to admins</span>
         )
       }
     >
@@ -249,13 +249,13 @@ function EnvSection({ env, revealed }: { env: string[]; revealed: boolean }) {
           return (
             <div key={i} className="mono flex gap-1 text-[11px] leading-relaxed">
               <span className="shrink-0 text-emerald-300">{k}</span>
-              <span className="text-indigo-100/40">=</span>
-              <span className={cx('break-all', show ? 'text-indigo-100/80' : 'select-none text-indigo-100/40')}>{show ? v : v ? '••••••••' : revealed ? '' : '••••••••'}</span>
+              <span className="text-ink-100/40">=</span>
+              <span className={cx('break-all', show ? 'text-ink-100/80' : 'select-none text-ink-100/40')}>{show ? v : v ? '••••••••' : revealed ? '' : '••••••••'}</span>
             </div>
           )
         })}
       </div>
-      {!revealed && <p className="mt-2 text-xs text-indigo-100/40">Secrets often live in environment variables, so the hub only sends the values to admins.</p>}
+      {!revealed && <p className="mt-2 text-xs text-ink-100/40">Secrets often live in environment variables, so the hub only sends the values to admins.</p>}
     </Section>
   )
 }
