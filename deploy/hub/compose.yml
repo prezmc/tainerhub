@@ -31,8 +31,10 @@ services:
       - "7443:7443"   # agents connect here (mTLS); never put this behind a proxy
     networks: [default, db]
     volumes:
-      - tainerhub-data:/data   # holds the hub's certificate authority: back this up
+      - tainerhub-data:/data     # holds the hub's certificate authority: back this up
+      - tainerhub-share:/share   # hands the local agent its join token
     environment:
+      TAINERHUB_LOCAL_AGENT_DIR: /share
       TAINERHUB_DATABASE_URL: postgres://tainerhub:${DB_PASSWORD:-tainerhub}@postgres:5432/tainerhub?sslmode=disable
       TAINERHUB_LOG_LEVEL: info
       # ---- optional, after install ----
@@ -40,6 +42,32 @@ services:
       # TAINERHUB_PUBLIC_URL: https://tainerhub.example.com
       # The reverse proxy's IP, so sign-in limits and the audit log see real client IPs:
       # TAINERHUB_TRUSTED_PROXIES: 192.168.1.20
+
+  # Manages this server's own containers. It enrolls itself with the hub
+  # above, so this server appears under Hosts without any setup. (Remove this
+  # service if you don't want the hub's server managed.)
+  tainerhub-agent:
+    image: ghcr.io/prezmc/tainerhub-agent:latest
+    container_name: tainerhub-agent
+    restart: unless-stopped
+    depends_on: [tainerhub]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "/tainerhub-agent", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - tainerhub-agent:/data
+      - tainerhub-share:/share:ro
+      # Compose stacks. Keep the same path on both sides (relative bind mounts).
+      - /opt/tainerhub/stacks:/opt/tainerhub/stacks
+    environment:
+      TAINERHUB_HUB: tainerhub:7443
+      TAINERHUB_JOIN_TOKEN_FILE: /share/join_token
 
   postgres:
     image: postgres:17-alpine
@@ -70,4 +98,6 @@ networks:
 
 volumes:
   tainerhub-data:
+  tainerhub-share:
+  tainerhub-agent:
   tainerhub-db:

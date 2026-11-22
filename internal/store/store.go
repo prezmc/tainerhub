@@ -598,3 +598,15 @@ func (s *Store) DeleteStack(ctx context.Context, id string) error {
 	}
 	return err
 }
+
+// RenameHost changes a host's display name. ErrConflict if it's taken.
+func (s *Store) RenameHost(ctx context.Context, id, name string) error {
+	tag, err := s.db.Exec(ctx, `UPDATE hosts SET name = $2 WHERE id = $1::uuid`, id, name)
+	if isUniqueViolation(err) {
+		return ErrConflict
+	}
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}

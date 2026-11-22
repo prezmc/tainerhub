@@ -357,10 +357,22 @@ func (d *SocketDocker) CheckSameMount(ctx context.Context, dir string) error {
 		if filepath.Clean(m.Destination) != dir {
 			continue
 		}
-		if m.Type != "bind" || filepath.Clean(m.Source) != dir {
+		if m.Type != "bind" || !sameHostPath(m.Source, dir) {
 			return fmt.Errorf("the stacks folder must be bind-mounted from the same path on the host: add \"%s:%s\" to the agent's volumes (it is currently a %s mount from %q)", dir, dir, m.Type, m.Source)
 		}
 		return nil
 	}
 	return fmt.Errorf("the stacks folder is not mounted: add \"%s:%s\" to the agent's volumes and recreate the agent", dir, dir)
+}
+
+// sameHostPath reports whether a bind mount's source (as Docker reports it)
+// is the same folder as dir. Docker Desktop reports host paths with a
+// /host_mnt prefix, and on macOS /tmp and /var live under /private.
+func sameHostPath(source, dir string) bool {
+	source, dir = filepath.Clean(source), filepath.Clean(dir)
+	if source == dir {
+		return true
+	}
+	s := strings.TrimPrefix(source, "/host_mnt")
+	return s == dir || s == "/private"+dir || strings.TrimPrefix(s, "/private") == dir
 }

@@ -12,6 +12,7 @@ import { AccountPage } from './pages/Account'
 import { AuditPage } from './pages/Audit'
 import { StacksPage } from './pages/Stacks'
 import { NewStackPage, StackPage } from './pages/StackEditor'
+import { NewContainerPage } from './pages/NewContainer'
 
 function Root() {
   const path = useRouterState({ select: (s) => s.location.pathname })
@@ -34,6 +35,7 @@ const appRoute = createRoute({ getParentRoute: () => rootRoute, id: 'app', compo
 const overviewRoute = createRoute({ getParentRoute: () => appRoute, path: '/', component: OverviewPage })
 const containersRoute = createRoute({ getParentRoute: () => appRoute, path: '/containers', component: ContainersPage })
 const resourcesRoute = createRoute({ getParentRoute: () => appRoute, path: '/resources', component: ResourcesPage })
+const newContainerRoute = createRoute({ getParentRoute: () => appRoute, path: '/containers/new', component: NewContainerPage })
 const stacksRoute = createRoute({ getParentRoute: () => appRoute, path: '/stacks', component: StacksPage })
 const newStackRoute = createRoute({
   getParentRoute: () => appRoute,
@@ -53,7 +55,7 @@ const auditRoute = createRoute({ getParentRoute: () => appRoute, path: '/audit',
 const routeTree = rootRoute.addChildren([
   setupRoute,
   loginRoute,
-  appRoute.addChildren([overviewRoute, containersRoute, stacksRoute, newStackRoute, stackRoute, resourcesRoute, hostsRoute, accountRoute, auditRoute]),
+  appRoute.addChildren([overviewRoute, containersRoute, newContainerRoute, stacksRoute, newStackRoute, stackRoute, resourcesRoute, hostsRoute, accountRoute, auditRoute]),
 ])
 
 export const router = createRouter({ routeTree })

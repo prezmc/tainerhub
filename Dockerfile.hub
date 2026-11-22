@@ -18,12 +18,14 @@ COPY --from=web /src/web/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags "-s -w -X github.com/prezmc/tainerhub/internal/version.Version=${VERSION}" \
       -o /out/tainerhub ./cmd/tainerhub \
- && mkdir -p /out/data
+ && mkdir -p /out/data /out/share
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/tainerhub /tainerhub
 COPY --from=build --chown=65532:65532 /out/data /data
+# shared with the hub's own agent: the hub leaves its join token here
+COPY --from=build --chown=65532:65532 /out/share /share
 USER nonroot:nonroot
-VOLUME /data
+VOLUME /data /share
 EXPOSE 8585 7443
 ENTRYPOINT ["/tainerhub"]

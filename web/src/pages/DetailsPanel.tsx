@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Boxes, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, Tag, X, type LucideIcon } from 'lucide-react'
+import { Boxes, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, Tag, Trash2, X, type LucideIcon } from 'lucide-react'
 import { api, can, errorText, mem, timeAgo, type Container, type DetailResponse } from '../api'
 import { useContainerAction, useOpenLogs } from '../fleet'
 import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf } from '../ui'
@@ -65,6 +65,18 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
             {operator && (
               <Button icon={RotateCw} variant="primary" disabled={pendingId === container.id} onClick={() => run(container, 'restart')}>
                 Restart
+              </Button>
+            )}
+            {operator && (
+              <Button
+                icon={Trash2}
+                variant="dangerGhost"
+                disabled={pendingId === container.id}
+                onClick={async () => {
+                  if (await run(container, 'remove')) onClose()
+                }}
+              >
+                Remove
               </Button>
             )}
           </div>

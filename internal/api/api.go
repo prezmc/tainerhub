@@ -40,7 +40,8 @@ type Server struct {
 	AgentAddr string
 	Web       fs.FS // built React app (index.html at root)
 
-	jobs jobList // running and recently finished stack operations
+	jobs jobList  // running and recently finished stack operations
+	hub  hubCache // Docker Hub search and tag results
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -98,6 +99,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/stacks/{sid}/{action}", s.need("operator", s.stackAction))
 	// writing a compose file is root on the host: admins only (see stacks.go)
 	mux.Handle("POST /api/stacks", s.need("admin", s.createStack))
+	// Docker Hub lookups for the "New container" page (which creates a stack)
+	mux.Handle("GET /api/dockerhub/search", s.need("admin", s.hubSearch))
+	mux.Handle("GET /api/dockerhub/tags", s.need("admin", s.hubTags))
 	mux.Handle("PUT /api/stacks/{sid}", s.need("admin", s.updateStack))
 	mux.Handle("DELETE /api/stacks/{sid}", s.need("admin", s.deleteStack))
 

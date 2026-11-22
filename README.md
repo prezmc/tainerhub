@@ -21,6 +21,9 @@ Design doc: see the "TainerHub: A Portainer Alternative — Design" doc.
 | Postgres store with migrations, audit log | Done |
 | Web UI (Forest theme: green-black with a lime accent and clipped-corner "tag" buttons; Space Grotesk + Outfit): Overview with live fleet map, sortable by CPU / memory / name / status, attention card, top consumers and activity feed; Containers board grouped by host, stack or state; ⌘K command palette ("restart pihole"); live logs; hosts; passkeys; audit log | Done |
 | Container details (ports, mounts, networks, health-check history, restart policy, labels; environment values admin-only) | Done |
+| New container from Docker Hub: search, pick a version, set ports, environment and volumes; runs as a one-service stack you can edit later | Done |
+| Containers list: grouped by host, stack or state, sortable, with start, stop, restart, remove and logs on every row | Done |
+| The hub's own server is managed automatically (its compose file includes a self-enrolling agent) | Done |
 | Resources: images, volumes, networks across hosts with "used by", pull/update, remove, prune (volume deletion admin-only) | Done |
 | Live CPU and memory per container (sampled every 10 s by the agent, same formulas as `docker stats`) | Done |
 | Roles (owner/admin/operator/viewer) | Enforced by the API; only the owner account exists until user management lands |
@@ -82,9 +85,11 @@ docker exec tainerhub /tainerhub db-password
 docker exec tainerhub /tainerhub setup-link    # open http://<server IP>:8585 + what this prints
 ```
 
-### 2. Add your servers
+### 2. Add your other servers
 
-In TainerHub, go to **Hosts → Add host**, name the server, and copy the compose file it shows. On that server:
+The hub's own server is already there: the hub's compose file includes an agent that enrolls itself, so it appears under **Hosts** within a few seconds of starting.
+
+For each other server, go to **Hosts → Add host**, name the server, and copy the compose file it shows. On that server:
 
 ```bash
 mkdir -p ~/tainerhub-agent && cd ~/tainerhub-agent
@@ -92,7 +97,7 @@ nano compose.yml          # paste the file
 docker compose up -d
 ```
 
-The host turns green within seconds. Do this for every server, including the hub's own: the hub never touches the Docker socket itself. Agents connect to the hub on port 7443, so that port must be reachable from each server (the Add host dialog pre-fills the hub's address; change it if agents should use a different IP or name).
+The host turns green within seconds. (The hub never touches the Docker socket itself; every server, including its own, is managed through an agent.) Agents connect to the hub on port 7443, so that port must be reachable from each server (the Add host dialog pre-fills the hub's address; change it if agents should use a different IP or name).
 
 ### Updating
 

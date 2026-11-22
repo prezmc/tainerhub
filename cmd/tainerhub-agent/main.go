@@ -30,11 +30,12 @@ func main() {
 	docker := agent.NewSocketDocker(socket)
 	dataDir := envOr("TAINERHUB_DATA_DIR", "/data")
 	cfg := agent.Config{
-		HubAddr:   os.Getenv("TAINERHUB_HUB"),
-		JoinToken: os.Getenv("TAINERHUB_JOIN_TOKEN"),
-		DataDir:   dataDir,
-		Version:   version.Version,
-		Docker:    docker,
+		HubAddr:       os.Getenv("TAINERHUB_HUB"),
+		JoinToken:     os.Getenv("TAINERHUB_JOIN_TOKEN"),
+		JoinTokenFile: os.Getenv("TAINERHUB_JOIN_TOKEN_FILE"),
+		DataDir:       dataDir,
+		Version:       version.Version,
+		Docker:        docker,
 		Stacks: &agent.StackRunner{
 			// Must be mounted at the same path on the host (see deploy/agent/compose.yml).
 			Dir:        envOr("TAINERHUB_STACKS_DIR", "/opt/tainerhub/stacks"),
