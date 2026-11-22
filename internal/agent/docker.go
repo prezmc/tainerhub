@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -45,7 +46,8 @@ type Usage struct {
 // SocketDocker talks to the Docker Engine API over its Unix socket using only
 // the standard library (no Docker SDK dependency).
 type SocketDocker struct {
-	c *http.Client
+	c      *http.Client
+	socket string // path of the Docker socket inside this container
 }
 
 func NewSocketDocker(socketPath string) *SocketDocker {
@@ -57,15 +59,31 @@ func NewSocketDocker(socketPath string) *SocketDocker {
 		MaxIdleConns:    4,
 		IdleConnTimeout: 30 * time.Second,
 	}
-	return &SocketDocker{c: &http.Client{Transport: tr}}
+	return &SocketDocker{c: &http.Client{Transport: tr}, socket: socketPath}
 }
 
 func (d *SocketDocker) do(ctx context.Context, method, path string, q url.Values) (*http.Response, error) {
+	return d.doBody(ctx, method, path, q, nil)
+}
+
+// doBody is do with a JSON request body (nil for none).
+func (d *SocketDocker) doBody(ctx context.Context, method, path string, q url.Values, body any) (*http.Response, error) {
 	u := "http://docker" + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
+	if body != nil && err == nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if err != nil {
 		return nil, err
 	}

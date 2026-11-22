@@ -24,6 +24,7 @@ Design doc: see the "TainerHub: A Portainer Alternative — Design" doc.
 | New container from Docker Hub: search, pick a version, set ports, environment and volumes; runs as a one-service stack you can edit later | Done |
 | Containers list: grouped by host, stack or state, sortable, with start, stop, restart, remove and logs on every row | Done |
 | The hub's own server is managed automatically (its compose file includes a self-enrolling agent) | Done |
+| Update TainerHub from the UI (per server or everything at once), and collapsible sections on the Containers list | Done |
 | Resources: images, volumes, networks across hosts with "used by", pull/update, remove, prune (volume deletion admin-only) | Done |
 | Live CPU and memory per container (sampled every 10 s by the agent, same formulas as `docker stats`) | Done |
 | Roles (owner/admin/operator/viewer) | Enforced by the API; only the owner account exists until user management lands |
@@ -101,11 +102,11 @@ The host turns green within seconds. (The hub never touches the Docker socket it
 
 ### Updating
 
-When a new version is published (each green CI run on `main` publishes `ghcr.io/prezmc/tainerhub` and `ghcr.io/prezmc/tainerhub-agent`), run this in `~/tainerhub` and in each `~/tainerhub-agent`:
+Each green CI run on `main` publishes new images. TainerHub checks GitHub for the newest one, and admins see it at the top of **Hosts**: click **Update** for one server, or **Update everything** (other servers first, the hub's own server last; the page reconnects by itself when the hub is back). Only TainerHub's containers are recreated; your other containers aren't touched.
 
-```bash
-docker compose pull && docker compose up -d
-```
+How it works: each server's agent starts a short-lived helper container that runs `docker compose up -d --pull always` for the compose project the agent belongs to (`~/tainerhub-agent`, or `~/tainerhub` on the hub's server, which updates the hub too), then removes itself.
+
+By hand, if you ever need to: `docker compose pull && docker compose up -d` in `~/tainerhub` and in each `~/tainerhub-agent`.
 
 ### Later: HTTPS and passkeys (optional)
 

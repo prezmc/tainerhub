@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/prezmc/tainerhub/internal/wire"
 )
@@ -50,6 +54,8 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 	case wire.OpContainerRemoveVolumes:
 		names, _ := wire.RemoveVolumeNames(op.Arg) // validated above
 		return d.removeWithVolumes(ctx, op.Target, names)
+	case wire.OpSelfUpdate:
+		return d.selfUpdate(ctx)
 	case wire.OpNetworksPrune:
 		return d.prune(ctx, "/networks/prune", nil, "NetworksDeleted")
 	}
@@ -435,4 +441,80 @@ func isAnonymousVolume(name string) bool {
 		}
 	}
 	return true
+}
+
+// selfUpdate updates the Docker Compose project this agent runs in. A
+// container can't recreate itself, so it starts a short-lived helper (its own
+// image, which includes docker compose) that runs `compose up -d --pull
+// always` for the project and removes itself when done. On the hub's server
+// the project is the hub's, so the hub, its database and this agent are all
+// brought up to date.
+func (d *SocketDocker) selfUpdate(ctx context.Context) (wire.SelfUpdateResult, error) {
+	var res wire.SelfUpdateResult
+	self, _ := os.Hostname() // Docker sets it to the container ID unless overridden
+	if !wire.ValidContainerRef(self) {
+		return res, errors.New("can't identify this agent's container")
+	}
+	var insp struct {
+		Config struct {
+			Image  string
+			Labels map[string]string
+		}
+		Mounts []struct{ Source, Destination string }
+	}
+	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(self)+"/json", nil, &insp); err != nil {
+		return res, fmt.Errorf("can't find this agent's own container (was its hostname changed?): %w", err)
+	}
+	l := insp.Config.Labels
+	project, dir, files := l["com.docker.compose.project"], l["com.docker.compose.project.working_dir"], l["com.docker.compose.project.config_files"]
+	if project == "" || dir == "" || files == "" {
+		return res, errors.New("this agent wasn't started with docker compose, so it can't update itself; on the server run: docker compose pull && docker compose up -d")
+	}
+	hostSocket := "/var/run/docker.sock"
+	for _, m := range insp.Mounts {
+		if m.Destination == d.socket {
+			hostSocket = m.Source
+		}
+	}
+	cmd := []string{"--project-name", project, "--project-directory", dir}
+	binds := []string{hostSocket + ":/var/run/docker.sock", dir + ":" + dir + ":ro"}
+	for _, f := range strings.Split(files, ",") {
+		cmd = append(cmd, "--file", f)
+		if fd := filepath.Dir(f); fd != dir && !strings.HasPrefix(fd, dir+"/") {
+			binds = append(binds, fd+":"+fd+":ro")
+		}
+	}
+	cmd = append(cmd, "up", "--detach", "--pull", "always")
+
+	res.Project, res.Dir = project, dir
+	res.Helper = fmt.Sprintf("tainerhub-updater-%d", time.Now().Unix())
+	spec := map[string]any{
+		"Image":      insp.Config.Image,
+		"Entrypoint": []string{"/usr/local/bin/docker-compose"},
+		"Cmd":        cmd,
+		"Env":        []string{"DOCKER_HOST=unix:///var/run/docker.sock", "HOME=/tmp", "DOCKER_CONFIG=/tmp/docker", "COMPOSE_ANSI=never"},
+		"WorkingDir": dir,
+		"Labels":     map[string]string{"tainerhub.updater": project},
+		"HostConfig": map[string]any{
+			"Binds":       binds,
+			"AutoRemove":  true,
+			"Tmpfs":       map[string]string{"/tmp": ""},
+			"SecurityOpt": []string{"no-new-privileges:true"},
+		},
+	}
+	resp, err := d.doBody(ctx, http.MethodPost, "/containers/create", url.Values{"name": {res.Helper}}, spec)
+	if err != nil {
+		return res, fmt.Errorf("start the updater: %w", err)
+	}
+	var created struct {
+		ID string `json:"Id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&created)
+	resp.Body.Close()
+	resp, err = d.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(created.ID)+"/start", nil)
+	if err != nil {
+		return res, fmt.Errorf("start the updater: %w", err)
+	}
+	resp.Body.Close()
+	return res, nil
 }
