@@ -240,11 +240,16 @@ function Section({ icon: Icon, title, right, children, collapsible }: { icon: Lu
   const [open, setOpen] = useState(!collapsible)
   return (
     <section className="rounded-md bg-white/[0.04] p-4 ring-1 ring-white/10">
-      <button disabled={!collapsible} onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 text-left">
-        <Icon className="size-4 text-lime-300" />
-        <h3 className="font-display font-bold text-white">{title}</h3>
-        <span className="ml-auto">{right ?? (collapsible && <span className="text-xs text-ink-100/50">{open ? 'hide' : 'show'}</span>)}</span>
-      </button>
+      {/* The header's own controls (e.g. "Show values") sit beside the toggle,
+          not inside it: clicks inside a disabled button never fire. */}
+      <div className="flex w-full items-center gap-2">
+        <button disabled={!collapsible} onClick={() => setOpen((o) => !o)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <Icon className="size-4 shrink-0 text-lime-300" />
+          <h3 className="font-display font-bold text-white">{title}</h3>
+          {!right && collapsible && <span className="ml-auto text-xs text-ink-100/50">{open ? 'hide' : 'show'}</span>}
+        </button>
+        {right && <span className="shrink-0">{right}</span>}
+      </div>
       {open && <div className="mt-3">{children}</div>}
     </section>
   )

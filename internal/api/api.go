@@ -42,10 +42,11 @@ type Server struct {
 
 	DataDir string // hub's data folder: knows which host is the hub's own server
 
-	jobs   jobList     // running and recently finished stack operations
-	hub    hubCache    // Docker Hub search and tag results
-	latest latestCache // newest published version
-	execs  execList    // open terminals
+	jobs         jobList           // running and recently finished stack operations
+	hub          hubCache          // Docker Hub search and tag results
+	latest       latestCache       // newest published version
+	dockerLatest dockerLatestCache // newest Docker Engine release
+	execs        execList          // open terminals
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -140,6 +141,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/exec/{sid}/resize", s.need("admin", s.execResize))
 	mux.Handle("DELETE /api/exec/{sid}", s.need("admin", s.execClose))
 	mux.Handle("POST /api/hosts/{id}/update", s.need("admin", s.updateHost))
+	// Docker Engine upgrades restart every container: admins, with explicit confirmation
+	mux.Handle("POST /api/hosts/{id}/docker/plan", s.need("admin", s.dockerPlan))
+	mux.Handle("POST /api/hosts/{id}/docker/upgrade", s.need("admin", s.dockerUpgrade))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { jsonErr(w, http.StatusNotFound, "not found") })
 	mux.Handle("/", s.spa())
