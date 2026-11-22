@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowDown, Boxes, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
-import { api, can, isUnhealthy, mem, type Container, type Host } from '../api'
+import { ArrowDown, Boxes, X, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
+import { api, can, hostAddress, isUnhealthy, mem, publishedPort, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, useOpenTerminal, type Action, type SortKey } from '../fleet'
 import { Button, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
 import { useMe } from './AppLayout'
@@ -46,7 +46,10 @@ export function ContainersPage() {
   const me = useMe()
   const navigate = useNavigate()
   const { containers, hosts } = useFleet()
-  const [view, setView] = useState<View>('all')
+  const search = useSearch({ strict: false }) as { host?: string; view?: string }
+  const views: View[] = ['all', 'running', 'stopped', 'issues', 'updates']
+  const [view, setView] = useState<View>(views.includes(search.view as View) ? (search.view as View) : 'all')
+  const onlyHost = hosts.find((h) => h.id === search.host)
   const [group, setGroup] = useState<Group>(() => loadPref('th.group', ['host', 'stack', 'state'] as const, 'host'))
   const [sort, setSort] = useState<SortKey>(() => loadPref('th.csort', ['status', 'name', 'cpu', 'memory'] as const, 'status'))
   const [q, setQ] = useState('')
@@ -54,18 +57,20 @@ export function ContainersPage() {
   const operator = can(me.user, 'operator')
   const admin = can(me.user, 'admin')
 
+  const scoped = onlyHost ? containers.filter((c) => c.hostId === onlyHost.id) : containers
   const counts = {
-    all: containers.length,
-    running: containers.filter((c) => c.state === 'running').length,
-    stopped: containers.filter((c) => c.state !== 'running').length,
-    issues: containers.filter(isUnhealthy).length,
-    updates: containers.filter((c) => c.update).length,
+    all: scoped.length,
+    running: scoped.filter((c) => c.state === 'running').length,
+    stopped: scoped.filter((c) => c.state !== 'running').length,
+    issues: scoped.filter(isUnhealthy).length,
+    updates: scoped.filter((c) => c.update).length,
   }
 
   const sections = useMemo<Section[]>(() => {
     const f = q.trim().toLowerCase()
     const list = containers
       .filter((c) => {
+        if (onlyHost && c.hostId !== onlyHost.id) return false
         if (view === 'running' && c.state !== 'running') return false
         if (view === 'stopped' && c.state === 'running') return false
         if (view === 'issues' && !isUnhealthy(c)) return false
@@ -74,10 +79,10 @@ export function ContainersPage() {
       })
       .sort(sortFns[sort])
     if (group === 'host') {
-      return hosts.map((h) => ({
+      return hosts.filter((h) => !onlyHost || h.id === onlyHost.id).map((h) => ({
         key: 'host:' + h.id,
         title: h.name,
-        subtitle: h.online && h.hello ? `${h.hello.os} · ${h.hello.ncpu} cores · ${mem(h.hello.mem_total)}` : 'offline',
+        subtitle: h.online && h.hello ? [hostAddress(h), h.hello.os, `${h.hello.ncpu} cores`, mem(h.hello.mem_total)].filter(Boolean).join(' · ') : 'offline',
         items: list.filter((c) => c.hostId === h.id),
         host: h,
         accent: h.online ? 'bg-lime-400' : 'bg-ink-600',
@@ -102,7 +107,7 @@ export function ContainersPage() {
       ['stopped', 'Stopped and paused', 'bg-ink-500', (c) => c.state !== 'running' && !isUnhealthy(c)],
     ]
     return states.map(([key, title, accent, fn]) => ({ key: 'state:' + key, title, subtitle: '', items: list.filter(fn), accent })).filter((s) => s.items.length > 0)
-  }, [containers, hosts, view, group, q, sort])
+  }, [containers, hosts, view, group, q, sort, onlyHost])
 
   const pickSort = (k: SortKey) => {
     setSort(k)
@@ -143,6 +148,16 @@ export function ContainersPage() {
             <span className="tabular-nums opacity-80">{counts[k]}</span>
           </button>
         ))}
+        {onlyHost && (
+          <button
+            onClick={() => navigate({ to: '/containers', search: {} })}
+            title="Show all hosts"
+            className="flex items-center gap-1.5 rounded-[2px] bg-lime-400/10 px-3 py-1.5 font-display text-[12px] font-semibold uppercase tracking-[0.08em] text-lime-200 ring-1 ring-inset ring-lime-400/40 hover:bg-lime-400/20"
+          >
+            Host: {onlyHost.name}
+            <X className="size-3.5" />
+          </button>
+        )}
         <div className="ml-auto flex flex-wrap items-center gap-2.5">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-100/50" />
@@ -247,6 +262,8 @@ function stateLabel(c: Container) {
 
 function Row({ c, operator, showHost }: { c: Container; operator: boolean; showHost: boolean }) {
   const navigate = useNavigate()
+  const { hosts } = useFleet()
+  const host = hosts.find((h) => h.id === c.hostId)
   const openLogs = useOpenLogs()
   const openTerminal = useOpenTerminal()
   const admin = can(useMe().user, 'admin')
@@ -290,7 +307,19 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
         )}
       </div>
       <div className="mono hidden truncate text-xs text-ink-100/70 md:block" title={ports.join(', ')}>
-        {ports.length === 0 ? <span className="text-ink-100/30">–</span> : ports.slice(0, 2).join(', ') + (ports.length > 2 ? ` +${ports.length - 2}` : '')}
+        {ports.length === 0 ? (
+          <span className="text-ink-100/30">–</span>
+        ) : (
+          <>
+            {ports.slice(0, 2).map((p, i) => (
+              <span key={p}>
+                {i > 0 && ', '}
+                <PortLink port={p} host={host} />
+              </span>
+            ))}
+            {ports.length > 2 && ` +${ports.length - 2}`}
+          </>
+        )}
       </div>
       <div className="hidden min-w-0 md:block">
         <div className={cx('font-mono text-[11px] uppercase', bad ? 'text-rose-300' : running ? 'text-emerald-300' : paused ? 'text-amber-300' : 'text-ink-100/50')}>{stateLabel(c)}</div>
@@ -363,5 +392,17 @@ function CheckUpdatesButton({ hosts }: { hosts: Host[] }) {
     <Button icon={RefreshCw} loading={busy} onClick={run} title="Ask each host's registry for newer images now (also happens every 6 hours)">
       Check for updates
     </Button>
+  )
+}
+
+/** A published port as a link to http://<host>:<port>. */
+export function PortLink({ port, host }: { port: string; host?: Host }) {
+  const addr = hostAddress(host)
+  const pub = publishedPort(port)
+  if (!addr || !pub) return <>{port}</>
+  return (
+    <a href={`http://${addr.includes(':') ? `[${addr}]` : addr}:${pub}`} target="_blank" rel="noreferrer" className="hover:text-lime-200 hover:underline" title={`Open http://${addr}:${pub}`}>
+      {port}
+    </a>
   )
 }

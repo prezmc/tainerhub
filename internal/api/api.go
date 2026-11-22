@@ -449,6 +449,8 @@ func (s *Server) regenRecovery(w http.ResponseWriter, r *http.Request) {
 type hostView struct {
 	store.Host
 	Online     bool        `json:"online"`
+	Address    string      `json:"address,omitempty"` // IP its agent connects from
+	HubHost    bool        `json:"hubHost,omitempty"` // also runs the hub (its agent connects internally)
 	Hello      *wire.Hello `json:"hello,omitempty"`
 	Containers int         `json:"containers"`
 	Running    int         `json:"running"`
@@ -471,11 +473,13 @@ func (s *Server) hostViews(ctx context.Context) ([]hostView, error) {
 		return nil, err
 	}
 	out := make([]hostView, 0, len(hs))
+	local := s.localHostID()
 	for _, h := range hs {
-		v := hostView{Host: h}
+		v := hostView{Host: h, HubHost: h.ID == local}
 		if a := s.Reg.Get(h.ID); a != nil {
 			st := a.Status()
 			v.Online = true
+			v.Address = a.RemoteIP
 			v.Hello = st.Hello
 			v.Containers = len(st.Containers)
 			if !st.SnapshotAt.IsZero() {

@@ -35,7 +35,16 @@ const setupRoute = createRoute({ getParentRoute: () => rootRoute, path: '/setup'
 const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login', component: LoginPage })
 const appRoute = createRoute({ getParentRoute: () => rootRoute, id: 'app', component: AppLayout })
 const overviewRoute = createRoute({ getParentRoute: () => appRoute, path: '/', component: OverviewPage })
-const containersRoute = createRoute({ getParentRoute: () => appRoute, path: '/containers', component: ContainersPage })
+const containersRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/containers',
+  component: ContainersPage,
+  // ?host=<id> shows one host; ?view=running|stopped|issues|updates picks the filter
+  validateSearch: (s: Record<string, unknown>): { host?: string; view?: string } => ({
+    host: typeof s.host === 'string' ? s.host : undefined,
+    view: typeof s.view === 'string' ? s.view : undefined,
+  }),
+})
 const resourcesRoute = createRoute({ getParentRoute: () => appRoute, path: '/resources', component: ResourcesPage })
 const newContainerRoute = createRoute({ getParentRoute: () => appRoute, path: '/containers/new', component: NewContainerPage })
 const stacksRoute = createRoute({

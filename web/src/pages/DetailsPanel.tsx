@@ -4,6 +4,8 @@ import { Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw
 import { api, can, errorText, mem, timeAgo, type Container, type DetailResponse } from '../api'
 import { useContainerAction, useOpenLogs, useOpenTerminal } from '../fleet'
 import { StackLink } from '../stacks'
+import { PortLink } from './Containers'
+import { useFleet } from '../fleet'
 import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf } from '../ui'
 import { useMe } from './AppLayout'
 
@@ -12,6 +14,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
   const me = useMe()
   const openLogs = useOpenLogs()
   const { run, pendingId } = useContainerAction()
+  const host = useFleet().hosts.find((h) => h.id === container.hostId)
   const q = useQuery({
     queryKey: ['inspect', container.hostId, container.id],
     queryFn: () => api<DetailResponse>(`/api/hosts/${container.hostId}/containers/${encodeURIComponent(container.id)}`),
@@ -152,7 +155,13 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                   <div className="mb-3 flex flex-wrap gap-1.5">
                     {d.ports.map((p, i) => (
                       <span key={i} className="mono rounded-[3px] bg-lime-400/10 px-2 py-1 text-xs text-lime-200 ring-1 ring-lime-400/25">
-                        {p.host ? `${p.host} → ` : ''}
+                        {p.host ? (
+                          <>
+                            <PortLink port={p.host} host={host} /> →{' '}
+                          </>
+                        ) : (
+                          ''
+                        )}
                         {p.container}
                       </span>
                     ))}

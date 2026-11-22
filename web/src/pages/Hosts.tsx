@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Clock, Cpu, Ellipsis, KeyRound, Layers, MemoryStick, Pencil, Plus, Server, ShieldCheck, Trash2 } from 'lucide-react'
-import { api, bytes, can, errorText, stackProblem, timeAgo, type Host, type JoinTokenResponse } from '../api'
+import { api, bytes, can, errorText, hostAddress, stackProblem, timeAgo, type Host, type JoinTokenResponse } from '../api'
 import { Badge, Button, Card, CopyButton, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, PageHeader, StatusDot, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { UpdatesCard } from './Updates'
@@ -181,11 +182,13 @@ function HostCard({ h, admin, onToken, onRemove, onRename }: { h: Host; admin: b
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h2 className="truncate text-base font-semibold text-white">{h.name}</h2>
+            <Link to="/containers" search={{ host: h.id }} className="min-w-0 hover:text-lime-200 hover:underline" title={`Show ${h.name}'s containers`}>
+              <h2 className="truncate text-base font-semibold text-white hover:text-lime-200">{h.name}</h2>
+            </Link>
             <StatusDot tone={h.online ? 'good' : 'idle'} pulse={h.online} />
           </div>
           <p className="truncate text-xs text-ink-100/50">
-            {h.hello ? `${h.hello.os} · ${h.hello.arch}` : h.enrolledAt ? `Last seen ${timeAgo(h.lastSeenAt)}` : 'Waiting for its agent to connect'}
+            {h.hello ? [hostAddress(h), h.hello.os, h.hello.arch].filter(Boolean).join(' · ') : h.enrolledAt ? `Last seen ${timeAgo(h.lastSeenAt)}` : 'Waiting for its agent to connect'}
           </p>
         </div>
         {admin && (
@@ -203,13 +206,19 @@ function HostCard({ h, admin, onToken, onRemove, onRename }: { h: Host; admin: b
       {h.online && h.hello ? (
         <>
           <div className="mt-5 flex items-center gap-4">
-            <Ring pct={pct} />
+            <Link to="/containers" search={{ host: h.id }} title={`Show ${h.name}'s containers`} className="rounded-full transition hover:brightness-125">
+              <Ring pct={pct} />
+            </Link>
             <div className="space-y-1 text-sm">
               <div>
-                <span className="font-semibold tabular-nums text-white">{h.running}</span> <span className="text-ink-100/60">running</span>
+                <Link to="/containers" search={{ host: h.id, view: 'running' }} className="hover:underline">
+                  <span className="font-semibold tabular-nums text-white">{h.running}</span> <span className="text-ink-100/60">running</span>
+                </Link>
               </div>
               <div className="text-ink-100/50">
-                <span className="tabular-nums">{stopped}</span> stopped
+                <Link to="/containers" search={{ host: h.id, view: 'stopped' }} className="hover:text-white hover:underline">
+                  <span className="tabular-nums">{stopped}</span> stopped
+                </Link>
                 {h.unhealthy > 0 && (
                   <Badge tone="bad" className="ml-2">
                     {h.unhealthy} unhealthy

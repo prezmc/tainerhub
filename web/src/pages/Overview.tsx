@@ -142,7 +142,9 @@ function Rack({ host, containers, sort }: { host: Host; containers: Container[];
   return (
     <div className={cx('rounded-md bg-white/[0.04] p-4 ring-1 ring-white/10', !host.online && 'opacity-60')}>
       <div className="flex items-center justify-between gap-2">
-        <span className="truncate font-display text-base font-bold text-white">{host.name}</span>
+        <Link to="/containers" search={{ host: host.id }} className="truncate font-display text-base font-bold text-white hover:text-lime-200 hover:underline" title={`Show ${host.name}'s containers`}>
+          {host.name}
+        </Link>
         <span
           className={cx(
             'shrink-0 rounded-[2px] px-1.5 py-[3px] font-mono text-[10.5px] font-medium uppercase leading-none tracking-wider',
