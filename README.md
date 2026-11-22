@@ -24,7 +24,8 @@ Design doc: see the "TainerHub: A Portainer Alternative — Design" doc.
 | Resources: images, volumes, networks across hosts with "used by", pull/update, remove, prune (volume deletion admin-only) | Done |
 | Live CPU and memory per container (sampled every 10 s by the agent, same formulas as `docker stats`) | Done |
 | Roles (owner/admin/operator/viewer) | Enforced by the API; only the owner account exists until user management lands |
-| Not yet: compose stacks, exec console, user invites, password + TOTP fallback, agent cert auto-renewal (certs last 1 year), private registries, metrics history, alerts | Phases 2 to 4 |
+| Compose stacks: create, edit and deploy compose files per host from the browser, with streamed output; start / stop / restart / down / pull & redeploy; projects started outside TainerHub are listed and can be taken over (see below) | Done; agent side tested against a real Docker Engine |
+| Not yet: exec console, user invites, password + TOTP fallback, agent cert auto-renewal (certs last 1 year), private registries, metrics history, alerts | Phases 2 to 4 |
 
 ## How it fits together
 
@@ -108,12 +109,27 @@ Add a proxy host:
 3. On that server: save it as `compose.yml` and run `docker compose up -d`. The host turns green within seconds.
 4. Repeat for every server, **including Server 1**: the hub never touches the Docker socket itself.
 
+The agent's compose file mounts `/opt/tainerhub/stacks` from the host at the **same path** inside the agent. That is where compose stacks live (see below); keep the path identical on both sides.
+
 Agents need to reach `tainerhub.example.com:7443` over the LAN or VPN. If they connect by IP instead, add the IP to `TAINERHUB_AGENT_SANS` on the hub and use `IP:7443` as `TAINERHUB_HUB`.
+
+## Compose stacks
+
+**Stacks** holds compose files that TainerHub deploys to one host each. The hub stores the compose file and `.env` in Postgres. When a stack is deployed, the agent writes them to `/opt/tainerhub/stacks/<name>/` on the host and runs the official `docker compose` binary that ships in the agent image. Output streams live to the browser. A deploy keeps running if you close the tab or the hub connection drops, and the result is written to the audit log.
+
+- **Who can do what.** Viewers see every stack's status and containers. Operators can deploy, pull & redeploy, start, stop, restart and take down stacks an admin has saved. Only admins can read or edit compose files and `.env`, or create and delete stacks. A compose file can mount the host's disks or run privileged containers, so writing one amounts to root on that host.
+- **Same-path mount.** Compose resolves relative bind mounts such as `./data` against the stack folder, and the Docker daemon then looks that path up on the host. So the folder must be mounted at the same path on both sides: `/opt/tainerhub/stacks:/opt/tainerhub/stacks`. The agent checks this at startup and reports any problem on the Hosts page.
+- **Updating existing agents.** Agents set up before stacks need the new volume and the new image. Add `- /opt/tainerhub/stacks:/opt/tainerhub/stacks` under the agent's `volumes:`, then run `docker compose pull && docker compose up -d`.
+- **Safe edits.** Each deploy runs `docker compose config` on the new file first, so an invalid file never replaces a working one. Edits can be saved without deploying; the stack then shows "changes not deployed". If two admins edit at once, the second save is refused instead of overwriting the first.
+- **Deleting** runs `docker compose down` and removes `compose.yaml` and `.env` from the host. Named volumes are deleted only if you tick the box. Anything else in the stack folder, such as bind-mounted data, is left in place. **Remove from TainerHub only** forgets a stack without touching the host (for hosts that are gone).
+- **Taking over existing projects.** Compose projects started by hand show up under "Started outside TainerHub". **Manage in TainerHub** opens a new stack with the same name: paste its compose file and deploy. Compose recreates the containers from the new file and keeps their named volumes. Relative bind mounts now point into `/opt/tainerhub/stacks/<name>/`, so move that data there first.
+- **Limits.** `build:` sections aren't supported yet (no build context on the host), and neither are private registries. `.env` is stored in plain text in Postgres, alongside the hub's other secrets: back up and protect the database like the `/data` volume.
 
 ## Development
 
 ```bash
 make test          # Go tests (needs Go 1.26+)
+TAINERHUB_REAL_DOCKER=1 DOCKER_SOCKET=/var/run/docker.sock go test ./internal/agent -run Real   # stack lifecycle against a real Docker Engine
 make agent         # bin/tainerhub-agent
 make hub           # builds the UI, then bin/tainerhub with the UI embedded
 cd web && npm run dev   # UI on :5173, proxying /api to a hub on :8080

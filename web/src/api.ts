@@ -7,9 +7,11 @@ import {
 
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) {
+  data: Record<string, unknown>
+  constructor(message: string, status: number, data: Record<string, unknown> = {}) {
     super(message)
     this.status = status
+    this.data = data
   }
 }
 
@@ -23,7 +25,7 @@ export async function api<T = unknown>(path: string, opts: { method?: string; bo
   })
   if (res.status === 204) return undefined as T
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new ApiError((data as { error?: string }).error ?? res.statusText, res.status)
+  if (!res.ok) throw new ApiError((data as { error?: string }).error ?? res.statusText, res.status, data as Record<string, unknown>)
   return data as T
 }
 
@@ -58,6 +60,8 @@ export interface Hello {
   ncpu: number
   mem_total: number
   agent_version: string
+  /** Missing on agents older than stack support. */
+  stacks?: { dir: string; compose_version?: string; error?: string }
 }
 
 export interface Host {
@@ -251,4 +255,63 @@ export function size(n: number): string {
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), u.length - 1)
   return `${(n / 1024 ** i).toFixed(i >= 2 ? 1 : 0)} ${u[i]}`
+}
+
+// ---- compose stacks ----
+
+export type StackStatus = 'running' | 'partial' | 'stopped' | 'down' | 'not deployed' | 'unknown'
+export type StackAction = 'deploy' | 'pull' | 'start' | 'stop' | 'restart' | 'down'
+
+export interface StackSummary {
+  /** Missing for compose projects TainerHub doesn't manage. */
+  id?: string
+  name: string
+  hostId: string
+  hostName: string
+  managed: boolean
+  online: boolean
+  status: StackStatus
+  containers: number
+  running: number
+  unhealthy: number
+  updatedAt?: string
+  updatedBy?: string
+  deployedAt?: string
+  /** Saved changes that haven't been deployed yet. */
+  pending: boolean
+  job?: { id: string; action: string }
+}
+
+export interface Stack {
+  id: string
+  hostId: string
+  name: string
+  compose: string
+  env: string
+  createdAt: string
+  updatedAt: string
+  updatedBy: string
+  deployedAt: string | null
+}
+
+export interface StackDetail {
+  stack: Stack
+  summary: StackSummary
+  /** Only admins can read compose files and .env (they often hold passwords). */
+  filesVisible: boolean
+}
+
+export interface StackSaveResult {
+  stack: Stack
+  jobId?: string
+  deployError?: string
+}
+
+/** Why a host can't run stacks, or null if it can. */
+export function stackProblem(h: Host | undefined): string | null {
+  if (!h) return 'Unknown host.'
+  if (!h.online || !h.hello) return `${h.name} is offline.`
+  if (!h.hello.stacks) return `The agent on ${h.name} is too old for stacks. Update it to the latest tainerhub-agent image.`
+  if (h.hello.stacks.error) return h.hello.stacks.error
+  return null
 }

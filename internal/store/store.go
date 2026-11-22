@@ -490,3 +490,91 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) 
 	}
 	return out, rows.Err()
 }
+
+// ---------------- stacks ----------------
+
+type Stack struct {
+	ID           string     `json:"id"`
+	HostID       string     `json:"hostId"`
+	Name         string     `json:"name"`
+	Compose      string     `json:"compose"`
+	Env          string     `json:"env"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
+	UpdatedBy    string     `json:"updatedBy"`
+	DeployedAt   *time.Time `json:"deployedAt"`
+	DeployedHash string     `json:"-"`
+}
+
+const stackCols = `id::text, host_id::text, name, compose, env, created_at, updated_at, updated_by, deployed_at, deployed_hash`
+
+func scanStack(row pgx.Row) (Stack, error) {
+	var st Stack
+	err := row.Scan(&st.ID, &st.HostID, &st.Name, &st.Compose, &st.Env, &st.CreatedAt, &st.UpdatedAt, &st.UpdatedBy, &st.DeployedAt, &st.DeployedHash)
+	return st, notFound(err)
+}
+
+func (s *Store) ListStacks(ctx context.Context) ([]Stack, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+stackCols+` FROM stacks ORDER BY name, host_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Stack
+	for rows.Next() {
+		st, err := scanStack(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetStack(ctx context.Context, id string) (Stack, error) {
+	return scanStack(s.db.QueryRow(ctx, `SELECT `+stackCols+` FROM stacks WHERE id = $1::uuid`, id))
+}
+
+// CreateStack returns ErrConflict if the host already has a stack with that name.
+func (s *Store) CreateStack(ctx context.Context, st Stack) (Stack, error) {
+	out, err := scanStack(s.db.QueryRow(ctx,
+		`INSERT INTO stacks (host_id, name, compose, env, updated_by) VALUES ($1::uuid, $2, $3, $4, $5) RETURNING `+stackCols,
+		st.HostID, st.Name, st.Compose, st.Env, st.UpdatedBy))
+	if isUniqueViolation(err) {
+		return Stack{}, ErrConflict
+	}
+	return out, err
+}
+
+// ErrStale means the stack changed since the caller loaded it.
+var ErrStale = errors.New("stack was changed by someone else")
+
+// UpdateStack saves new contents if the stack still has the updated_at the
+// caller loaded (optimistic locking), so two editors can't silently
+// overwrite each other.
+func (s *Store) UpdateStack(ctx context.Context, id, compose, env, by string, loadedAt time.Time) (Stack, error) {
+	st, err := scanStack(s.db.QueryRow(ctx,
+		`UPDATE stacks SET compose = $2, env = $3, updated_by = $4, updated_at = now()
+		 WHERE id = $1::uuid AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', $5::timestamptz) RETURNING `+stackCols,
+		id, compose, env, by, loadedAt))
+	if errors.Is(err, ErrNotFound) {
+		if _, gerr := s.GetStack(ctx, id); gerr == nil {
+			return Stack{}, ErrStale
+		}
+	}
+	return st, err
+}
+
+// MarkStackDeployed records a successful deploy of the contents with this hash.
+func (s *Store) MarkStackDeployed(ctx context.Context, id, hash string) error {
+	_, err := s.db.Exec(ctx, `UPDATE stacks SET deployed_at = now(), deployed_hash = $2 WHERE id = $1::uuid`, id, hash)
+	return err
+}
+
+func (s *Store) DeleteStack(ctx context.Context, id string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM stacks WHERE id = $1::uuid`, id)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
+}

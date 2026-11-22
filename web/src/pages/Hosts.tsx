@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Clock, Cpu, Ellipsis, KeyRound, MemoryStick, Plus, Server, ShieldCheck, Trash2 } from 'lucide-react'
-import { api, bytes, can, errorText, timeAgo, type Host, type JoinTokenResponse } from '../api'
+import { Clock, Cpu, Ellipsis, KeyRound, Layers, MemoryStick, Plus, Server, ShieldCheck, Trash2 } from 'lucide-react'
+import { api, bytes, can, errorText, stackProblem, timeAgo, type Host, type JoinTokenResponse } from '../api'
 import { Badge, Button, Card, CopyButton, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, PageHeader, StatusDot, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
 
@@ -44,7 +44,7 @@ export function HostsPage() {
   const askRemove = async (h: Host) => {
     const ok = await confirm({
       title: `Remove ${h.name}?`,
-      body: 'Its agent is disconnected immediately and its certificate stops working. Containers on the host keep running. To add it back, create the host again and re-run the agent.',
+      body: 'Its agent is disconnected immediately and its certificate stops working. Containers on the host keep running, but the stacks TainerHub saved for it are deleted from TainerHub. To add it back, create the host again and re-run the agent.',
       confirm: 'Remove host',
       danger: true,
     })
@@ -164,6 +164,12 @@ function HostCard({ h, admin, onToken, onRemove }: { h: Host; admin: boolean; on
             <Fact icon={MemoryStick} tint="text-purple-400" label="Memory" value={bytes(h.hello.mem_total)} />
             <Fact icon={ShieldCheck} tint="text-emerald-400" label="Docker" value={h.hello.docker_version} />
           </dl>
+          {stackProblem(h) && (
+            <p className="mt-4 flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100 ring-1 ring-inset ring-amber-500/20">
+              <Layers className="mt-0.5 size-3.5 shrink-0" />
+              <span>Stacks unavailable: {stackProblem(h)}</span>
+            </p>
+          )}
         </>
       ) : (
         <div className="mt-5 flex items-center gap-2 rounded-lg bg-white/[0.03] px-3 py-2.5 text-xs text-indigo-100/60 ring-1 ring-inset ring-white/[0.06]">

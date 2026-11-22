@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -25,13 +26,24 @@ func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel()}))
 	slog.SetDefault(log)
 
+	socket := envOr("DOCKER_SOCKET", "/var/run/docker.sock")
+	docker := agent.NewSocketDocker(socket)
+	dataDir := envOr("TAINERHUB_DATA_DIR", "/data")
 	cfg := agent.Config{
 		HubAddr:   os.Getenv("TAINERHUB_HUB"),
 		JoinToken: os.Getenv("TAINERHUB_JOIN_TOKEN"),
-		DataDir:   envOr("TAINERHUB_DATA_DIR", "/data"),
+		DataDir:   dataDir,
 		Version:   version.Version,
-		Docker:    agent.NewSocketDocker(envOr("DOCKER_SOCKET", "/var/run/docker.sock")),
-		Log:       log,
+		Docker:    docker,
+		Stacks: &agent.StackRunner{
+			// Must be mounted at the same path on the host (see deploy/agent/compose.yml).
+			Dir:        envOr("TAINERHUB_STACKS_DIR", "/opt/tainerhub/stacks"),
+			Bin:        envOr("TAINERHUB_COMPOSE_BIN", "/usr/local/bin/docker-compose"),
+			Socket:     socket,
+			WorkDir:    filepath.Join(dataDir, "compose"),
+			CheckMount: docker.CheckSameMount,
+		},
+		Log: log,
 	}
 	a, err := agent.New(cfg)
 	if err != nil {

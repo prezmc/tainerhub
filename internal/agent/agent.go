@@ -31,6 +31,7 @@ type Config struct {
 	DataDir   string // stores agent.crt, agent.key, ca.crt
 	Version   string
 	Docker    Docker
+	Stacks    *StackRunner // nil: compose stacks are not available on this agent
 	Log       *slog.Logger
 
 	SnapshotEvery time.Duration // default 30s
@@ -49,8 +50,9 @@ func Healthy(dataDir string, maxAge time.Duration) bool {
 }
 
 type Agent struct {
-	cfg Config
-	log *slog.Logger
+	cfg  Config
+	log  *slog.Logger
+	root context.Context // lives for the whole Run, across reconnects
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -88,6 +90,7 @@ func (a *Agent) path(name string) string { return filepath.Join(a.cfg.DataDir, n
 
 // Run enrolls if needed, then connects and reconnects until ctx ends.
 func (a *Agent) Run(ctx context.Context) error {
+	a.root = ctx
 	creds, err := a.loadCreds()
 	if err != nil {
 		if a.cfg.JoinToken == "" {
@@ -308,6 +311,13 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	}
 	hello.Protocol = wire.ProtocolVersion
 	hello.AgentVersion = a.cfg.Version
+	if a.cfg.Stacks != nil {
+		sup := a.cfg.Stacks.Supported(ctx)
+		hello.Stacks = &sup
+		if sup.Error != "" {
+			a.log.Warn("compose stacks unavailable", "err", sup.Error)
+		}
+	}
 	s.send(wire.AgentMessage{Hello: &hello})
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+a.cfg.HubAddr+wire.PathConnect, pr)
@@ -542,6 +552,8 @@ func (s *session) handle(c wire.Command) {
 			}
 			s.send(wire.AgentMessage{Log: &end})
 		}()
+	case c.Stack != nil:
+		go s.runStack(c.ID, *c.Stack)
 	case c.Cancel != "":
 		s.mu.Lock()
 		if cancel, ok := s.logs[c.Cancel]; ok {
@@ -549,6 +561,32 @@ func (s *session) handle(c wire.Command) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+// runStack runs a compose operation and streams its output back. It runs on
+// the agent's root context, not the session's: a dropped hub connection must
+// not interrupt a half-finished `compose up`.
+func (s *session) runStack(id string, c wire.StackCommand) {
+	out := &safeWriter{w: &chunkWriter{s: s, id: id}}
+	var err error
+	if s.a.cfg.Stacks == nil {
+		err = errors.New("this agent was started without compose stack support")
+	} else {
+		root := s.a.root
+		if root == nil {
+			root = s.ctx
+		}
+		ctx, cancel := context.WithTimeout(root, 30*time.Minute)
+		err = s.a.cfg.Stacks.Run(ctx, c, out)
+		cancel()
+	}
+	end := wire.LogChunk{CommandID: id, EOF: true}
+	if err != nil {
+		end.Error = err.Error()
+	}
+	s.a.log.Info("stack operation", "action", c.Action, "stack", c.Name, "ok", err == nil, "err", end.Error)
+	s.send(wire.AgentMessage{Log: &end})
+	s.requestSnapshot()
 }
 
 // chunkWriter turns log bytes into LogChunk messages of at most 32 KiB.

@@ -17,6 +17,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - tainerhub-agent:/data      # the agent's certificate; keep it to avoid re-enrolling
+      # Compose stacks live here. Keep the SAME path on both sides: compose
+      # resolves relative bind mounts (./data) to paths the host must also see.
+      - /opt/tainerhub/stacks:/opt/tainerhub/stacks
     environment:
       TAINERHUB_HUB: tainerhub.example.com:7443
       # One-time token from the Hosts page, valid for 1 hour. Remove after the first start.

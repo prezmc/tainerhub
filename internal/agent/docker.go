@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -334,4 +336,31 @@ func demux(r io.Reader, w io.Writer) error {
 			return err
 		}
 	}
+}
+
+// CheckSameMount verifies that dir is bind-mounted into the agent's container
+// from the same path on the host (see StackRunner). Outside a container, dir
+// is already a host path and there is nothing to check.
+func (d *SocketDocker) CheckSameMount(ctx context.Context, dir string) error {
+	if _, err := os.Stat("/.dockerenv"); err != nil {
+		return nil
+	}
+	self, _ := os.Hostname() // Docker sets it to the container ID unless overridden
+	var insp struct {
+		Mounts []struct{ Type, Source, Destination string }
+	}
+	if !wire.ValidContainerRef(self) || d.getJSON(ctx, "/containers/"+url.PathEscape(self)+"/json", nil, &insp) != nil {
+		return nil // custom hostname: can't find our own container, so trust the setup
+	}
+	dir = filepath.Clean(dir)
+	for _, m := range insp.Mounts {
+		if filepath.Clean(m.Destination) != dir {
+			continue
+		}
+		if m.Type != "bind" || filepath.Clean(m.Source) != dir {
+			return fmt.Errorf("the stacks folder must be bind-mounted from the same path on the host: add \"%s:%s\" to the agent's volumes (it is currently a %s mount from %q)", dir, dir, m.Type, m.Source)
+		}
+		return nil
+	}
+	return fmt.Errorf("the stacks folder is not mounted: add \"%s:%s\" to the agent's volumes and recreate the agent", dir, dir)
 }
