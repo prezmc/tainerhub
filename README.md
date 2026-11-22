@@ -70,7 +70,10 @@ docker compose up -d
 docker compose logs tainerhub
 ```
 
-The log prints a one-time setup link. Open it with your server's IP, e.g. `http://192.168.1.10:8585/setup?token=...` (valid 15 minutes; a new one is printed every 15 minutes until setup is done). Create your username and password, and save the recovery codes.
+The log prints two things:
+
+- **A database password.** On first start the hub replaces the database's default password with a random one and keeps it in its `/data` volume. You don't need it day to day, but save a copy (e.g. in your password manager) in case you ever restore the database without that volume.
+- **A one-time setup link.** Open it with your server's IP, e.g. `http://192.168.1.10:8585/setup?token=...` (valid 15 minutes; a new one is printed every 15 minutes until setup is done). Create your username and password, and save the recovery codes.
 
 ### 2. Add your servers
 
@@ -156,8 +159,8 @@ No software can promise zero vulnerabilities. The plan is defense in depth plus 
 ## Security notes
 
 - **Plain HTTP is for your LAN only.** Until you add HTTPS, passwords and session cookies cross the network unencrypted. Don't expose port 8585 to the internet; use the reverse-proxy steps above for remote access.
-- The database is only reachable from the hub (an internal Docker network) and uses a default password. To set your own, put `DB_PASSWORD=...` in a `.env` file next to the hub's `compose.yml` **before the first start**.
-- **Back up the hub's `/data` volume.** It holds the CA key. Losing it means re-enrolling every agent; leaking it lets someone impersonate the hub to agents.
+- The database is only reachable from the hub (an internal Docker network). Postgres starts with a well-known default password, which the hub replaces with a random 192-bit one on first start; it's saved in `/data/db_password` and printed once in the logs. If you prefer to choose it yourself, put `DB_PASSWORD=...` in a `.env` file next to the hub's `compose.yml` **before the first start**, and the hub leaves it alone.
+- **Back up the hub's `/data` volume.** It holds the CA key and the database password. Losing it means re-enrolling every agent; leaking it lets someone impersonate the hub to agents.
 - Join tokens are single-use, expire after 1 hour, and pin the hub CA's SHA-256 fingerprint, so an agent can't be tricked into enrolling with a fake hub.
 - Removing a host deletes its record; its certificate is refused from then on and its live connection is dropped.
 - Browser sessions are server-side: 12-hour idle timeout, 7-day maximum, `HttpOnly` + `SameSite=Strict` cookies. Every state-changing request also needs an `X-TainerHub` header and a same-origin `Origin`.

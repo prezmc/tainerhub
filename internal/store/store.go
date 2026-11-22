@@ -50,6 +50,10 @@ func Open(ctx context.Context, url, password string) (*Store, error) {
 		if err == nil {
 			return &Store{db: pool}, nil
 		}
+		if isAuthError(err) { // retrying won't help
+			pool.Close()
+			return nil, fmt.Errorf("%w: %v", ErrAuth, err)
+		}
 		if time.Now().After(deadline) {
 			pool.Close()
 			return nil, fmt.Errorf("database not reachable: %w", err)

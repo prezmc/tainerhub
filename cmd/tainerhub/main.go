@@ -130,7 +130,13 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("tainerhub starting", "version", version.Version, "public_url", publicURL, "agent_addr", cfg.AgentAddr)
 
-	st, err := store.Open(ctx, cfg.DatabaseURL, cfg.DBPassword)
+	var st *store.Store
+	if cfg.DBPassword != "" { // TAINERHUB_DATABASE_PASSWORD_FILE: managed by the admin
+		st, err = store.Open(ctx, cfg.DatabaseURL, cfg.DBPassword)
+	} else {
+		open := func(ctx context.Context, pw string) (*store.Store, error) { return store.Open(ctx, cfg.DatabaseURL, pw) }
+		st, err = openManaged(ctx, open, urlPassword(cfg.DatabaseURL), cfg.DataDir, log)
+	}
 	if err != nil {
 		return err
 	}
@@ -229,4 +235,14 @@ func logLevel() slog.Level {
 		return slog.LevelInfo
 	}
 	return l
+}
+
+// urlPassword returns the password in a postgres:// URL, or "".
+func urlPassword(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return ""
+	}
+	pw, _ := u.User.Password()
+	return pw
 }
