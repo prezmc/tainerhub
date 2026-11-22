@@ -36,7 +36,13 @@ const overviewRoute = createRoute({ getParentRoute: () => appRoute, path: '/', c
 const containersRoute = createRoute({ getParentRoute: () => appRoute, path: '/containers', component: ContainersPage })
 const resourcesRoute = createRoute({ getParentRoute: () => appRoute, path: '/resources', component: ResourcesPage })
 const newContainerRoute = createRoute({ getParentRoute: () => appRoute, path: '/containers/new', component: NewContainerPage })
-const stacksRoute = createRoute({ getParentRoute: () => appRoute, path: '/stacks', component: StacksPage })
+const stacksRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/stacks',
+  component: StacksPage,
+  // ?q= prefills the filter (links from a container's stack label)
+  validateSearch: (s: Record<string, unknown>): { q?: string } => ({ q: typeof s.q === 'string' ? s.q : undefined }),
+})
 const newStackRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/stacks/new',

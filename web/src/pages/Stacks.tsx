@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { Ellipsis, Layers, Play, Plus, RefreshCw, RotateCw, Search, Square, Download, ArrowDownToLine, ExternalLink, PencilLine } from 'lucide-react'
 import { can, timeAgo, type StackAction, type StackSummary } from '../api'
 import { Badge, Button, Card, EmptyState, IconButton, Menu, PageHeader, StatusDot, cx, type MenuItem } from '../ui'
@@ -21,7 +21,8 @@ export function StacksPage() {
   const operator = can(me.user, 'operator')
   const stacks = useStacks()
   const { run } = useStackAction()
-  const [filter, setFilter] = useState('')
+  const search = useSearch({ strict: false }) as { q?: string }
+  const [filter, setFilter] = useState(search.q ?? '')
   const navigate = useNavigate()
 
   const list = useMemo(() => {

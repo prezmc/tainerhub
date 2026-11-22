@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Boxes, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, Tag, Trash2, X, type LucideIcon } from 'lucide-react'
+import { Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
 import { api, can, errorText, mem, timeAgo, type Container, type DetailResponse } from '../api'
 import { useContainerAction, useOpenLogs } from '../fleet'
+import { StackLink } from '../stacks'
 import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf } from '../ui'
 import { useMe } from './AppLayout'
 
@@ -29,7 +30,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
 
   return (
     <div className="fixed inset-0 z-40">
-      <div className="absolute inset-0 bg-black/50-[2px]" onClick={onClose} />
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <aside
         role="dialog"
         aria-label={`${container.name} details`}
@@ -45,6 +46,11 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
               <p className="mt-1 truncate text-sm text-ink-100/60">
                 {container.hostName} · {container.status}
               </p>
+              {container.project && (
+                <div className="mt-1 text-sm text-ink-100/60">
+                  <StackLink c={container} onNavigate={onClose} />
+                </div>
+              )}
             </div>
             <IconButton icon={X} label="Close (Esc)" onClick={onClose} />
           </div>
@@ -242,7 +248,7 @@ function EnvSection({ env, revealed }: { env: string[]; revealed: boolean }) {
   if (env.length === 0) return null
   return (
     <Section
-      icon={Boxes}
+      icon={Variable}
       title="Environment"
       right={
         revealed ? (

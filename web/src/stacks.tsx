@@ -1,6 +1,7 @@
+import { Link } from '@tanstack/react-router'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowDownToLine, CircleCheck, CircleX, Download, LoaderCircle, X } from 'lucide-react'
+import { ArrowDownToLine, Boxes, CircleCheck, CircleX, Download, LoaderCircle, X } from 'lucide-react'
 import { useFleet } from './fleet'
 import { api, ApiError, errorText, type Container, type Host, type StackAction, type StackStatus, type StackSummary } from './api'
 import { Badge, IconButton, cx, download, useConfirm, useToast, type Tone } from './ui'
@@ -284,5 +285,38 @@ export function CodeEditor({
         className="mono min-w-0 flex-1 resize-y bg-transparent px-3 py-3 text-[12px] leading-[1.6] text-ink-50 outline-none placeholder:text-ink-100/25"
       />
     </div>
+  )
+}
+
+/**
+ * "stack <name>" for a container that belongs to a compose project. Links to
+ * the stack's page when TainerHub manages it, else to the Stacks list.
+ */
+export function StackLink({ c, onNavigate, className }: { c: Container; onNavigate?: () => void; className?: string }) {
+  const stacks = useStacks()
+  if (!c.project) return null
+  const s = stacks.data?.find((x) => x.hostId === c.hostId && x.name === c.project)
+  const inner = (
+    <>
+      <Boxes className="size-3 shrink-0 text-cyan-300" />
+      <span className="shrink-0 text-ink-100/40">stack</span>
+      <span className="truncate">{c.project}</span>
+    </>
+  )
+  const cls = cx('inline-flex min-w-0 items-center gap-1 hover:text-cyan-200 hover:underline', className)
+  return s?.managed && s.id ? (
+    <Link to="/stacks/$stackId" params={{ stackId: s.id }} onClick={onNavigate} className={cls} title={`Part of the ${c.project} stack, managed by TainerHub. Open it.`}>
+      {inner}
+    </Link>
+  ) : (
+    <Link
+      to="/stacks"
+      search={{ q: c.project }}
+      onClick={onNavigate}
+      className={cls}
+      title={`Part of the ${c.project} compose project, started outside TainerHub (with docker compose). See it under Stacks.`}
+    >
+      {inner}
+    </Link>
   )
 }
