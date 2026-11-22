@@ -1,0 +1,425 @@
+// Package wire defines the messages exchanged between the TainerHub hub and
+// its agents.
+//
+// Transport: each agent opens one long-lived, full-duplex HTTP/2 request to
+// the hub's agent gateway (default port 7443), authenticated in both
+// directions with TLS certificates issued by the hub's private CA. Both
+// directions carry newline-delimited JSON: the request body carries
+// AgentMessage values, the response body carries HubMessage values.
+package wire
+
+import (
+	"bufio"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+)
+
+const (
+	PathEnroll  = "/v1/enroll"
+	PathConnect = "/v1/connect"
+
+	// ProtocolVersion is sent in Hello; bump on incompatible changes.
+	ProtocolVersion = 1
+)
+
+// EnrollRequest is sent once, with the one-time join token, to obtain a
+// client certificate. The TLS connection for this call has no client cert.
+type EnrollRequest struct {
+	Token    string `json:"token"`
+	Hostname string `json:"hostname"`
+	CSR      []byte `json:"csr"` // DER-encoded PKCS#10
+}
+
+type EnrollResponse struct {
+	HostID string `json:"host_id"`
+	Cert   []byte `json:"cert"` // DER, client certificate
+	CA     []byte `json:"ca"`   // DER, hub CA certificate
+}
+
+// AgentMessage flows agent -> hub. Exactly one field is set.
+type AgentMessage struct {
+	Hello    *Hello         `json:"hello,omitempty"`
+	Snapshot *Snapshot      `json:"snapshot,omitempty"`
+	Event    *DockerEvent   `json:"event,omitempty"`
+	Result   *CommandResult `json:"result,omitempty"`
+	Log      *LogChunk      `json:"log,omitempty"`
+	Ping     bool           `json:"ping,omitempty"`
+}
+
+// HubMessage flows hub -> agent. Exactly one field is set.
+type HubMessage struct {
+	Command *Command `json:"command,omitempty"`
+	Ping    bool     `json:"ping,omitempty"`
+}
+
+type Hello struct {
+	Protocol      int    `json:"protocol"`
+	AgentVersion  string `json:"agent_version"`
+	Hostname      string `json:"hostname"`
+	DockerVersion string `json:"docker_version"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	NCPU          int    `json:"ncpu"`
+	MemTotal      int64  `json:"mem_total"`
+}
+
+type Container struct {
+	ID      string            `json:"id"`
+	Name    string            `json:"name"`
+	Image   string            `json:"image"`
+	State   string            `json:"state"`  // running, exited, paused, restarting, created, dead
+	Status  string            `json:"status"` // human text, e.g. "Up 3 hours (healthy)"
+	Created int64             `json:"created"`
+	Project string            `json:"project,omitempty"` // compose project label
+	Ports   []string          `json:"ports,omitempty"`
+	Labels  map[string]string `json:"labels,omitempty"`
+
+	// Live resource use, refreshed about every 10 s for running containers.
+	// CPU is a percentage of one core (like `docker stats`), so it can exceed 100.
+	CPU      float64 `json:"cpu,omitempty"`
+	Mem      int64   `json:"mem,omitempty"`       // bytes, excluding page cache
+	MemLimit int64   `json:"mem_limit,omitempty"` // bytes
+}
+
+type Snapshot struct {
+	At         int64       `json:"at"` // unix seconds
+	Containers []Container `json:"containers"`
+}
+
+type DockerEvent struct {
+	Type   string `json:"type"`
+	Action string `json:"action"`
+	ID     string `json:"id"`
+	Name   string `json:"name,omitempty"`
+	Time   int64  `json:"time"`
+}
+
+// Command is an instruction from the hub. ID correlates results and logs.
+// Exactly one of Action, Logs or Cancel is set.
+type Command struct {
+	ID     string           `json:"id"`
+	Action *ContainerAction `json:"action,omitempty"`
+	Op     *Operation       `json:"op,omitempty"`
+	Logs   *LogsRequest     `json:"logs,omitempty"`
+	Cancel string           `json:"cancel,omitempty"` // ID of a running command to stop
+}
+
+// Valid container actions.
+const (
+	ActionStart   = "start"
+	ActionStop    = "stop"
+	ActionRestart = "restart"
+	ActionPause   = "pause"
+	ActionUnpause = "unpause"
+	ActionKill    = "kill"
+	ActionRemove  = "remove"
+)
+
+// ValidContainerRef accepts Docker container IDs and names only, so nothing
+// that reaches the Docker API path can contain '/', '..', '?' or '%'.
+func ValidContainerRef(s string) bool {
+	if len(s) == 0 || len(s) > 128 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || (i > 0 && (c == '_' || c == '.' || c == '-'))
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// MaxMessageBytes bounds a single stream message in either direction.
+const MaxMessageBytes = 8 << 20
+
+// Decoder reads newline-delimited JSON with a per-message size limit, so a
+// misbehaving peer cannot make the other side buffer unbounded data.
+type Decoder struct{ s *bufio.Scanner }
+
+func NewDecoder(r io.Reader) *Decoder {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 64<<10), MaxMessageBytes)
+	return &Decoder{s: s}
+}
+
+func (d *Decoder) Decode(v any) error {
+	for d.s.Scan() {
+		line := d.s.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		return json.Unmarshal(line, v)
+	}
+	if err := d.s.Err(); err != nil {
+		return err
+	}
+	return io.EOF
+}
+
+func ValidAction(a string) bool {
+	switch a {
+	case ActionStart, ActionStop, ActionRestart, ActionPause, ActionUnpause, ActionKill, ActionRemove:
+		return true
+	}
+	return false
+}
+
+type ContainerAction struct {
+	ContainerID string `json:"container_id"`
+	Action      string `json:"action"`
+}
+
+type LogsRequest struct {
+	ContainerID string `json:"container_id"`
+	Tail        int    `json:"tail"`
+	Follow      bool   `json:"follow"`
+}
+
+type CommandResult struct {
+	CommandID string          `json:"command_id"`
+	OK        bool            `json:"ok"`
+	Error     string          `json:"error,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
+}
+
+type LogChunk struct {
+	CommandID string `json:"command_id"`
+	Data      []byte `json:"data,omitempty"`
+	EOF       bool   `json:"eof,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// JoinToken is the one-time credential an admin pastes into an agent's
+// config. It carries the hub CA fingerprint so the agent can pin the hub
+// before it has a certificate of its own.
+type JoinToken struct {
+	ID            string `json:"i"`
+	Secret        string `json:"s"`
+	CAFingerprint string `json:"f"` // hex SHA-256 of the CA certificate DER
+}
+
+const joinTokenPrefix = "thj1_"
+
+func (t JoinToken) Encode() string {
+	b, _ := json.Marshal(t)
+	return joinTokenPrefix + base64.RawURLEncoding.EncodeToString(b)
+}
+
+func ParseJoinToken(s string) (JoinToken, error) {
+	var t JoinToken
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, joinTokenPrefix) {
+		return t, errors.New("join token: wrong format")
+	}
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(s, joinTokenPrefix))
+	if err != nil {
+		return t, errors.New("join token: bad encoding")
+	}
+	if err := json.Unmarshal(b, &t); err != nil {
+		return t, errors.New("join token: bad payload")
+	}
+	if t.ID == "" || t.Secret == "" || len(t.CAFingerprint) != 64 {
+		return t, errors.New("join token: missing fields")
+	}
+	return t, nil
+}
+
+// ---------------- resource operations ----------------
+
+// Operation is a whitelisted Docker request other than a container action:
+// inspecting a container, or listing / removing / pruning images, volumes
+// and networks. Agents refuse any Kind not listed in OpKinds.
+type Operation struct {
+	Kind   string `json:"kind"`
+	Target string `json:"target,omitempty"` // container / image / volume / network ID or name
+	Arg    string `json:"arg,omitempty"`    // image reference for pulls, "all" for prunes
+}
+
+const (
+	OpContainerInspect = "container.inspect"
+	OpImagesList       = "images.list"
+	OpImagePull        = "image.pull"
+	OpImageRemove      = "image.remove"
+	OpImagesPrune      = "images.prune"
+	OpVolumesList      = "volumes.list"
+	OpVolumeRemove     = "volume.remove"
+	OpVolumesPrune     = "volumes.prune"
+	OpNetworksList     = "networks.list"
+	OpNetworkRemove    = "network.remove"
+	OpNetworksPrune    = "networks.prune"
+)
+
+// OpKinds lists every allowed operation and whether it changes state.
+var OpKinds = map[string]bool{
+	OpContainerInspect: false, OpImagesList: false, OpVolumesList: false, OpNetworksList: false,
+	OpImagePull: true, OpImageRemove: true, OpImagesPrune: true,
+	OpVolumeRemove: true, OpVolumesPrune: true, OpNetworkRemove: true, OpNetworksPrune: true,
+}
+
+// ValidOperation checks the kind and the shape of its target / argument.
+func ValidOperation(op Operation) error {
+	if _, ok := OpKinds[op.Kind]; !ok {
+		return errors.New("unknown operation")
+	}
+	switch op.Kind {
+	case OpContainerInspect, OpVolumeRemove, OpNetworkRemove:
+		if !ValidContainerRef(op.Target) {
+			return errors.New("invalid target")
+		}
+	case OpImageRemove:
+		if !ValidImageID(op.Target) {
+			return errors.New("invalid image id")
+		}
+	case OpImagePull:
+		if !ValidImageRef(op.Arg) {
+			return errors.New("invalid image reference")
+		}
+	case OpImagesPrune, OpVolumesPrune, OpNetworksPrune:
+		if op.Arg != "" && op.Arg != "all" {
+			return errors.New("invalid prune mode")
+		}
+	}
+	return nil
+}
+
+// ValidImageID accepts "sha256:<hex>" or bare hex IDs.
+func ValidImageID(s string) bool {
+	s = strings.TrimPrefix(s, "sha256:")
+	if len(s) < 12 || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !(s[i] >= '0' && s[i] <= '9' || s[i] >= 'a' && s[i] <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidImageRef accepts references such as "nginx", "nginx:1.27",
+// "ghcr.io/org/app:tag" or "repo@sha256:...".
+func ValidImageRef(s string) bool {
+	if len(s) == 0 || len(s) > 255 || strings.Contains(s, "..") || strings.Contains(s, "//") {
+		return false
+	}
+	if c := s[0]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z') {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("._-/:@", c) >= 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// ---- operation result payloads ----
+
+type ContainerDetail struct {
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Image         string            `json:"image"`
+	ImageID       string            `json:"imageId"`
+	Created       string            `json:"created"`
+	State         DetailState       `json:"state"`
+	Cmd           []string          `json:"cmd,omitempty"`
+	Entrypoint    []string          `json:"entrypoint,omitempty"`
+	WorkingDir    string            `json:"workingDir,omitempty"`
+	User          string            `json:"user,omitempty"`
+	Env           []string          `json:"env,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	RestartPolicy string            `json:"restartPolicy"`
+	MaxRetries    int               `json:"maxRetries,omitempty"`
+	Privileged    bool              `json:"privileged"`
+	NetworkMode   string            `json:"networkMode"`
+	MemoryLimit   int64             `json:"memoryLimit,omitempty"`
+	NanoCPUs      int64             `json:"nanoCpus,omitempty"`
+	Mounts        []DetailMount     `json:"mounts"`
+	Networks      []DetailNetwork   `json:"networks"`
+	Ports         []DetailPort      `json:"ports"`
+}
+
+type DetailState struct {
+	Status     string        `json:"status"`
+	StartedAt  string        `json:"startedAt"`
+	FinishedAt string        `json:"finishedAt"`
+	ExitCode   int           `json:"exitCode"`
+	OOMKilled  bool          `json:"oomKilled"`
+	Error      string        `json:"error,omitempty"`
+	Health     *DetailHealth `json:"health,omitempty"`
+}
+
+type DetailHealth struct {
+	Status        string        `json:"status"`
+	FailingStreak int           `json:"failingStreak"`
+	Log           []HealthProbe `json:"log"`
+}
+
+type HealthProbe struct {
+	Start    string `json:"start"`
+	End      string `json:"end"`
+	ExitCode int    `json:"exitCode"`
+	Output   string `json:"output"`
+}
+
+type DetailMount struct {
+	Type        string `json:"type"`
+	Name        string `json:"name,omitempty"`
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	RW          bool   `json:"rw"`
+}
+
+type DetailNetwork struct {
+	Name    string `json:"name"`
+	IP      string `json:"ip,omitempty"`
+	Gateway string `json:"gateway,omitempty"`
+}
+
+type DetailPort struct {
+	Container string `json:"container"` // e.g. "80/tcp"
+	Host      string `json:"host,omitempty"`
+}
+
+type Image struct {
+	ID      string   `json:"id"`
+	Tags    []string `json:"tags"`
+	Size    int64    `json:"size"`
+	Created int64    `json:"created"`
+	UsedBy  []string `json:"usedBy"`
+}
+
+type Volume struct {
+	Name       string   `json:"name"`
+	Driver     string   `json:"driver"`
+	Mountpoint string   `json:"mountpoint"`
+	Created    string   `json:"created"`
+	Project    string   `json:"project,omitempty"`
+	UsedBy     []string `json:"usedBy"`
+}
+
+type Network struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Driver   string   `json:"driver"`
+	Scope    string   `json:"scope"`
+	Internal bool     `json:"internal"`
+	Builtin  bool     `json:"builtin"`
+	Project  string   `json:"project,omitempty"`
+	UsedBy   []string `json:"usedBy"`
+}
+
+type PruneResult struct {
+	Deleted   int   `json:"deleted"`
+	Reclaimed int64 `json:"reclaimed"`
+}
+
+type PullResult struct {
+	Status string `json:"status"`
+}
