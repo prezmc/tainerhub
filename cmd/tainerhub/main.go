@@ -106,8 +106,15 @@ func loadConfig() (config, error) {
 func main() {
 	// `tainerhub healthcheck` lets Docker check the hub without a shell or curl
 	// in the distroless image.
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck())
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "healthcheck":
+			os.Exit(healthcheck())
+		case "setup-link":
+			os.Exit(printSetupLink())
+		case "db-password":
+			os.Exit(printDBPassword())
+		}
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel()}))
 	slog.SetDefault(log)
@@ -166,6 +173,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	authSvc.SetupTokenFile = filepath.Join(cfg.DataDir, setupTokenFile)
 	go authSvc.RunSetupTokenLoop(ctx)
 	go authSvc.RunSessionJanitor(ctx)
 
@@ -247,4 +255,31 @@ func urlPassword(raw string) string {
 	}
 	pw, _ := u.User.Password()
 	return pw
+}
+
+const setupTokenFile = "setup_token"
+
+// printSetupLink prints the path of the one-time setup link while no account
+// exists yet: `docker exec tainerhub /tainerhub setup-link`.
+func printSetupLink() int {
+	b, err := os.ReadFile(filepath.Join(envOr("TAINERHUB_DATA_DIR", "/data"), setupTokenFile))
+	tok := strings.TrimSpace(string(b))
+	if err != nil || tok == "" {
+		fmt.Fprintln(os.Stderr, "No setup link: the owner account already exists, or the hub hasn't finished starting (try again in a few seconds).")
+		return 1
+	}
+	fmt.Println("/setup?token=" + tok)
+	return 0
+}
+
+// printDBPassword prints the database password the hub generated on first
+// start: `docker exec tainerhub /tainerhub db-password`.
+func printDBPassword() int {
+	b, err := os.ReadFile(filepath.Join(envOr("TAINERHUB_DATA_DIR", "/data"), dbPasswordFile))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "No saved database password: either the hub hasn't started yet, or you chose your own (DB_PASSWORD).")
+		return 1
+	}
+	fmt.Println(strings.TrimSpace(string(b)))
+	return 0
 }

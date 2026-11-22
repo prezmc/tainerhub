@@ -7,7 +7,8 @@ import { Button, ErrorNote, Input, RecoveryCodes } from '../ui'
 import { AuthShell } from './AuthShell'
 
 export function SetupPage() {
-  const token = new URLSearchParams(window.location.search).get('token') ?? ''
+  const [token, setToken] = useState(() => new URLSearchParams(window.location.search).get('token') ?? '')
+  const [pasted, setPasted] = useState('')
   const [username, setUsername] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
@@ -63,11 +64,30 @@ export function SetupPage() {
     return (
       <AuthShell title="Set up TainerHub" subtitle="One more step to secure your hub">
         <div className="space-y-3 text-sm text-ink-100/80">
-          <p>Open the one-time setup link printed in the hub's logs. It's valid for 15 minutes, and a fresh link is printed every 15 minutes until setup is done.</p>
+          <p>Open the setup link the installer printed. Don't have it, or it's older than 15 minutes? Run this on the server and paste what it prints below.</p>
           <div className="mono flex items-center gap-2 rounded-[3px] bg-black/40 px-3 py-2 text-xs text-ink-100/80 ring-1 ring-white/10">
-            <Terminal className="size-3.5 text-ink-100/50" />
-            docker logs tainerhub
+            <Terminal className="size-3.5 shrink-0 text-ink-100/50" />
+            docker exec tainerhub /tainerhub setup-link
           </div>
+          <form
+            className="flex items-end gap-2 pt-1"
+            onSubmit={(e) => {
+              e.preventDefault()
+              // Accept the whole link, "/setup?token=...", or just the token.
+              const m = pasted.match(/token=([^&\s]+)/)
+              const t = (m ? m[1] : pasted).trim()
+              if (!t) return
+              window.history.replaceState(null, '', `/setup?token=${encodeURIComponent(t)}`)
+              setToken(t)
+            }}
+          >
+            <div className="flex-1">
+              <Input label="Setup link or token" value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder="/setup?token=…" autoFocus />
+            </div>
+            <Button variant="primary" icon={ArrowRight}>
+              Continue
+            </Button>
+          </form>
         </div>
       </AuthShell>
     )
