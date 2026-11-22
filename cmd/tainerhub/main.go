@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/prezmc/tainerhub/internal/debugsrv"
 	"log/slog"
 	"net"
 	"net/http"
@@ -125,6 +126,7 @@ func main() {
 }
 
 func run(log *slog.Logger) error {
+	debugsrv.Start(log)
 	cfg, err := loadConfig()
 	if err != nil {
 		return err

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prezmc/tainerhub/internal/wire"
@@ -49,6 +50,16 @@ type SocketDocker struct {
 	c       *http.Client
 	socket  string      // path of the Docker socket inside this container
 	updates updateCache // last image update check, shown on each container
+
+	cpuMu   sync.Mutex
+	lastCPU map[string]cpuSample // container ID -> previous stats sample
+}
+
+// cpuSample is a container's CPU counters at one stats sample, so the next
+// sample can work out CPU use without the Engine's one-second wait.
+type cpuSample struct {
+	cpu, sys uint64
+	at       time.Time
 }
 
 func NewSocketDocker(socketPath string) *SocketDocker {
@@ -57,8 +68,11 @@ func NewSocketDocker(socketPath string) *SocketDocker {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", socketPath)
 		},
-		MaxIdleConns:    4,
-		IdleConnTimeout: 30 * time.Second,
+		// Stats sampling makes up to 8 calls at once; keep those connections
+		// open between rounds instead of redialing every 10 seconds.
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     30 * time.Second,
 	}
 	return &SocketDocker{c: &http.Client{Transport: tr}, socket: socketPath}
 }
@@ -283,8 +297,10 @@ func (d *SocketDocker) Logs(ctx context.Context, id string, tail int, follow boo
 	return err
 }
 
-// Stats takes one sample. Without one-shot, the Engine waits about a second
-// so that it can report a CPU delta.
+// Stats takes one sample. Without one-shot, the Engine samples twice, a
+// second apart, to report a CPU delta. That doubles its work per container
+// every round, so after the first sample this asks for one-shot and takes the
+// delta from the previous sample instead.
 func (d *SocketDocker) Stats(ctx context.Context, id string) (Usage, error) {
 	if !wire.ValidContainerRef(id) {
 		return Usage{}, errors.New("invalid container id")
@@ -309,14 +325,40 @@ func (d *SocketDocker) Stats(ctx context.Context, id string) (Usage, error) {
 			Stats map[string]uint64 `json:"stats"`
 		} `json:"memory_stats"`
 	}
-	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/stats", url.Values{"stream": {"false"}}, &s); err != nil {
+	d.cpuMu.Lock()
+	prev, havePrev := d.lastCPU[id]
+	d.cpuMu.Unlock()
+	q := url.Values{"stream": {"false"}}
+	if havePrev {
+		q.Set("one-shot", "true")
+	}
+	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/stats", q, &s); err != nil {
 		return Usage{}, err
 	}
+	preCPU, preSys := s.PreCPUStats.CPUUsage.TotalUsage, s.PreCPUStats.SystemUsage
+	if preSys == 0 && havePrev { // one-shot: no "pre" sample from the Engine
+		preCPU, preSys = prev.cpu, prev.sys
+	}
+	d.rememberCPU(id, cpuSample{cpu: s.CPUStats.CPUUsage.TotalUsage, sys: s.CPUStats.SystemUsage, at: time.Now()})
 	return computeUsage(
-		s.CPUStats.CPUUsage.TotalUsage, s.PreCPUStats.CPUUsage.TotalUsage,
-		s.CPUStats.SystemUsage, s.PreCPUStats.SystemUsage, s.CPUStats.OnlineCPUs,
+		s.CPUStats.CPUUsage.TotalUsage, preCPU,
+		s.CPUStats.SystemUsage, preSys, s.CPUStats.OnlineCPUs,
 		s.MemoryStats.Usage, s.MemoryStats.Limit, s.MemoryStats.Stats,
 	), nil
+}
+
+func (d *SocketDocker) rememberCPU(id string, c cpuSample) {
+	d.cpuMu.Lock()
+	defer d.cpuMu.Unlock()
+	if d.lastCPU == nil {
+		d.lastCPU = map[string]cpuSample{}
+	}
+	d.lastCPU[id] = c
+	for k, v := range d.lastCPU { // forget removed containers
+		if time.Since(v.at) > 10*time.Minute {
+			delete(d.lastCPU, k)
+		}
+	}
 }
 
 // computeUsage applies the same formulas as `docker stats`.

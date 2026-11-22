@@ -36,6 +36,55 @@ type Registry struct {
 
 	actMu    sync.Mutex
 	activity []Activity // newest last, capped at MaxActivity
+
+	watchMu  sync.Mutex
+	watchers int // open fleet streams (browser tabs)
+}
+
+// Watch records an open fleet stream until release is called. Agents are told
+// when the first one opens and the last one closes, so they only sample CPU
+// and memory often while someone is looking.
+func (r *Registry) Watch() (release func()) {
+	r.watchMu.Lock()
+	r.watchers++
+	first := r.watchers == 1
+	r.watchMu.Unlock()
+	if first {
+		r.broadcastWatching(true)
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.watchMu.Lock()
+			r.watchers--
+			last := r.watchers == 0
+			r.watchMu.Unlock()
+			if last {
+				r.broadcastWatching(false)
+			}
+		})
+	}
+}
+
+func (r *Registry) watching() bool {
+	r.watchMu.Lock()
+	defer r.watchMu.Unlock()
+	return r.watchers > 0
+}
+
+func (r *Registry) broadcastWatching(on bool) {
+	for _, a := range r.All() {
+		a.tellWatching(on)
+	}
+}
+
+// tellWatching queues the watching state without blocking: a full queue
+// means the agent is busy, and the next change or reconnect corrects it.
+func (a *Agent) tellWatching(on bool) {
+	select {
+	case a.out <- wire.HubMessage{Watching: &on}:
+	default:
+	}
 }
 
 // MaxActivity is how many recent fleet events the hub keeps in memory for
@@ -151,6 +200,7 @@ func (r *Registry) AttachFrom(hostID, name, remoteIP string, cancel context.Canc
 	old := r.agents[hostID]
 	r.agents[hostID] = a
 	r.mu.Unlock()
+	a.tellWatching(r.watching())
 	if old != nil {
 		old.cancel()
 	} else {

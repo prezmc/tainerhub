@@ -152,6 +152,7 @@ cd web && npm run dev   # UI on :5173, proxying /api to a hub on :8585
 To run a hub locally: start Postgres, then
 `TAINERHUB_DATABASE_URL=postgres://... TAINERHUB_DATA_DIR=./data ./bin/tainerhub`.
 Add `TAINERHUB_PUBLIC_URL=http://localhost:8585` to try passkeys, which work on `http://localhost` without HTTPS.
+Set `TAINERHUB_PPROF_ADDR=127.0.0.1:6060` on the hub or an agent to serve Go's profiler there (`go tool pprof http://127.0.0.1:6060/debug/pprof/profile`).
 
 ## Security, speed and reliability
 
@@ -167,6 +168,7 @@ Add `TAINERHUB_PUBLIC_URL=http://localhost:8585` to try passkeys, which work on 
 - Containers: distroless images, read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`; the hub runs as a non-root user.
 - CI: `govulncheck`, `npm audit`, a Trivy image scan (fails on fixable high/critical CVEs), SBOM + provenance on images, and Dependabot for Go, npm, Actions and base images.
 - Speed: the UI gets live pushes over Server-Sent Events instead of polling; JS/CSS are pre-compressed (Brotli/gzip) with immutable caching; the whole UI is about 125 KB gzipped.
+- Light on your servers: agents sample container CPU and memory every 10 seconds only while someone has TainerHub open, and once a minute otherwise, using Docker's one-shot stats (one reading per container instead of two). Each sample is work for the Docker Engine, so this keeps an idle TainerHub close to free.
 - Reliability: agents reconnect with backoff and resend full state; hub↔agent keepalives drop dead links within 90 s; Docker health checks for the hub (database ping) and the agent (recent hub contact); graceful shutdown; Postgres starts healthy before the hub.
 
 No software can promise zero vulnerabilities. The plan is defense in depth plus automated scanning on every push, and Dependabot keeps dependencies current.

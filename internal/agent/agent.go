@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prezmc/tainerhub/internal/pki"
@@ -37,10 +38,11 @@ type Config struct {
 	Stacks        *StackRunner // nil: compose stacks are not available on this agent
 	Log           *slog.Logger
 
-	SnapshotEvery time.Duration // default 30s
-	StatsEvery    time.Duration // default 10s; negative disables stats
-	PingEvery     time.Duration // default 20s
-	DeadAfter     time.Duration // default 90s
+	SnapshotEvery  time.Duration // default 30s
+	StatsEvery     time.Duration // default 10s while someone has TainerHub open; negative disables stats
+	IdleStatsEvery time.Duration // default 60s while nobody does
+	PingEvery      time.Duration // default 20s
+	DeadAfter      time.Duration // default 90s
 }
 
 // HealthFile (in DataDir) is refreshed while the agent is connected to the hub.
@@ -70,6 +72,9 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.StatsEvery == 0 {
 		cfg.StatsEvery = 10 * time.Second
+	}
+	if cfg.IdleStatsEvery == 0 {
+		cfg.IdleStatsEvery = 60 * time.Second
 	}
 	if cfg.PingEvery == 0 {
 		cfg.PingEvery = 20 * time.Second
@@ -288,6 +293,10 @@ type session struct {
 	cancel context.CancelFunc
 	out    chan wire.AgentMessage
 	snap   chan struct{}
+	// watching: someone has TainerHub open (the hub says so). Starts true so
+	// an older hub, which never says, keeps the frequent sampling.
+	watching atomic.Bool
+	watchCh  chan struct{} // wakes statsLoop when someone starts watching
 
 	mu    sync.Mutex
 	logs  map[string]context.CancelFunc // log streams, stack ops and terminals, by command ID
@@ -337,7 +346,8 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	var wg sync.WaitGroup
 	defer wg.Wait() // runs last: after cancel below has stopped every goroutine
 	defer cancel()
-	s := &session{a: a, ctx: ctx, cancel: cancel, out: make(chan wire.AgentMessage, 128), snap: make(chan struct{}, 1), logs: map[string]context.CancelFunc{}, usage: map[string]Usage{}, execs: map[string]*execState{}}
+	s := &session{a: a, ctx: ctx, cancel: cancel, out: make(chan wire.AgentMessage, 128), snap: make(chan struct{}, 1), watchCh: make(chan struct{}, 1), logs: map[string]context.CancelFunc{}, usage: map[string]Usage{}, execs: map[string]*execState{}}
+	s.watching.Store(true)
 
 	pr, pw := io.Pipe()
 	defer pw.Close()
@@ -438,6 +448,12 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 			return err
 		}
 		touch()
+		if m.Watching != nil && s.watching.Swap(*m.Watching) != *m.Watching && *m.Watching {
+			select { // sample now rather than up to a minute from now
+			case s.watchCh <- struct{}{}:
+			default:
+			}
+		}
 		if time.Since(healthWritten) > 30*time.Second {
 			healthWritten = time.Now()
 			_ = os.WriteFile(a.path(HealthFile), []byte(healthWritten.UTC().Format(time.RFC3339)), 0o600)
@@ -492,13 +508,20 @@ func (s *session) statsLoop() {
 	if s.a.cfg.StatsEvery < 0 {
 		return
 	}
-	t := time.NewTicker(s.a.cfg.StatsEvery)
+	t := time.NewTimer(s.a.cfg.StatsEvery)
 	defer t.Stop()
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-t.C:
+		case <-s.watchCh:
+			t.Stop()
+		}
+		if s.watching.Load() {
+			t.Reset(s.a.cfg.StatsEvery)
+		} else {
+			t.Reset(s.a.cfg.IdleStatsEvery)
 		}
 		cs, err := s.a.cfg.Docker.List(s.ctx)
 		if err != nil {

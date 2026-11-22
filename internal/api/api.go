@@ -835,6 +835,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	ctx := r.Context()
+	defer s.Reg.Watch()() // agents sample often only while someone is watching
 	keepalive := time.NewTicker(25 * time.Second)
 	defer keepalive.Stop()
 	// Re-check the session periodically so a revoked session stops streaming.

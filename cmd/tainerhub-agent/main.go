@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/prezmc/tainerhub/internal/agent"
+	"github.com/prezmc/tainerhub/internal/debugsrv"
 	"github.com/prezmc/tainerhub/internal/version"
 )
 
@@ -25,6 +26,7 @@ func main() {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel()}))
 	slog.SetDefault(log)
+	debugsrv.Start(log)
 
 	socket := envOr("DOCKER_SOCKET", "/var/run/docker.sock")
 	docker := agent.NewSocketDocker(socket)
