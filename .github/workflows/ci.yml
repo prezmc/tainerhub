@@ -18,7 +18,10 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # Latest patched Go, matching golang:1-alpine in the Dockerfiles.
+          # go.mod's "go 1.26.0" is the minimum, not the version to build with:
+          # pinning CI to it fails govulncheck on standard-library fixes.
+          go-version: stable
 
       - uses: actions/setup-node@v4
         with:
