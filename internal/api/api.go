@@ -95,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	// volumes hold data: removing them is admin-only
 	mux.Handle("DELETE /api/hosts/{id}/volumes/{rid}", s.need("admin", s.removeResource(wire.OpVolumeRemove)))
 	mux.Handle("POST /api/hosts/{id}/volumes/prune", s.need("admin", s.prune(wire.OpVolumesPrune)))
+	mux.Handle("POST /api/hosts/{id}/containers/{cid}/remove-with-volumes", s.need("admin", s.removeWithVolumes))
 	// stack lifecycle on definitions an admin has saved
 	mux.Handle("POST /api/stacks/{sid}/{action}", s.need("operator", s.stackAction))
 	// writing a compose file is root on the host: admins only (see stacks.go)
@@ -824,6 +825,55 @@ func (s *Server) containerAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeWithVolumes removes a container plus its anonymous volumes and the
+// named volumes the admin picked (deleted only if nothing else uses them).
+// Volumes hold data, so this is admin-only like the other volume deletes.
+func (s *Server) removeWithVolumes(w http.ResponseWriter, r *http.Request) {
+	cid := r.PathValue("cid")
+	var in struct {
+		Volumes []string `json:"volumes"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	op := wire.Operation{Kind: wire.OpContainerRemoveVolumes, Target: cid, Arg: strings.Join(in.Volumes, ",")}
+	if err := wire.ValidOperation(op); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a := s.Reg.Get(r.PathValue("id"))
+	if a == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host is offline")
+		return
+	}
+	name := cid
+	for _, c := range a.Status().Containers {
+		if c.ID == cid {
+			name = c.Name
+		}
+	}
+	data, err := a.Operate(r.Context(), op)
+	var res wire.RemoveVolumesResult
+	if err == nil {
+		_ = json.Unmarshal(data, &res)
+	}
+	u := userFrom(r)
+	detail := map[string]any{"host": a.Name, "container": name, "volumes_removed": res.Removed, "anonymous_volumes_removed": res.Anonymous}
+	if len(res.Kept) > 0 {
+		detail["volumes_kept"] = res.Kept
+	}
+	if err != nil {
+		detail["error"] = err.Error()
+	}
+	s.record(r, &u, "container.remove_with_volumes", a.Name+"/"+name, detail)
+	if err != nil {
+		jsonErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.Reg.AddActivity(registry.Activity{Kind: "user", Action: "remove", HostID: a.HostID, Host: a.Name, Container: name, Actor: u.Username})
+	writeJSON(w, http.StatusOK, res)
 }
 
 // logs streams container logs as Server-Sent Events (one "log" event per chunk).

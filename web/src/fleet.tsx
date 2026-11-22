@@ -1,7 +1,7 @@
-import { createContext, useCallback, useContext } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, errorText, type Activity, type Container, type Host } from './api'
-import { useConfirm, useToast } from './ui'
+import { api, can, errorText, type Activity, type Container, type DetailResponse, type Host, type Me, type VolumeRes } from './api'
+import { cx, useConfirm, useToast } from './ui'
 
 export type Action = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'kill' | 'remove'
 export const ACTIONS: Action[] = ['start', 'stop', 'restart', 'pause', 'unpause', 'kill', 'remove']
@@ -24,13 +24,64 @@ export function useFleet() {
   return { containers: containers.data ?? [], hosts: hosts.data ?? [], activity: activity.data ?? [], loading: containers.isPending || hosts.isPending }
 }
 
-/** Runs a container action with confirmation for destructive ones and a toast for the result. */
 /** Describes TainerHub's own containers, which are risky to stop or remove from TainerHub. */
 function ownContainer(c: Container): string | null {
   if (c.name === 'tainerhub') return "TainerHub's hub"
   if (c.name === 'tainerhub-postgres') return "TainerHub's database"
   if (c.name === 'tainerhub-agent' || c.image.includes('tainerhub-agent')) return `the agent that connects ${c.hostName} to TainerHub`
   return null
+}
+
+type VolumeChoice = { on: boolean; names: string[] }
+type RemoveVolumesResult = { anonymous: number; removed: string[]; kept: { name: string; reason: string }[] }
+
+const isAnonymous = (name: string) => /^[0-9a-f]{64}$/.test(name)
+
+/**
+ * The "also delete its volumes" part of the Remove dialog (admins only):
+ * lists each volume the container uses and what would happen to it.
+ */
+function RemoveVolumesOption({ c, onChange }: { c: Container; onChange: (v: VolumeChoice) => void }) {
+  const [on, setOn] = useState(false)
+  const detail = useQuery({ queryKey: ['detail', c.hostId, c.id], queryFn: () => api<DetailResponse>(`/api/hosts/${c.hostId}/containers/${encodeURIComponent(c.id)}`) })
+  const volumes = useQuery({ queryKey: ['volumes', c.hostId], queryFn: () => api<VolumeRes[]>(`/api/hosts/${c.hostId}/volumes`) })
+  const mounts = (detail.data?.detail.mounts ?? []).filter((m) => m.type === 'volume' && m.name)
+  const rows = mounts.map((m) => {
+    const name = m.name!
+    const others = (volumes.data?.find((v) => v.name === name)?.usedBy ?? []).filter((u) => u !== c.name)
+    return { name, path: m.destination, anonymous: isAnonymous(name), others }
+  })
+  const deletable = rows.filter((r) => !r.anonymous && r.others.length === 0).map((r) => r.name)
+  useEffect(() => {
+    onChange({ on, names: on ? deletable : [] })
+  }, [on, deletable.join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (detail.isPending || volumes.isPending) return <p className="mt-3 text-xs text-ink-100/50">Checking its volumes…</p>
+  if (detail.isError) return null
+  if (rows.length === 0) return <p className="mt-3 text-xs text-ink-100/50">It has no volumes.</p>
+  return (
+    <div className="mt-4 space-y-2">
+      <label className="flex items-start gap-2.5 rounded-[3px] bg-rose-500/[0.07] p-3 ring-1 ring-inset ring-rose-500/20">
+        <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} className="mt-0.5 accent-rose-500" />
+        <span>
+          Also delete its volumes. <strong className="text-rose-200">Their data is gone for good.</strong>
+        </span>
+      </label>
+      <ul className="space-y-1 text-xs">
+        {rows.map((r) => (
+          <li key={r.name} className="flex items-baseline gap-2">
+            <span className={cx('mono truncate', r.others.length ? 'text-ink-100/60' : on ? 'text-rose-200 line-through decoration-rose-400/60' : 'text-ink-50')}>
+              {r.anonymous ? `${r.name.slice(0, 12)}… (unnamed)` : r.name}
+            </span>
+            <span className="mono shrink-0 text-ink-100/40">{r.path}</span>
+            <span className="ml-auto shrink-0 text-ink-100/50">
+              {r.others.length ? `kept: also used by ${r.others.join(', ')}` : on ? 'will be deleted' : 'kept'}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
 }
 
 export function useContainerAction() {
@@ -42,6 +93,19 @@ export function useContainerAction() {
     onSuccess: (_, { c, action }) => {
       toast('good', `${c.name} ${pastTense[action]}`)
       qc.invalidateQueries({ queryKey: ['containers'] })
+    },
+    onError: (e, { c }) => toast('bad', `${c.name}: ${errorText(e)}`),
+  })
+  const volumeChoice = useRef<VolumeChoice>({ on: false, names: [] })
+  const removeVolumes = useMutation({
+    mutationFn: ({ c, names }: { c: Container; names: string[] }) =>
+      api<RemoveVolumesResult>(`/api/hosts/${c.hostId}/containers/${encodeURIComponent(c.id)}/remove-with-volumes`, { method: 'POST', body: { volumes: names } }),
+    onSuccess: (r, { c }) => {
+      const n = r.removed.length + r.anonymous
+      toast('good', `${c.name} removed with ${n} volume${n === 1 ? '' : 's'}`)
+      for (const k of r.kept) toast('bad', `Kept volume ${k.name}: ${k.reason}`)
+      qc.invalidateQueries({ queryKey: ['containers'] })
+      qc.invalidateQueries({ queryKey: ['volumes', c.hostId] })
     },
     onError: (e, { c }) => toast('bad', `${c.name}: ${errorText(e)}`),
   })
@@ -62,14 +126,39 @@ export function useContainerAction() {
       if (d) {
         // Stopping TainerHub's own containers from TainerHub cuts it off.
         const body = own ? `${d.body} This is ${own}: TainerHub stops working until you start it again on the server with docker compose.` : d.body
+        const me = qc.getQueryData<Me>(['me'])
+        if (action === 'remove' && can(me?.user, 'admin')) {
+          volumeChoice.current = { on: false, names: [] }
+          // The checkbox below decides about volumes, so don't promise they're kept.
+          const adminBody = body.replace(' Its named volumes and image are kept.', ' Its image is kept.')
+          const full = (
+            <>
+              {adminBody}
+              <RemoveVolumesOption
+                c={c}
+                onChange={(v) => {
+                  volumeChoice.current = v
+                }}
+              />
+            </>
+          )
+          if (!(await confirm({ ...d, body: full, danger: true }))) return false
+          if (volumeChoice.current.on) {
+            removeVolumes.mutate({ c, names: volumeChoice.current.names })
+            return true
+          }
+          m.mutate({ c, action })
+          return true
+        }
         if (!(await confirm({ ...d, body, danger: true }))) return false
       }
       m.mutate({ c, action })
       return true
     },
-    [confirm, m],
+    [confirm, m, qc, removeVolumes],
   )
-  return { run, pendingId: m.isPending ? m.variables?.c.id : undefined }
+  const pendingId = m.isPending ? m.variables?.c.id : removeVolumes.isPending ? removeVolumes.variables?.c.id : undefined
+  return { run, pendingId }
 }
 
 // ---- logs drawer, opened from anywhere ----
