@@ -403,7 +403,27 @@ const (
 	// the same settings, rolling back if the new one doesn't start. Standalone
 	// containers only: compose ones are updated through their stack.
 	OpContainerRecreate = "container.recreate"
+	// OpDockerPlan inspects how Docker is installed on the host and what
+	// version its package repository offers. Result: DockerPlan.
+	OpDockerPlan = "docker.plan"
+	// OpDockerUpgrade upgrades the Docker Engine packages on the host. Docker
+	// restarts, and with it every container. Arg must be "restart-all" (the
+	// admin's explicit OK). Result: DockerPlan of what was started.
+	OpDockerUpgrade = "docker.upgrade"
 )
+
+// DockerPlan describes a host's Docker install and whether TainerHub can
+// upgrade it.
+type DockerPlan struct {
+	Manager   string `json:"manager"`             // apt, dnf, or why not: snap, apt-docker.io, rpm-distro, unknown
+	Installed string `json:"installed,omitempty"` // package version, e.g. 5:29.8.2-1~ubuntu.24.04~noble
+	Candidate string `json:"candidate,omitempty"` // newest version the host's repository offers
+	Systemd   bool   `json:"systemd"`
+	Supported bool   `json:"supported"`        // TainerHub can run the upgrade
+	Available bool   `json:"available"`        // the repository has a newer version
+	Reason    string `json:"reason,omitempty"` // why not supported, in plain words
+	Command   string `json:"command"`          // what runs (or what to run by hand)
+}
 
 // ImageUpdates maps image references (as containers use them) to whether a
 // newer image is available.
@@ -436,6 +456,7 @@ var OpKinds = map[string]bool{
 	OpVolumeRemove: true, OpVolumesPrune: true, OpNetworkRemove: true, OpNetworksPrune: true,
 	OpContainerRemoveVolumes: true, OpSelfUpdate: true,
 	OpImagesCheckUpdates: false, OpContainerRecreate: true,
+	OpDockerPlan: false, OpDockerUpgrade: true,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -462,6 +483,10 @@ func ValidOperation(op Operation) error {
 		}
 		if _, err := RemoveVolumeNames(op.Arg); err != nil {
 			return err
+		}
+	case OpDockerUpgrade:
+		if op.Arg != "restart-all" {
+			return errors.New("upgrading Docker restarts every container: it needs an explicit OK")
 		}
 	case OpImagesPrune, OpVolumesPrune, OpNetworksPrune:
 		if op.Arg != "" && op.Arg != "all" {

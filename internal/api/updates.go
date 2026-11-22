@@ -114,10 +114,14 @@ type hostUpdate struct {
 	Name    string `json:"name"`
 	Online  bool   `json:"online"`
 	Version string `json:"version"` // agent version
-	Current bool   `json:"current"`
-	HubHost bool   `json:"hubHost"` // this server also runs the hub: updating it updates the hub
-	CanTry  bool   `json:"canUpdate"`
-	Note    string `json:"note,omitempty"`
+	Docker  string `json:"docker"`  // Docker Engine version
+	// DockerBehind: Docker has released a newer engine. Whether this host's
+	// package repository offers it yet is checked when upgrading.
+	DockerBehind bool   `json:"dockerBehind"`
+	Current      bool   `json:"current"`
+	HubHost      bool   `json:"hubHost"` // this server also runs the hub: updating it updates the hub
+	CanTry       bool   `json:"canUpdate"`
+	Note         string `json:"note,omitempty"`
 }
 
 func (s *Server) updates(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +136,8 @@ func (s *Server) updates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	local := s.localHostID()
+	dockerLatest := s.dockerLatest.get(r.Context())
+	out["dockerLatest"] = dockerLatest
 	list := []hostUpdate{}
 	for _, h := range hosts {
 		u := hostUpdate{ID: h.ID, Name: h.Name, HubHost: h.ID == local}
@@ -139,6 +145,8 @@ func (s *Server) updates(w http.ResponseWriter, r *http.Request) {
 			u.Online = true
 			if hello := a.Status().Hello; hello != nil {
 				u.Version = hello.AgentVersion
+				u.Docker = hello.DockerVersion
+				u.DockerBehind = dockerLatest != "" && u.Docker != "" && versionLess(u.Docker, dockerLatest)
 			}
 		}
 		u.Current = isCurrent(u.Version, latest) && (!u.HubHost || isCurrent(version.Version, latest))
@@ -194,4 +202,113 @@ func (s *Server) updateHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"result": res, "hubHost": a.HostID == s.localHostID()})
+}
+
+// ---------------- Docker Engine ----------------
+
+// dockerLatestCache holds the newest Docker Engine release (moby/moby tags
+// look like "docker-v29.10.0"), for the "newer Docker available" badge. What
+// a host can actually install depends on its package repository: the
+// upgrade dialog asks the host (OpDockerPlan) before anything happens.
+type dockerLatestCache struct {
+	mu  sync.Mutex
+	at  time.Time
+	val string
+}
+
+func (c *dockerLatestCache) get(ctx context.Context) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.at.IsZero() && time.Since(c.at) < 6*time.Hour {
+		return c.val
+	}
+	c.at = time.Now()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubAPI+"/repos/moby/moby/releases?per_page=20", nil)
+	if err != nil {
+		return c.val
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "TainerHub")
+	resp, err := githubClient.Do(req)
+	if err != nil {
+		c.at = time.Now().Add(-5*time.Hour - 50*time.Minute) // retry in ~10 min
+		return c.val
+	}
+	defer resp.Body.Close()
+	var rels []struct {
+		Tag        string `json:"tag_name"`
+		Prerelease bool   `json:"prerelease"`
+		Draft      bool   `json:"draft"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&rels) != nil {
+		return c.val
+	}
+	for _, r := range rels {
+		v := strings.TrimPrefix(r.Tag, "docker-")
+		if r.Prerelease || r.Draft || !strings.HasPrefix(v, "v") || strings.Contains(v, "-") {
+			continue
+		}
+		c.val = strings.TrimPrefix(v, "v")
+		break
+	}
+	return c.val
+}
+
+// versionLess compares dotted versions like 29.9.2 and 29.10.0.
+func versionLess(a, b string) bool {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var x, y int
+		if i < len(pa) {
+			fmt.Sscanf(pa[i], "%d", &x)
+		}
+		if i < len(pb) {
+			fmt.Sscanf(pb[i], "%d", &y)
+		}
+		if x != y {
+			return x < y
+		}
+	}
+	return false
+}
+
+func (s *Server) dockerPlan(w http.ResponseWriter, r *http.Request) {
+	s.runOp(w, r, wire.Operation{Kind: wire.OpDockerPlan}, "docker")
+}
+
+// dockerUpgrade upgrades Docker Engine on a host. It restarts every
+// container there, so the request must name the host exactly ("confirm"),
+// on top of the confirmation the UI asks for.
+func (s *Server) dockerUpgrade(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Confirm string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	a := s.Reg.Get(r.PathValue("id"))
+	if a == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host is offline")
+		return
+	}
+	if strings.TrimSpace(in.Confirm) != a.Name {
+		jsonErr(w, http.StatusBadRequest, "confirm by giving the host's exact name: upgrading Docker restarts every container on it")
+		return
+	}
+	var before string
+	if h := a.Status().Hello; h != nil {
+		before = h.DockerVersion
+	}
+	data, err := a.Operate(r.Context(), wire.Operation{Kind: wire.OpDockerUpgrade, Arg: "restart-all"})
+	var p wire.DockerPlan
+	_ = json.Unmarshal(data, &p)
+	u := userFrom(r)
+	detail := map[string]string{"host": a.Name, "from": before, "package_from": p.Installed, "package_to": p.Candidate, "manager": p.Manager}
+	if err != nil {
+		detail["error"] = err.Error()
+	}
+	s.record(r, &u, "host.docker_upgrade", a.Name, detail)
+	if err != nil {
+		jsonErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, p)
 }

@@ -56,6 +56,10 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return d.removeWithVolumes(ctx, op.Target, names)
 	case wire.OpSelfUpdate:
 		return d.selfUpdate(ctx)
+	case wire.OpDockerPlan:
+		return d.dockerPlan(ctx)
+	case wire.OpDockerUpgrade:
+		return d.dockerUpgrade(ctx)
 	case wire.OpImagesCheckUpdates:
 		r, err := d.checkUpdates(ctx)
 		if err == nil {

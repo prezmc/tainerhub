@@ -1,18 +1,44 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUpCircle, CircleCheck, LoaderCircle, RefreshCw } from 'lucide-react'
-import { api, errorText, timeAgo, type HubState } from '../api'
-import { Badge, Button, Card, cx, useConfirm, useToast } from '../ui'
+import { ArrowUpCircle, CircleCheck, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react'
+import { api, errorText, timeAgo, type Host, type HubState } from '../api'
+import { Badge, Button, Card, CopyButton, ErrorNote, Modal, cx, useConfirm, useToast } from '../ui'
 
-type HostUpdate = { id: string; name: string; online: boolean; version: string; current: boolean; hubHost: boolean; canUpdate: boolean; note?: string }
+type HostUpdate = {
+  id: string
+  name: string
+  online: boolean
+  version: string
+  docker: string
+  dockerBehind: boolean
+  current: boolean
+  hubHost: boolean
+  canUpdate: boolean
+  note?: string
+}
 type Updates = {
   hubVersion: string
   hubCurrent: boolean
   hubManaged: boolean
   latest: { version: string; commit: string; title: string; at: string } | null
   error?: string
+  dockerLatest?: string
   hosts: HostUpdate[]
 }
+
+type DockerPlan = {
+  manager: string
+  installed?: string
+  candidate?: string
+  systemd: boolean
+  supported: boolean
+  available: boolean
+  reason?: string
+  command: string
+}
+
+/** "5:29.10.0-1~debian.12~bookworm" -> "29.10.0" */
+const pkgVersion = (v?: string) => v?.match(/\d+\.\d+\.\d+/)?.[0] ?? v ?? ''
 
 /** Polls until the hub answers with a different version, then reloads the page. */
 async function waitForNewHub(from: string) {
@@ -38,6 +64,7 @@ export function UpdatesCard() {
   const u = useQuery({ queryKey: ['updates'], queryFn: () => api<Updates>('/api/updates'), refetchInterval: 60_000 })
   const [busy, setBusy] = useState<string | null>(null) // host id, or 'all'
   const [restarting, setRestarting] = useState(false)
+  const [dockerFor, setDockerFor] = useState<HostUpdate | null>(null)
 
   if (!u.data) return null
   const d = u.data
@@ -145,6 +172,173 @@ export function UpdatesCard() {
         </p>
       )}
       {hubHost && !hubHost.online && !d.hubCurrent && <p className="mt-3 text-xs text-amber-200">The hub's own agent is offline, so the hub can't update itself right now.</p>}
+
+      <div className="mt-5 border-t border-line pt-4">
+        <div className="mb-2 flex flex-wrap items-baseline gap-2">
+          <h3 className="font-semibold text-white">Docker Engine</h3>
+          {d.dockerLatest && <span className="text-xs text-ink-100/50">latest release {d.dockerLatest}</span>}
+        </div>
+        <ul className="divide-y divide-line rounded-[3px] ring-1 ring-line">
+          {d.hosts
+            .filter((h) => h.online && h.docker)
+            .map((h) => (
+              <li key={h.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
+                <span className="font-semibold text-white">{h.name}</span>
+                <span className="mono text-xs text-ink-100/60">Docker {h.docker}</span>
+                {h.dockerBehind ? <Badge tone="warn">newer available</Badge> : <Badge tone="good">up to date</Badge>}
+                <span className="ml-auto" />
+                <Button icon={ArrowUpCircle} variant={h.dockerBehind ? 'secondary' : 'ghost'} onClick={() => setDockerFor(h)}>
+                  {h.dockerBehind ? 'Update Docker…' : 'Check…'}
+                </Button>
+              </li>
+            ))}
+        </ul>
+      </div>
+      {dockerFor && <DockerUpgradeDialog host={dockerFor} onClose={() => setDockerFor(null)} onDone={() => qc.invalidateQueries({ queryKey: ['updates'] })} />}
     </Card>
+  )
+}
+
+/**
+ * Upgrading Docker restarts every container on the server, so this asks the
+ * server first (how Docker is installed, what its repository offers), spells
+ * out the consequences, and only proceeds after an explicit OK.
+ */
+function DockerUpgradeDialog({ host, onClose, onDone }: { host: HostUpdate; onClose: () => void; onDone: () => void }) {
+  const toast = useToast()
+  const [plan, setPlan] = useState<DockerPlan | null>(null)
+  const [planError, setPlanError] = useState<string | null>(null)
+  const [ok, setOk] = useState(false)
+  const [phase, setPhase] = useState<'plan' | 'running' | 'done' | 'failed'>('plan')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api<DockerPlan>(`/api/hosts/${host.id}/docker/plan`, { method: 'POST' })
+      .then(setPlan)
+      .catch((e) => setPlanError(errorText(e)))
+  }, [host.id])
+
+  const start = async () => {
+    setError(null)
+    setPhase('running')
+    try {
+      await api(`/api/hosts/${host.id}/docker/upgrade`, { method: 'POST', body: { confirm: host.name } })
+    } catch (e) {
+      setError(errorText(e))
+      setPhase('failed')
+      return
+    }
+    // Docker restarts; the agent drops off and comes back on the new version.
+    const want = pkgVersion(plan?.candidate)
+    const deadline = Date.now() + 10 * 60_000
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 4000))
+      try {
+        const hs = await api<Host[]>('/api/hosts')
+        const v = hs.find((h) => h.id === host.id)?.hello?.docker_version
+        if (v && v !== host.docker && (!want || v === want)) {
+          setPhase('done')
+          toast('good', `Docker on ${host.name} is now ${v}`)
+          onDone()
+          return
+        }
+      } catch {
+        /* the hub itself may be restarting if this is its server */
+      }
+    }
+    setError(`Docker on ${host.name} didn't come back on a new version within 10 minutes. On the server, check: journalctl -u tainerhub-docker-upgrade, or /var/log/tainerhub-docker-upgrade.log`)
+    setPhase('failed')
+  }
+
+  return (
+    <Modal open onClose={phase === 'running' ? () => {} : onClose} title={`Update Docker on ${host.name}`} wide>
+      <div className="space-y-4 text-sm text-ink-100/80">
+        {!plan && !planError && (
+          <p className="flex items-center gap-2">
+            <LoaderCircle className="size-4 animate-spin text-lime-300" /> Checking how Docker is installed on {host.name} and what its package repository offers (this can take a minute)…
+          </p>
+        )}
+        {planError && <ErrorNote error={planError} />}
+        {plan && !plan.supported && (
+          <>
+            <p>{plan.reason}.</p>
+            {plan.command && (
+              <>
+                <p>To update Docker yourself, run this on {host.name}:</p>
+                <pre className="mono overflow-x-auto whitespace-pre-wrap break-all rounded-[3px] bg-black/40 p-3 text-xs text-lime-200 ring-1 ring-line">{plan.command}</pre>
+                <div className="flex justify-end">
+                  <CopyButton text={plan.command} label="Copy command" />
+                </div>
+              </>
+            )}
+          </>
+        )}
+        {plan && plan.supported && !plan.available && (
+          <p>
+            Docker {host.docker} is the newest version {host.name}'s package repository offers ({plan.manager}). Docker may have released something newer that the repository doesn't have
+            yet; check again later.
+          </p>
+        )}
+        {plan && plan.supported && plan.available && phase === 'plan' && (
+          <>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-[3px] bg-black/30 p-3 ring-1 ring-line">
+              <dt className="text-ink-100/50">Now</dt>
+              <dd className="mono text-white">{pkgVersion(plan.installed) || host.docker}</dd>
+              <dt className="text-ink-100/50">After</dt>
+              <dd className="mono text-lime-200">{pkgVersion(plan.candidate)}</dd>
+              <dt className="text-ink-100/50">How</dt>
+              <dd>{plan.manager === 'apt' ? 'apt (Docker’s apt repository)' : 'dnf (Docker’s rpm repository)'}, run by the server’s systemd</dd>
+            </dl>
+            <div className="space-y-2 rounded-[3px] border-l-4 border-rose-400 bg-rose-500/[0.08] p-3 ring-1 ring-inset ring-rose-400/25">
+              <div className="flex items-center gap-2 font-semibold text-rose-200">
+                <TriangleAlert className="size-4" /> What happens
+              </div>
+              <ul className="list-disc space-y-1 pl-5 text-ink-100/80">
+                <li>
+                  Docker restarts on {host.name}: <strong className="text-white">every container there stops and starts again</strong>, usually within a minute.
+                </li>
+                <li>Containers without a restart policy (restart: no) stay stopped until you start them.</li>
+                <li>{host.name} shows as offline in TainerHub until Docker is back.</li>
+                {host.hubHost && (
+                  <li>
+                    <strong className="text-white">This server runs TainerHub itself</strong>, so TainerHub is unavailable for a minute or two.
+                  </li>
+                )}
+              </ul>
+            </div>
+            <details className="text-xs">
+              <summary className="cursor-pointer text-ink-100/60 hover:text-white">Command that runs on the server</summary>
+              <pre className="mono mt-2 overflow-x-auto whitespace-pre-wrap break-all rounded-[3px] bg-black/40 p-3 text-ink-100/70 ring-1 ring-line">{plan.command}</pre>
+            </details>
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-[3px] p-3 ring-1 ring-inset ring-line has-[:checked]:ring-rose-400/50">
+              <input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} className="mt-0.5 accent-rose-500" />
+              <span>
+                I understand that <strong className="text-white">every container on {host.name} will restart</strong>, and I want to update Docker now.
+              </span>
+            </label>
+          </>
+        )}
+        {phase === 'running' && (
+          <p className="flex items-center gap-2">
+            <LoaderCircle className="size-4 animate-spin text-lime-300" /> Updating Docker on {host.name}. It will drop offline and come back on {pkgVersion(plan?.candidate)}; this
+            usually takes one to three minutes.
+          </p>
+        )}
+        {phase === 'done' && <p className="text-emerald-300">Done: Docker on {host.name} is up to date. Containers with a restart policy are running again.</p>}
+        <ErrorNote error={error} />
+        <div className="flex justify-end gap-2">
+          {phase !== 'running' && (
+            <Button variant="ghost" onClick={onClose}>
+              {phase === 'done' ? 'Close' : 'Cancel'}
+            </Button>
+          )}
+          {plan?.supported && plan.available && phase === 'plan' && (
+            <Button variant="danger" icon={ArrowUpCircle} disabled={!ok} onClick={start}>
+              Update Docker on {host.name}
+            </Button>
+          )}
+        </div>
+      </div>
+    </Modal>
   )
 }

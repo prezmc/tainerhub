@@ -571,7 +571,7 @@ func (s *session) handle(c wire.Command) {
 		go func() {
 			timeout := time.Minute
 			switch c.Op.Kind {
-			case wire.OpImagePull, wire.OpContainerRecreate, wire.OpImagesCheckUpdates:
+			case wire.OpImagePull, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade:
 				timeout = 15 * time.Minute // pulls and registry round trips
 			}
 			ctx, cancel := context.WithTimeout(s.ctx, timeout)
