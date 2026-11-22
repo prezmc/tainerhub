@@ -1,0 +1,525 @@
+// Package auth implements TainerHub's local identity: passkeys (WebAuthn)
+// as the primary sign-in, single-use recovery codes as break-glass, and
+// server-side sessions.
+package auth
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
+
+	"github.com/prezmc/tainerhub/internal/store"
+)
+
+const (
+	maxCeremonies   = 10000 // bounds memory if someone floods /api/login/begin
+	SessionIdle     = 12 * time.Hour
+	SessionMax      = 7 * 24 * time.Hour
+	ceremonyTimeout = 5 * time.Minute
+	setupTokenTTL   = 15 * time.Minute
+	recoveryCount   = 10
+)
+
+var (
+	ErrUnauthorized = errors.New("not signed in")
+	ErrSetupDone    = errors.New("setup already completed")
+	ErrBadSetup     = errors.New("setup link invalid or expired; check the hub logs for a new one")
+	ErrCeremony     = errors.New("sign-in attempt expired; try again")
+)
+
+type Service struct {
+	Store         *store.Store
+	WA            *webauthn.WebAuthn
+	Log           *slog.Logger
+	PublicURL     *url.URL
+	SecureCookies bool
+	Trusted       []netip.Prefix // proxies allowed to set X-Forwarded-For
+
+	mu         sync.Mutex
+	ceremonies map[string]*ceremony
+	setupToken string
+	setupExp   time.Time
+
+	Limiter *Limiter
+}
+
+type ceremony struct {
+	kind    string // "setup", "login", "add-passkey"
+	data    webauthn.SessionData
+	user    store.User // for setup / add-passkey
+	keyName string
+	expires time.Time
+}
+
+func New(st *store.Store, publicURL *url.URL, trusted []netip.Prefix, log *slog.Logger) (*Service, error) {
+	origin := publicURL.Scheme + "://" + publicURL.Host
+	wa, err := webauthn.New(&webauthn.Config{
+		RPID:          publicURL.Hostname(), // passkeys are bound to this name: don't change it later
+		RPDisplayName: "TainerHub",
+		RPOrigins:     []string{origin},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Service{
+		Store:         st,
+		WA:            wa,
+		Log:           log,
+		PublicURL:     publicURL,
+		SecureCookies: publicURL.Scheme == "https",
+		Trusted:       trusted,
+		ceremonies:    map[string]*ceremony{},
+		Limiter:       NewLimiter(10, 15*time.Minute),
+	}, nil
+}
+
+// ---------------- helpers ----------------
+
+func randToken(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func Hash(s string) []byte {
+	h := sha256.Sum256([]byte(s))
+	return h[:]
+}
+
+// ClientIP honours X-Forwarded-For only when the direct peer is a trusted proxy (NPM).
+func (s *Service) ClientIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		host = ap.Addr().Unmap().String()
+		if s.isTrusted(ap.Addr().Unmap()) {
+			parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				p := strings.TrimSpace(parts[i])
+				a, err := netip.ParseAddr(p)
+				if err != nil {
+					break
+				}
+				if !s.isTrusted(a.Unmap()) || i == 0 {
+					return a.Unmap().String()
+				}
+			}
+		}
+	}
+	return host
+}
+
+func (s *Service) isTrusted(a netip.Addr) bool {
+	for _, p := range s.Trusted {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// Cookie names use the __Host- prefix over HTTPS: the browser then refuses
+// them unless Secure, Path=/ and host-only, which blocks cookie injection
+// from sibling subdomains of example.com.
+func (s *Service) cookieName(base string) string {
+	if s.SecureCookies {
+		return "__Host-" + base
+	}
+	return base
+}
+
+func (s *Service) sessionCookie() string  { return s.cookieName("th_session") }
+func (s *Service) ceremonyCookie() string { return s.cookieName("th_ceremony") }
+
+func (s *Service) setCookie(w http.ResponseWriter, name, value string, maxAge time.Duration) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.SecureCookies,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(maxAge.Seconds()),
+	})
+}
+
+func (s *Service) clearCookie(w http.ResponseWriter, name string) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, Secure: s.SecureCookies, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+}
+
+func (s *Service) putCeremony(w http.ResponseWriter, c *ceremony) {
+	id := randToken(24)
+	c.expires = time.Now().Add(ceremonyTimeout)
+	s.mu.Lock()
+	for k, v := range s.ceremonies { // opportunistic cleanup
+		if time.Now().After(v.expires) {
+			delete(s.ceremonies, k)
+		}
+	}
+	if len(s.ceremonies) >= maxCeremonies {
+		for k := range s.ceremonies { // evict an arbitrary entry
+			delete(s.ceremonies, k)
+			break
+		}
+	}
+	s.ceremonies[id] = c
+	s.mu.Unlock()
+	s.setCookie(w, s.ceremonyCookie(), id, ceremonyTimeout)
+}
+
+func (s *Service) takeCeremony(w http.ResponseWriter, r *http.Request, kind string) (*ceremony, error) {
+	ck, err := r.Cookie(s.ceremonyCookie())
+	if err != nil {
+		return nil, ErrCeremony
+	}
+	s.clearCookie(w, s.ceremonyCookie())
+	s.mu.Lock()
+	c := s.ceremonies[ck.Value]
+	delete(s.ceremonies, ck.Value)
+	s.mu.Unlock()
+	if c == nil || c.kind != kind || time.Now().After(c.expires) {
+		return nil, ErrCeremony
+	}
+	return c, nil
+}
+
+// ---------------- webauthn user adapter ----------------
+
+type waUser struct {
+	u     store.User
+	creds []webauthn.Credential
+}
+
+func (u *waUser) WebAuthnID() []byte                         { return u.u.WebAuthnID }
+func (u *waUser) WebAuthnName() string                       { return u.u.Username }
+func (u *waUser) WebAuthnDisplayName() string                { return u.u.DisplayName }
+func (u *waUser) WebAuthnCredentials() []webauthn.Credential { return u.creds }
+func (u *waUser) WebAuthnIcon() string                       { return "" } // older library versions
+
+func (s *Service) loadWAUser(ctx context.Context, u store.User) (*waUser, error) {
+	pks, err := s.Store.ListPasskeys(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	wu := &waUser{u: u}
+	for _, pk := range pks {
+		var c webauthn.Credential
+		if err := json.Unmarshal(pk.Credential, &c); err != nil {
+			s.Log.Warn("unreadable passkey", "user", u.Username, "err", err)
+			continue
+		}
+		wu.creds = append(wu.creds, c)
+	}
+	return wu, nil
+}
+
+func registrationOptions(existing []webauthn.Credential) []webauthn.RegistrationOption {
+	opts := []webauthn.RegistrationOption{
+		webauthn.WithAuthenticatorSelection(protocol.AuthenticatorSelection{
+			ResidentKey:      protocol.ResidentKeyRequirementRequired, // discoverable: username-less sign-in
+			UserVerification: protocol.VerificationRequired,
+		}),
+	}
+	if len(existing) > 0 {
+		excl := make([]protocol.CredentialDescriptor, 0, len(existing))
+		for _, c := range existing {
+			excl = append(excl, c.Descriptor())
+		}
+		opts = append(opts, webauthn.WithExclusions(excl))
+	}
+	return opts
+}
+
+// ---------------- first-run setup ----------------
+
+// SetupRequired reports whether no user exists yet.
+func (s *Service) SetupRequired(ctx context.Context) (bool, error) {
+	n, err := s.Store.CountUsers(ctx)
+	return n == 0, err
+}
+
+// RotateSetupToken creates a new one-time setup token and logs the setup URL.
+func (s *Service) RotateSetupToken() string {
+	tok := randToken(24)
+	s.mu.Lock()
+	s.setupToken = tok
+	s.setupExp = time.Now().Add(setupTokenTTL)
+	s.mu.Unlock()
+	link := strings.TrimSuffix(s.PublicURL.String(), "/") + "/setup?token=" + tok
+	s.Log.Warn("No users yet. Open this link within 15 minutes to create the owner account with a passkey", "url", link)
+	return tok
+}
+
+// RunSetupTokenLoop keeps a valid setup link in the logs until setup completes.
+func (s *Service) RunSetupTokenLoop(ctx context.Context) {
+	for {
+		need, err := s.SetupRequired(ctx)
+		if err == nil && !need {
+			return
+		}
+		if err == nil {
+			s.RotateSetupToken()
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(setupTokenTTL):
+		}
+	}
+}
+
+func (s *Service) checkSetupToken(tok string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setupToken != "" && time.Now().Before(s.setupExp) &&
+		len(tok) == len(s.setupToken) && subtleEq(tok, s.setupToken)
+}
+
+type SetupBegin struct {
+	Token       string `json:"token"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	PasskeyName string `json:"passkeyName"`
+}
+
+func (s *Service) BeginSetup(w http.ResponseWriter, r *http.Request, in SetupBegin) (*protocol.CredentialCreation, error) {
+	if need, err := s.SetupRequired(r.Context()); err != nil {
+		return nil, err
+	} else if !need {
+		return nil, ErrSetupDone
+	}
+	if !s.checkSetupToken(in.Token) {
+		return nil, ErrBadSetup
+	}
+	in.Username = strings.TrimSpace(in.Username)
+	if !validUsername(in.Username) {
+		return nil, errors.New("username must be 2-32 letters, digits, dots, dashes or underscores")
+	}
+	if strings.TrimSpace(in.DisplayName) == "" {
+		in.DisplayName = in.Username
+	}
+	u := store.User{Username: in.Username, DisplayName: strings.TrimSpace(in.DisplayName), Role: "owner", WebAuthnID: []byte(randToken(32))}
+	opts, data, err := s.WA.BeginRegistration(&waUser{u: u}, registrationOptions(nil)...)
+	if err != nil {
+		return nil, err
+	}
+	s.putCeremony(w, &ceremony{kind: "setup", data: *data, user: u, keyName: keyName(in.PasskeyName)})
+	return opts, nil
+}
+
+// FinishSetup verifies the passkey, creates the owner, signs them in and
+// returns their recovery codes (shown once).
+func (s *Service) FinishSetup(w http.ResponseWriter, r *http.Request) (store.User, []string, error) {
+	c, err := s.takeCeremony(w, r, "setup")
+	if err != nil {
+		return store.User{}, nil, err
+	}
+	cred, err := s.WA.FinishRegistration(&waUser{u: c.user}, c.data, r)
+	if err != nil {
+		return store.User{}, nil, errors.New("passkey verification failed")
+	}
+	credJSON, _ := json.Marshal(cred)
+	codes, hashes := newRecoveryCodes()
+	u, err := s.Store.CreateFirstOwner(r.Context(), c.user, store.Passkey{ID: cred.ID, Name: c.keyName, Credential: credJSON}, hashes)
+	if errors.Is(err, store.ErrConflict) {
+		return store.User{}, nil, ErrSetupDone
+	}
+	if err != nil {
+		return store.User{}, nil, err
+	}
+	s.mu.Lock()
+	s.setupToken = ""
+	s.mu.Unlock()
+	if err := s.startSession(w, r, u); err != nil {
+		return store.User{}, nil, err
+	}
+	return u, codes, nil
+}
+
+// ---------------- sign-in ----------------
+
+func (s *Service) BeginLogin(w http.ResponseWriter, r *http.Request) (*protocol.CredentialAssertion, error) {
+	opts, data, err := s.WA.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
+	if err != nil {
+		return nil, err
+	}
+	s.putCeremony(w, &ceremony{kind: "login", data: *data})
+	return opts, nil
+}
+
+func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) (store.User, error) {
+	ip := s.ClientIP(r)
+	if !s.Limiter.Allow(ip) {
+		return store.User{}, ErrRateLimited
+	}
+	c, err := s.takeCeremony(w, r, "login")
+	if err != nil {
+		return store.User{}, err
+	}
+	var found *waUser
+	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
+		u, err := s.Store.UserByWebAuthnID(r.Context(), userHandle)
+		if err != nil {
+			return nil, err
+		}
+		wu, err := s.loadWAUser(r.Context(), u)
+		if err != nil {
+			return nil, err
+		}
+		found = wu
+		return wu, nil
+	}
+	cred, err := s.WA.FinishDiscoverableLogin(handler, c.data, r)
+	if err != nil || found == nil {
+		s.Limiter.Fail(ip)
+		return store.User{}, errors.New("passkey not recognised")
+	}
+	if cred.Authenticator.CloneWarning {
+		s.Log.Warn("passkey sign count went backwards; possible cloned authenticator", "user", found.u.Username)
+		s.Limiter.Fail(ip)
+		return store.User{}, errors.New("passkey rejected")
+	}
+	credJSON, _ := json.Marshal(cred)
+	if err := s.Store.UpdatePasskeyAfterLogin(r.Context(), cred.ID, credJSON); err != nil {
+		s.Log.Warn("update passkey", "err", err)
+	}
+	return found.u, s.startSession(w, r, found.u)
+}
+
+var ErrRateLimited = errors.New("too many failed attempts; wait 15 minutes")
+
+// LoginWithRecoveryCode signs in with a single-use code. Each code works once.
+func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, username, code string) (store.User, error) {
+	ip := s.ClientIP(r)
+	if !s.Limiter.Allow(ip) {
+		return store.User{}, ErrRateLimited
+	}
+	fail := errors.New("username or recovery code is wrong")
+	u, err := s.Store.UserByUsername(r.Context(), strings.TrimSpace(username))
+	if err != nil {
+		s.Limiter.Fail(ip)
+		return store.User{}, fail
+	}
+	ok, err := s.Store.UseRecoveryCode(r.Context(), u.ID, Hash(normalizeCode(code)))
+	if err != nil {
+		return store.User{}, err
+	}
+	if !ok {
+		s.Limiter.Fail(ip)
+		return store.User{}, fail
+	}
+	return u, s.startSession(w, r, u)
+}
+
+// ---------------- adding passkeys ----------------
+
+func (s *Service) BeginAddPasskey(w http.ResponseWriter, r *http.Request, u store.User, name string) (*protocol.CredentialCreation, error) {
+	wu, err := s.loadWAUser(r.Context(), u)
+	if err != nil {
+		return nil, err
+	}
+	opts, data, err := s.WA.BeginRegistration(wu, registrationOptions(wu.creds)...)
+	if err != nil {
+		return nil, err
+	}
+	s.putCeremony(w, &ceremony{kind: "add-passkey", data: *data, user: u, keyName: keyName(name)})
+	return opts, nil
+}
+
+func (s *Service) FinishAddPasskey(w http.ResponseWriter, r *http.Request, u store.User) error {
+	c, err := s.takeCeremony(w, r, "add-passkey")
+	if err != nil {
+		return err
+	}
+	if c.user.ID != u.ID {
+		return ErrCeremony
+	}
+	wu, err := s.loadWAUser(r.Context(), u)
+	if err != nil {
+		return err
+	}
+	cred, err := s.WA.FinishRegistration(wu, c.data, r)
+	if err != nil {
+		return errors.New("passkey verification failed")
+	}
+	credJSON, _ := json.Marshal(cred)
+	return s.Store.AddPasskey(r.Context(), store.Passkey{ID: cred.ID, UserID: u.ID, Name: c.keyName, Credential: credJSON})
+}
+
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, u store.User) ([]string, error) {
+	codes, hashes := newRecoveryCodes()
+	return codes, s.Store.ReplaceRecoveryCodes(ctx, u.ID, hashes)
+}
+
+// ---------------- sessions ----------------
+
+func (s *Service) startSession(w http.ResponseWriter, r *http.Request, u store.User) error {
+	tok := randToken(32)
+	if err := s.Store.CreateSession(r.Context(), Hash(tok), u.ID, time.Now().Add(SessionMax), s.ClientIP(r), truncate(r.UserAgent(), 200)); err != nil {
+		return err
+	}
+	s.setCookie(w, s.sessionCookie(), tok, SessionMax)
+	return nil
+}
+
+// UserFromRequest returns the signed-in user, enforcing idle and absolute timeouts.
+func (s *Service) UserFromRequest(r *http.Request) (store.User, error) {
+	ck, err := r.Cookie(s.sessionCookie())
+	if err != nil || ck.Value == "" {
+		return store.User{}, ErrUnauthorized
+	}
+	h := Hash(ck.Value)
+	ss, err := s.Store.GetSession(r.Context(), h)
+	if err != nil {
+		return store.User{}, ErrUnauthorized
+	}
+	now := time.Now()
+	if now.After(ss.ExpiresAt) || now.Sub(ss.LastSeenAt) > SessionIdle {
+		_ = s.Store.DeleteSession(r.Context(), h)
+		return store.User{}, ErrUnauthorized
+	}
+	if now.Sub(ss.LastSeenAt) > time.Minute {
+		_ = s.Store.TouchSession(r.Context(), h)
+	}
+	u, err := s.Store.UserByID(r.Context(), ss.UserID)
+	if err != nil {
+		return store.User{}, ErrUnauthorized
+	}
+	return u, nil
+}
+
+func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {
+	if ck, err := r.Cookie(s.sessionCookie()); err == nil {
+		_ = s.Store.DeleteSession(r.Context(), Hash(ck.Value))
+	}
+	s.clearCookie(w, s.sessionCookie())
+}
+
+func (s *Service) RunSessionJanitor(ctx context.Context) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		if err := s.Store.PurgeSessions(ctx, time.Now().Add(-SessionIdle)); err != nil && ctx.Err() == nil {
+			s.Log.Warn("purge sessions", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}

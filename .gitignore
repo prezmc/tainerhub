@@ -1,0 +1,10 @@
+/bin/
+node_modules/
+web/dist/*
+!web/dist/.gitkeep
+deploy/hub/secrets/
+*.pem
+*.key
+.env
+.DS_Store
+/Claude outputs/

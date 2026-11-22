@@ -1,0 +1,29 @@
+# TainerHub hub: web UI + API (:8080, behind Nginx Proxy Manager) and agent gateway (:7443, mTLS)
+# syntax=docker/dockerfile:1
+
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+FROM --platform=$BUILDPLATFORM golang:1-alpine AS build
+ARG TARGETOS TARGETARCH VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=web /src/web/dist ./web/dist
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+      -ldflags "-s -w -X github.com/prezmc/tainerhub/internal/version.Version=${VERSION}" \
+      -o /out/tainerhub ./cmd/tainerhub \
+ && mkdir -p /out/data
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/tainerhub /tainerhub
+COPY --from=build --chown=65532:65532 /out/data /data
+USER nonroot:nonroot
+VOLUME /data
+EXPOSE 8080 7443
+ENTRYPOINT ["/tainerhub"]

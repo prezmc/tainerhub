@@ -1,0 +1,82 @@
+# TainerHub hub stack. Run on the server that also runs Nginx Proxy Manager (Server 1).
+#
+#   mkdir -p secrets && chmod 700 secrets
+#   openssl rand -base64 32 | tr -d '\n' > secrets/db_password && chmod 644 secrets/db_password
+#   docker compose up -d && docker compose logs -f tainerhub   # prints the one-time setup link
+#
+# Then in NPM add a proxy host: tainerhub.example.com -> http://tainerhub:8080
+# (Websockets on, Force SSL, HTTP/2, HSTS; certificate via Cloudflare DNS challenge).
+
+services:
+  tainerhub:
+    image: ghcr.io/prezmc/tainerhub:latest
+    container_name: tainerhub
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "/tainerhub", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    ports:
+      - "7443:7443"            # agent gateway (mTLS). Do NOT route this through NPM.
+    expose:
+      - "8080"                 # web UI + API, reached only through NPM
+    networks: [default, npm]
+    volumes:
+      - tainerhub-data:/data   # hub CA keys live here: back this volume up
+    secrets: [db_password]
+    environment:
+      TAINERHUB_PUBLIC_URL: https://tainerhub.example.com
+      TAINERHUB_AGENT_ADDR: tainerhub.example.com:7443
+      # Extra names/IPs agents may dial, e.g. this server's LAN IP:
+      # TAINERHUB_AGENT_SANS: 192.168.1.10
+      TAINERHUB_TRUSTED_PROXIES: 172.16.0.0/12   # Docker networks (NPM); narrow to NPM's subnet if you like
+      TAINERHUB_DATABASE_URL: postgres://tainerhub@postgres:5432/tainerhub?sslmode=disable
+      TAINERHUB_DATABASE_PASSWORD_FILE: /run/secrets/db_password
+      TAINERHUB_LOG_LEVEL: info
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: tainerhub-postgres
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    shm_size: 128mb
+    secrets: [db_password]
+    environment:
+      POSTGRES_USER: tainerhub
+      POSTGRES_DB: tainerhub
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    volumes:
+      - tainerhub-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tainerhub -d tainerhub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Phase 3 (metrics): uncomment when the analytics pipeline lands.
+  # victoriametrics:
+  #   image: victoriametrics/victoria-metrics:latest
+  #   restart: unless-stopped
+  #   command: ["-retentionPeriod=90d", "-storageDataPath=/storage"]
+  #   volumes: ["tainerhub-metrics:/storage"]
+
+networks:
+  npm:
+    external: true
+    name: ${NPM_NETWORK:-npm_default}   # the Docker network your NPM container is on
+
+volumes:
+  tainerhub-data:
+  tainerhub-db:
+  # tainerhub-metrics:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password

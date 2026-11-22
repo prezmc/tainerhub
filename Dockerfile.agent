@@ -1,0 +1,18 @@
+# TainerHub agent: runs on every Docker host and connects out to the hub.
+# syntax=docker/dockerfile:1
+
+FROM --platform=$BUILDPLATFORM golang:1-alpine AS build
+ARG TARGETOS TARGETARCH VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+      -ldflags "-s -w -X github.com/prezmc/tainerhub/internal/version.Version=${VERSION}" \
+      -o /out/tainerhub-agent ./cmd/tainerhub-agent
+
+# Runs as root because it needs the Docker socket (which is root-equivalent).
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/tainerhub-agent /tainerhub-agent
+VOLUME /data
+ENTRYPOINT ["/tainerhub-agent"]
