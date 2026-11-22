@@ -89,4 +89,5 @@ else
 	say "  Open http://$host:$PORT and sign in."
 fi
 say ""
-say "  Next: in TainerHub, go to Hosts -> Add host to connect this server and any others."
+say "  This server is managed automatically: it appears under Hosts within a few seconds."
+say "  To add your other servers: Hosts -> Add host."

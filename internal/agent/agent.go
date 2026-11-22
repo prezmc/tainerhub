@@ -28,11 +28,14 @@ import (
 type Config struct {
 	HubAddr   string // host:port of the hub's agent gateway, e.g. tainerhub.example.com:7443
 	JoinToken string // only needed until the agent has enrolled
-	DataDir   string // stores agent.crt, agent.key, ca.crt
-	Version   string
-	Docker    Docker
-	Stacks    *StackRunner // nil: compose stacks are not available on this agent
-	Log       *slog.Logger
+	// JoinTokenFile is where the hub leaves a join token for its own server's
+	// agent (see cmd/tainerhub/localagent.go). The agent waits for it.
+	JoinTokenFile string
+	DataDir       string // stores agent.crt, agent.key, ca.crt
+	Version       string
+	Docker        Docker
+	Stacks        *StackRunner // nil: compose stacks are not available on this agent
+	Log           *slog.Logger
 
 	SnapshotEvery time.Duration // default 30s
 	StatsEvery    time.Duration // default 10s; negative disables stats
@@ -93,12 +96,18 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.root = ctx
 	creds, err := a.loadCreds()
 	if err != nil {
-		if a.cfg.JoinToken == "" {
+		switch {
+		case a.cfg.JoinToken != "":
+			creds, err = a.enroll(ctx, a.cfg.JoinToken)
+			if err != nil {
+				return fmt.Errorf("enroll: %w", err)
+			}
+		case a.cfg.JoinTokenFile != "":
+			if creds, err = a.enrollFromFile(ctx); err != nil {
+				return err
+			}
+		default:
 			return errors.New("agent is not enrolled and no join token was given")
-		}
-		creds, err = a.enroll(ctx)
-		if err != nil {
-			return fmt.Errorf("enroll: %w", err)
 		}
 	}
 	backoff := time.Second
@@ -144,8 +153,34 @@ func (a *Agent) caPool() (*x509.CertPool, error) {
 	return p, nil
 }
 
-func (a *Agent) enroll(ctx context.Context) (tls.Certificate, error) {
-	tok, err := wire.ParseJoinToken(a.cfg.JoinToken)
+// enrollFromFile waits for the hub to leave a join token in JoinTokenFile and
+// enrolls with it, retrying (with whatever token is there by then) until it
+// works: the hub keeps the file fresh until this agent has enrolled.
+func (a *Agent) enrollFromFile(ctx context.Context) (tls.Certificate, error) {
+	waiting := false
+	for {
+		b, err := os.ReadFile(a.cfg.JoinTokenFile)
+		tok := strings.TrimSpace(string(b))
+		if err == nil && tok != "" {
+			creds, err := a.enroll(ctx, tok)
+			if err == nil {
+				return creds, nil
+			}
+			a.log.Warn("enrollment with the hub's token failed; retrying", "err", err)
+		} else if !waiting {
+			a.log.Info("waiting for the hub to provide a join token", "file", a.cfg.JoinTokenFile)
+			waiting = true
+		}
+		select {
+		case <-ctx.Done():
+			return tls.Certificate{}, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+func (a *Agent) enroll(ctx context.Context, joinToken string) (tls.Certificate, error) {
+	tok, err := wire.ParseJoinToken(joinToken)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -169,7 +204,7 @@ func (a *Agent) enroll(ctx context.Context) (tls.Certificate, error) {
 		Timeout:   30 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: tlsCfg, ForceAttemptHTTP2: true},
 	}
-	body, _ := json.Marshal(wire.EnrollRequest{Token: a.cfg.JoinToken, Hostname: hostname, CSR: csr})
+	body, _ := json.Marshal(wire.EnrollRequest{Token: joinToken, Hostname: hostname, CSR: csr})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+a.cfg.HubAddr+wire.PathEnroll, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)

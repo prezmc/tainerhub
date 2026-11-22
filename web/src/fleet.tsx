@@ -25,6 +25,14 @@ export function useFleet() {
 }
 
 /** Runs a container action with confirmation for destructive ones and a toast for the result. */
+/** Describes TainerHub's own containers, which are risky to stop or remove from TainerHub. */
+function ownContainer(c: Container): string | null {
+  if (c.name === 'tainerhub') return "TainerHub's hub"
+  if (c.name === 'tainerhub-postgres') return "TainerHub's database"
+  if (c.name === 'tainerhub-agent' || c.image.includes('tainerhub-agent')) return `the agent that connects ${c.hostName} to TainerHub`
+  return null
+}
+
 export function useContainerAction() {
   const qc = useQueryClient()
   const toast = useToast()
@@ -38,15 +46,26 @@ export function useContainerAction() {
     onError: (e, { c }) => toast('bad', `${c.name}: ${errorText(e)}`),
   })
   const run = useCallback(
-    async (c: Container, action: Action) => {
+    async (c: Container, action: Action): Promise<boolean> => {
+      const own = ownContainer(c)
+      const fromStack = c.project && !own ? ` It belongs to the ${c.project} stack, so redeploying that stack recreates it.` : ''
       const destructive: Partial<Record<Action, { title: string; body: string; confirm: string }>> = {
         stop: { title: `Stop ${c.name}?`, body: `It stays stopped on ${c.hostName} until you start it again.`, confirm: 'Stop' },
         kill: { title: `Kill ${c.name}?`, body: 'Sends SIGKILL immediately. The process gets no chance to shut down cleanly.', confirm: 'Kill' },
-        remove: { title: `Remove ${c.name}?`, body: `The container is deleted from ${c.hostName}. Named volumes are kept; recreate it from its compose file.`, confirm: 'Remove' },
+        remove: {
+          title: `Remove ${c.name}?`,
+          body: `The container is deleted from ${c.hostName}, even if it's running. Its named volumes and image are kept.${fromStack}`,
+          confirm: 'Remove',
+        },
       }
       const d = destructive[action]
-      if (d && !(await confirm({ ...d, danger: true }))) return
+      if (d) {
+        // Stopping TainerHub's own containers from TainerHub cuts it off.
+        const body = own ? `${d.body} This is ${own}: TainerHub stops working until you start it again on the server with docker compose.` : d.body
+        if (!(await confirm({ ...d, body, danger: true }))) return false
+      }
       m.mutate({ c, action })
+      return true
     },
     [confirm, m],
   )

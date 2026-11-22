@@ -174,6 +174,12 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	authSvc.SetupTokenFile = filepath.Join(cfg.DataDir, setupTokenFile)
+	// The hub's compose file runs an agent for this server too; enroll it.
+	if dir := os.Getenv("TAINERHUB_LOCAL_AGENT_DIR"); dir != "" {
+		la := &localAgent{st: st, caFP: ca.Fingerprint(), dataDir: cfg.DataDir, shareDir: dir, log: log.With("component", "local-agent"), now: time.Now,
+			renamed: reg.Disconnect} // the agent reconnects within seconds, under its new name
+		go la.run(ctx)
+	}
 	go authSvc.RunSetupTokenLoop(ctx)
 	go authSvc.RunSessionJanitor(ctx)
 

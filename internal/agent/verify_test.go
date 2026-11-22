@@ -56,3 +56,20 @@ func TestVerifyHubByCANotHostname(t *testing.T) {
 		t.Fatal("an agent's client certificate must not pass as the hub")
 	}
 }
+
+func TestSameHostPath(t *testing.T) {
+	for _, c := range []struct {
+		src, dir string
+		want     bool
+	}{
+		{"/opt/tainerhub/stacks", "/opt/tainerhub/stacks", true},
+		{"/host_mnt/opt/tainerhub/stacks", "/opt/tainerhub/stacks", true},         // Docker Desktop
+		{"/host_mnt/private/tmp/tainerhub/stacks", "/tmp/tainerhub/stacks", true}, // Docker Desktop on macOS
+		{"/srv/stacks", "/opt/tainerhub/stacks", false},
+		{"/host_mnt/srv/stacks", "/opt/tainerhub/stacks", false},
+	} {
+		if got := sameHostPath(c.src, c.dir); got != c.want {
+			t.Errorf("sameHostPath(%q, %q) = %v", c.src, c.dir, got)
+		}
+	}
+}
