@@ -239,18 +239,49 @@ export function SegmentBar({ parts, className }: { parts: { value: number; class
 
 // ---------------- copy / codes ----------------
 
-export function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
-  const [done, setDone] = useState(false)
+/**
+ * Copies text. navigator.clipboard only exists on HTTPS pages (and
+ * localhost), so on a plain-HTTP install fall back to the old
+ * select-and-copy trick, which works everywhere.
+ */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (window.isSecureContext && navigator.clipboard) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    /* fall through */
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.top = '-1000px'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  ta.remove()
+  return ok
+}
+
+export function CopyButton({ text, label = 'Copy', variant }: { text: string; label?: string; variant?: Variant }) {
+  const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle')
   return (
     <Button
-      icon={done ? Check : Copy}
+      variant={variant}
+      icon={state === 'done' ? Check : Copy}
       onClick={async () => {
-        await navigator.clipboard.writeText(text)
-        setDone(true)
-        setTimeout(() => setDone(false), 1500)
+        setState((await copyText(text)) ? 'done' : 'failed')
+        setTimeout(() => setState('idle'), 2000)
       }}
     >
-      {done ? 'Copied' : label}
+      {state === 'done' ? 'Copied' : state === 'failed' ? "Couldn't copy: select it instead" : label}
     </Button>
   )
 }

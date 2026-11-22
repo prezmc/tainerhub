@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Clock, Cpu, Ellipsis, KeyRound, Layers, MemoryStick, Plus, Server, ShieldCheck, Trash2 } from 'lucide-react'
+import { Clock, Cpu, Ellipsis, KeyRound, Layers, MemoryStick, Pencil, Plus, Server, ShieldCheck, Trash2 } from 'lucide-react'
 import { api, bytes, can, errorText, stackProblem, timeAgo, type Host, type JoinTokenResponse } from '../api'
 import { Badge, Button, Card, CopyButton, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, PageHeader, StatusDot, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
@@ -35,6 +35,18 @@ export function HostsPage() {
     mutationFn: (h: Host) => api<JoinTokenResponse>(`/api/hosts/${h.id}/token`, { method: 'POST', body: { agentAddr: agentAddr.trim() } }),
     onSuccess: setJoin,
     onError: (e) => toast('bad', errorText(e)),
+  })
+  const [renaming, setRenaming] = useState<Host | null>(null)
+  const [newName, setNewName] = useState('')
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const rename = useMutation({
+    mutationFn: () => api(`/api/hosts/${renaming!.id}`, { method: 'PUT', body: { name: newName.trim() } }),
+    onSuccess: () => {
+      toast('good', `Renamed to ${newName.trim()}`)
+      setRenaming(null)
+      qc.invalidateQueries({ queryKey: ['hosts'] })
+    },
+    onError: (e) => setRenameError(errorText(e)),
   })
   const remove = useMutation({
     mutationFn: (h: Host) => api(`/api/hosts/${h.id}`, { method: 'DELETE' }),
@@ -82,7 +94,18 @@ export function HostsPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {hosts.data?.map((h) => (
-            <HostCard key={h.id} h={h} admin={admin} onToken={() => reissue.mutate(h)} onRemove={() => askRemove(h)} />
+            <HostCard
+              key={h.id}
+              h={h}
+              admin={admin}
+              onToken={() => reissue.mutate(h)}
+              onRemove={() => askRemove(h)}
+              onRename={() => {
+                setRenaming(h)
+                setNewName(h.name)
+                setRenameError(null)
+              }}
+            />
           ))}
         </div>
       )}
@@ -117,6 +140,28 @@ export function HostsPage() {
         </form>
       </Modal>
 
+      <Modal open={!!renaming} onClose={() => setRenaming(null)} title={renaming ? `Rename ${renaming.name}` : ''}>
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setRenameError(null)
+            rename.mutate()
+          }}
+        >
+          <Input label="Name" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus required maxLength={64} hint="Only changes how it's shown in TainerHub; nothing changes on the server." />
+          <ErrorNote error={renameError} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setRenaming(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" icon={Pencil} loading={rename.isPending} disabled={!newName.trim() || newName.trim() === renaming?.name}>
+              Rename
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
       <Modal open={!!join} onClose={() => setJoin(null)} title={join ? `Connect ${join.host.name}` : ''} wide>
         {join && <JoinInstructions join={join} />}
       </Modal>
@@ -124,7 +169,7 @@ export function HostsPage() {
   )
 }
 
-function HostCard({ h, admin, onToken, onRemove }: { h: Host; admin: boolean; onToken: () => void; onRemove: () => void }) {
+function HostCard({ h, admin, onToken, onRemove, onRename }: { h: Host; admin: boolean; onToken: () => void; onRemove: () => void; onRename: () => void }) {
   const stopped = h.containers - h.running
   const pct = h.containers ? Math.round((h.running / h.containers) * 100) : 0
   return (
@@ -147,6 +192,7 @@ function HostCard({ h, admin, onToken, onRemove }: { h: Host; admin: boolean; on
           <Menu
             trigger={(toggle) => <IconButton icon={Ellipsis} label="Host actions" onClick={toggle} />}
             items={[
+              { label: 'Rename', icon: Pencil, onClick: onRename },
               { label: 'New join token', icon: KeyRound, onClick: onToken },
               { label: 'Remove host', icon: Trash2, onClick: onRemove, danger: true },
             ]}
@@ -229,34 +275,36 @@ function Ring({ pct }: { pct: number }) {
 }
 
 function JoinInstructions({ join }: { join: JoinTokenResponse }) {
-  const steps = [
-    <>
-      On <strong className="text-white">{join.host.name}</strong>, create a folder such as <code className="mono text-lime-300">~/tainerhub-agent</code> and save this as{' '}
-      <code className="mono text-lime-300">compose.yml</code>.
-    </>,
-    <>
-      Run <code className="mono text-lime-300">docker compose up -d</code>. The agent connects to <code className="mono text-lime-300">{join.agentAddr}</code>, so that port must be reachable
-      from the server. The host turns green here within a few seconds.
-    </>,
-    <>
-      The token works once and expires at <strong className="text-white">{new Date(join.expiresAt).toLocaleTimeString()}</strong>. Afterwards you can delete the{' '}
-      <code className="mono text-lime-300">TAINERHUB_JOIN_TOKEN</code> line.
-    </>,
-  ]
+  // One line to paste on the new server: the hub serves a script that writes
+  // the agent's compose file, starts it and waits until it's connected.
+  const command = `curl -fsSL "${window.location.origin}/join/${join.joinToken}?hub=${encodeURIComponent(join.agentAddr)}" | sh`
   return (
-    <div className="space-y-5">
-      <ol className="space-y-3">
-        {steps.map((s, i) => (
-          <li key={i} className="flex gap-3 text-sm text-ink-100/80">
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-lime-500/15 text-xs font-semibold text-lime-300 ring-1 ring-inset ring-lime-500/30">{i + 1}</span>
-            <span className="pt-0.5">{s}</span>
-          </li>
-        ))}
-      </ol>
-      <pre className="mono max-h-72 overflow-auto rounded-[3px] bg-black/50 p-4 text-xs leading-relaxed text-ink-100/80 ring-1 ring-white/10">{join.compose}</pre>
-      <div className="flex justify-end">
-        <CopyButton text={join.compose} label="Copy compose file" />
+    <div className="space-y-5 text-sm text-ink-100/80">
+      <p>
+        On <strong className="text-white">{join.host.name}</strong>, paste this into a terminal (as root, or a user in the <code className="mono text-lime-300">docker</code> group):
+      </p>
+      <pre className="mono overflow-x-auto whitespace-pre-wrap break-all rounded-[3px] bg-black/50 p-4 text-xs leading-relaxed text-lime-200 ring-1 ring-line">{command}</pre>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-xs text-ink-100/50">
+          Works once, until {new Date(join.expiresAt).toLocaleTimeString()}. It installs the agent in <code className="mono">~/tainerhub-agent</code>, and the host turns green here when it's connected.
+        </span>
+        <CopyButton text={command} label="Copy command" variant="primary" />
       </div>
+      <p className="text-xs text-ink-100/50">
+        The server must reach <code className="mono text-ink-100/80">{join.agentAddr}</code> (agents connect there) and this page's address (to download the installer).
+      </p>
+      <details className="rounded-[3px] ring-1 ring-line">
+        <summary className="cursor-pointer select-none px-4 py-2.5 text-xs text-ink-100/70 hover:text-white">Set it up by hand instead</summary>
+        <div className="space-y-3 border-t border-line p-4">
+          <p className="text-xs">
+            Save this as <code className="mono text-lime-300">~/tainerhub-agent/compose.yml</code> on {join.host.name}, then run <code className="mono text-lime-300">docker compose up -d</code> in that folder.
+          </p>
+          <pre className="mono max-h-64 overflow-auto rounded-[3px] bg-black/50 p-3 text-xs leading-relaxed text-ink-100/80 ring-1 ring-line">{join.compose}</pre>
+          <div className="flex justify-end">
+            <CopyButton text={join.compose} label="Copy compose file" />
+          </div>
+        </div>
+      </details>
     </div>
   )
 }

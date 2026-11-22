@@ -93,15 +93,15 @@ docker exec tainerhub /tainerhub setup-link    # open http://<server IP>:8585 + 
 
 The hub's own server is already there: the hub's compose file includes an agent that enrolls itself, so it appears under **Hosts** within a few seconds of starting.
 
-For each other server, go to **Hosts → Add host**, name the server, and copy the compose file it shows. On that server:
+For each other server, go to **Hosts → Add host**, name it, and copy the one-line command it shows. Paste it into a terminal on that server (as root, or a user in the `docker` group):
 
 ```bash
-mkdir -p ~/tainerhub-agent && cd ~/tainerhub-agent
-nano compose.yml          # paste the file
-docker compose up -d
+curl -fsSL "http://<hub>:8585/join/<one-time token>?hub=<hub IP>:7443" | sh
 ```
 
-The host turns green within seconds. (The hub never touches the Docker socket itself; every server, including its own, is managed through an agent.) Agents connect to the hub on port 7443, so that port must be reachable from each server (the Add host dialog pre-fills the hub's address; change it if agents should use a different IP or name).
+It installs the agent in `~/tainerhub-agent`, starts it and waits until it's connected; the host turns green in TainerHub. The link works once, for an hour. Prefer to do it by hand? The dialog also shows the agent's compose file under "Set it up by hand".
+
+Agents connect to the hub on port 7443, so that port must be reachable from each server (the Add host dialog pre-fills the hub's address; change it if agents should use a different IP or name). Hosts can be renamed any time from their menu.
 
 ### Updating
 
