@@ -18,10 +18,12 @@ func TestStackFinalChunkSurvivesFullBuffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cmd wire.HubMessage
-	select {
-	case cmd = <-a.Out():
-	case <-time.After(time.Second):
-		t.Fatal("command not sent")
+	for cmd.Command == nil { // skip the watching state sent at attach
+		select {
+		case cmd = <-a.Out():
+		case <-time.After(time.Second):
+			t.Fatal("command not sent")
+		}
 	}
 	if cmd.Command == nil || cmd.Command.Stack == nil || cmd.Command.Stack.Name != "web" {
 		t.Fatalf("unexpected command %+v", cmd)
@@ -63,5 +65,43 @@ func TestStackRejectsInvalidCommand(t *testing.T) {
 	a := New().Attach("h1", "host-1", func() {})
 	if _, err := a.Stack(context.Background(), wire.StackCommand{Action: wire.StackStop, Name: "../x"}); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestWatchTellsAgentsFirstAndLast(t *testing.T) {
+	r := New()
+	a := r.Attach("h1", "one", func() {})
+	next := func() *bool {
+		select {
+		case m := <-a.Out():
+			return m.Watching
+		default:
+			return nil
+		}
+	}
+	if w := next(); w == nil || *w {
+		t.Fatalf("on attach with nobody watching: want watching=false, got %v", w)
+	}
+	rel1 := r.Watch()
+	if w := next(); w == nil || !*w {
+		t.Fatalf("first watcher: want watching=true, got %v", w)
+	}
+	rel2 := r.Watch()
+	if w := next(); w != nil {
+		t.Fatalf("second watcher shouldn't notify, got %v", *w)
+	}
+	rel1()
+	rel1() // releasing twice is harmless
+	if w := next(); w != nil {
+		t.Fatalf("one watcher left shouldn't notify, got %v", *w)
+	}
+	rel2()
+	if w := next(); w == nil || *w {
+		t.Fatalf("last watcher gone: want watching=false, got %v", w)
+	}
+	b := r.Attach("h2", "two", func() {})
+	r.Watch()
+	if m := <-b.Out(); m.Watching == nil || *m.Watching {
+		t.Fatal("new agent should first hear the state at attach")
 	}
 }

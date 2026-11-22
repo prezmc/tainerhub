@@ -53,6 +53,10 @@ type AgentMessage struct {
 type HubMessage struct {
 	Command *Command `json:"command,omitempty"`
 	Ping    bool     `json:"ping,omitempty"`
+	// Watching says whether anyone has TainerHub open. Agents sample CPU and
+	// memory often while someone is watching and rarely otherwise, because
+	// every sample costs the Docker Engine work for each container.
+	Watching *bool `json:"watching,omitempty"`
 }
 
 type Hello struct {

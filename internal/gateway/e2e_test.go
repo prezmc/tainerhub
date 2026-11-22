@@ -312,7 +312,11 @@ func TestEnrollConnectActLogsRevoke(t *testing.T) {
 		t.Fatal("unknown operation should be refused")
 	}
 
-	// 5b. live CPU / memory arrive for running containers
+	// 5b. live CPU / memory arrive for running containers. With nobody
+	// watching the agent samples only every minute; opening a fleet stream
+	// (a browser tab) makes it sample straight away.
+	release := reg.Watch()
+	defer release()
 	waitFor(t, "container stats", func() bool {
 		cs := reg.Get(hostID).Status().Containers
 		return len(cs) == 1 && cs[0].CPU == 12.3 && cs[0].Mem == 64<<20
