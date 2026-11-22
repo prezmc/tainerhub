@@ -2,7 +2,7 @@
 #
 #   mkdir -p ~/tainerhub && cd ~/tainerhub
 #   curl -fsSLO https://raw.githubusercontent.com/prezmc/tainerhub/main/deploy/hub/compose.yml
-#   docker compose up -d && docker compose logs tainerhub    # prints the one-time setup link
+#   docker compose up -d && docker compose logs tainerhub    # prints the database password (save it) and the setup link
 #
 # Then open http://<this server's IP>:8585/setup?token=... and create your account.
 # HTTPS through a reverse proxy, and passkeys, can be added later (see the README).
@@ -48,8 +48,10 @@ services:
     environment:
       POSTGRES_USER: tainerhub
       POSTGRES_DB: tainerhub
-      # Only reachable from the hub. To use your own, set DB_PASSWORD in a .env
-      # file next to this one before the first start.
+      # Only reachable from the hub. On first start the hub replaces this
+      # default with a random password, saves it in its /data volume and prints
+      # it once. To choose your own instead, set DB_PASSWORD in a .env file next
+      # to this one before the first start.
       POSTGRES_PASSWORD: ${DB_PASSWORD:-tainerhub}
     volumes:
       - tainerhub-db:/var/lib/postgresql/data
