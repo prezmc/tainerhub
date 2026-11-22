@@ -183,7 +183,7 @@ func run(log *slog.Logger) error {
 	go authSvc.RunSetupTokenLoop(ctx)
 	go authSvc.RunSessionJanitor(ctx)
 
-	apiSrv := &api.Server{Store: st, Auth: authSvc, Reg: reg, CA: ca, Log: log.With("component", "api"), AgentAddr: cfg.AgentAddr, Web: web.Dist()}
+	apiSrv := &api.Server{Store: st, Auth: authSvc, Reg: reg, CA: ca, Log: log.With("component", "api"), AgentAddr: cfg.AgentAddr, Web: web.Dist(), DataDir: cfg.DataDir}
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           apiSrv.Handler(),

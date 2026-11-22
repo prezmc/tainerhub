@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowDown, Boxes, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
+import { ArrowDown, Boxes, ChevronDown, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
 import { can, isUnhealthy, mem, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, type Action, type SortKey } from '../fleet'
 import { Button, IconButton, Menu, StatusDot, cx, toneOf } from '../ui'
@@ -14,6 +14,32 @@ type Section = { key: string; title: string; subtitle: string; items: Container[
 // One grid for the header and every row, so columns line up.
 const COLS = 'md:grid md:grid-cols-[minmax(170px,1.5fr)_minmax(140px,1.3fr)_minmax(110px,1fr)_120px_64px_76px_168px] md:items-center md:gap-4'
 
+/** Folded sections, remembered per browser (keys like "host:<id>", "stack:<name>"). */
+function useCollapsed() {
+  const [set, setSet] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem('th.collapsed') ?? '[]') as string[])
+    } catch {
+      return new Set()
+    }
+  })
+  const save = (next: Set<string>) => {
+    setSet(next)
+    try {
+      localStorage.setItem('th.collapsed', JSON.stringify([...next]))
+    } catch {
+      /* storage unavailable: fine */
+    }
+  }
+  const toggle = (k: string) => {
+    const next = new Set(set)
+    if (next.has(k)) next.delete(k)
+    else next.add(k)
+    save(next)
+  }
+  return { collapsed: set, toggle, setAll: (keys: string[], on: boolean) => save(on ? new Set([...set, ...keys]) : new Set([...set].filter((k) => !keys.includes(k)))) }
+}
+
 export function ContainersPage() {
   const me = useMe()
   const navigate = useNavigate()
@@ -22,6 +48,7 @@ export function ContainersPage() {
   const [group, setGroup] = useState<Group>(() => loadPref('th.group', ['host', 'stack', 'state'] as const, 'host'))
   const [sort, setSort] = useState<SortKey>(() => loadPref('th.csort', ['status', 'name', 'cpu', 'memory'] as const, 'status'))
   const [q, setQ] = useState('')
+  const { collapsed, toggle, setAll } = useCollapsed()
   const operator = can(me.user, 'operator')
   const admin = can(me.user, 'admin')
 
@@ -44,7 +71,7 @@ export function ContainersPage() {
       .sort(sortFns[sort])
     if (group === 'host') {
       return hosts.map((h) => ({
-        key: h.id,
+        key: 'host:' + h.id,
         title: h.name,
         subtitle: h.online && h.hello ? `${h.hello.os} · ${h.hello.ncpu} cores · ${mem(h.hello.mem_total)}` : 'offline',
         items: list.filter((c) => c.hostId === h.id),
@@ -58,7 +85,7 @@ export function ContainersPage() {
       return [...by.entries()]
         .sort(([a], [b]) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)))
         .map(([k, items]) => ({
-          key: k || '_none',
+          key: 'stack:' + (k || '_none'),
           title: k || 'Not in a stack',
           subtitle: k ? `on ${[...new Set(items.map((c) => c.hostName))].join(', ')}` : 'standalone containers',
           items,
@@ -70,7 +97,7 @@ export function ContainersPage() {
       ['running', 'Running', 'bg-emerald-400', (c) => c.state === 'running' && !isUnhealthy(c)],
       ['stopped', 'Stopped and paused', 'bg-ink-500', (c) => c.state !== 'running' && !isUnhealthy(c)],
     ]
-    return states.map(([key, title, accent, fn]) => ({ key, title, subtitle: '', items: list.filter(fn), accent })).filter((s) => s.items.length > 0)
+    return states.map(([key, title, accent, fn]) => ({ key: 'state:' + key, title, subtitle: '', items: list.filter(fn), accent })).filter((s) => s.items.length > 0)
   }, [containers, hosts, view, group, q, sort])
 
   const pickSort = (k: SortKey) => {
@@ -151,20 +178,42 @@ export function ContainersPage() {
           <SortHead k="status" label="Status" />
           <SortHead k="cpu" label="CPU" right />
           <SortHead k="memory" label="Memory" right />
-          <span />
+          <span className="flex justify-end">
+            {sections.length > 1 && (
+              <button
+                onClick={() => {
+                  const keys = sections.map((s) => s.key)
+                  setAll(keys, !keys.every((k) => collapsed.has(k)))
+                }}
+                className="flex items-center gap-1 uppercase tracking-wider hover:text-white"
+              >
+                {sections.every((s) => collapsed.has(s.key)) ? <ChevronsUpDown className="size-3" /> : <ChevronsDownUp className="size-3" />}
+                {sections.every((s) => collapsed.has(s.key)) ? 'Expand all' : 'Collapse all'}
+              </button>
+            )}
+          </span>
         </div>
         {sections.length === 0 && <p className="px-4 py-10 text-center text-sm text-ink-100/50">{containers.length ? 'Nothing matches.' : 'No containers yet.'}</p>}
-        {sections.map((s) => (
+        {sections.map((s) => {
+          const folded = collapsed.has(s.key)
+          const issues = s.items.filter(isUnhealthy).length
+          return (
           <section key={s.key}>
-            <div className="flex items-center gap-3 border-b border-line bg-ink-900/50 px-4 py-2.5">
-              <span className={cx('h-4 w-[3px]', s.accent)} />
-              <h2 className="font-display text-[15px] font-bold text-white">{s.title}</h2>
-              {s.subtitle && <span className="truncate text-xs text-ink-100/50">{s.subtitle}</span>}
-              <span className="ml-auto font-mono text-xs tabular-nums text-ink-100/60">
+            <button
+              onClick={() => toggle(s.key)}
+              aria-expanded={!folded}
+              className="flex w-full items-center gap-3 border-b border-line bg-ink-900/50 px-4 py-2.5 text-left transition hover:bg-ink-900/80"
+            >
+              <ChevronDown className={cx('size-4 shrink-0 text-ink-100/50 transition', folded && '-rotate-90')} />
+              <span className={cx('h-4 w-[3px] shrink-0', s.accent)} />
+              <h2 className="truncate font-display text-[15px] font-bold text-white">{s.title}</h2>
+              {s.subtitle && <span className="hidden truncate text-xs text-ink-100/50 sm:inline">{s.subtitle}</span>}
+              {folded && issues > 0 && <span className="shrink-0 font-mono text-[11px] uppercase text-rose-300">{issues} need attention</span>}
+              <span className="ml-auto shrink-0 font-mono text-xs tabular-nums text-ink-100/60">
                 {s.items.filter((c) => c.state === 'running').length}/{s.items.length} running
               </span>
-            </div>
-            {s.host && !s.host.online ? (
+            </button>
+            {folded ? null : s.host && !s.host.online ? (
               <div className="flex items-center gap-2 border-b border-line px-4 py-4 text-sm text-ink-100/50">
                 <WifiOff className="size-4" /> Agent offline: its containers aren't visible right now.
               </div>
@@ -174,7 +223,8 @@ export function ContainersPage() {
               s.items.map((c) => <Row key={c.hostId + c.id} c={c} operator={operator} showHost={group !== 'host'} />)
             )}
           </section>
-        ))}
+          )
+        })}
       </div>
     </div>
   )

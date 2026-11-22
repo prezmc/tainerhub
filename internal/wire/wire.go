@@ -335,7 +335,18 @@ const (
 	// anonymous volumes, then deletes the named volumes listed in Arg
 	// (comma-separated) that it mounted and nothing else uses.
 	OpContainerRemoveVolumes = "container.remove_volumes"
+	// OpSelfUpdate updates the Docker Compose project the agent itself runs
+	// in (pull newer images, recreate what changed). On the hub's server that
+	// project is the whole hub. Takes no arguments.
+	OpSelfUpdate = "agent.update"
 )
+
+// SelfUpdateResult says what the agent started.
+type SelfUpdateResult struct {
+	Project string `json:"project"` // compose project being updated
+	Dir     string `json:"dir"`     // its folder on the host
+	Helper  string `json:"helper"`  // name of the short-lived container doing it
+}
 
 // MaxRemoveVolumes caps how many named volumes one removal may delete.
 const MaxRemoveVolumes = 32
@@ -345,7 +356,7 @@ var OpKinds = map[string]bool{
 	OpContainerInspect: false, OpImagesList: false, OpVolumesList: false, OpNetworksList: false,
 	OpImagePull: true, OpImageRemove: true, OpImagesPrune: true,
 	OpVolumeRemove: true, OpVolumesPrune: true, OpNetworkRemove: true, OpNetworksPrune: true,
-	OpContainerRemoveVolumes: true,
+	OpContainerRemoveVolumes: true, OpSelfUpdate: true,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.

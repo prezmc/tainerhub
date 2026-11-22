@@ -4,6 +4,7 @@ import { Clock, Cpu, Ellipsis, KeyRound, Layers, MemoryStick, Plus, Server, Shie
 import { api, bytes, can, errorText, stackProblem, timeAgo, type Host, type JoinTokenResponse } from '../api'
 import { Badge, Button, Card, CopyButton, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, PageHeader, StatusDot, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
+import { UpdatesCard } from './Updates'
 
 export function HostsPage() {
   const me = useMe()
@@ -73,6 +74,7 @@ export function HostsPage() {
         )}
       </PageHeader>
 
+      {admin && <UpdatesCard />}
       {hosts.data?.length === 0 ? (
         <EmptyState icon={Server} title="No hosts yet">
           Add a host to get a one-time join token and a ready-made compose file for its agent.

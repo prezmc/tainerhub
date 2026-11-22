@@ -40,8 +40,11 @@ type Server struct {
 	AgentAddr string
 	Web       fs.FS // built React app (index.html at root)
 
-	jobs jobList  // running and recently finished stack operations
-	hub  hubCache // Docker Hub search and tag results
+	DataDir string // hub's data folder: knows which host is the hub's own server
+
+	jobs   jobList     // running and recently finished stack operations
+	hub    hubCache    // Docker Hub search and tag results
+	latest latestCache // newest published version
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -111,6 +114,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{id}/token", s.need("admin", s.newHostToken))
 	mux.Handle("DELETE /api/hosts/{id}", s.need("admin", s.deleteHost))
 	mux.Handle("GET /api/audit", s.need("admin", s.audit))
+	mux.Handle("GET /api/updates", s.need("admin", s.updates))
+	mux.Handle("POST /api/hosts/{id}/update", s.need("admin", s.updateHost))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { jsonErr(w, http.StatusNotFound, "not found") })
 	mux.Handle("/", s.spa())
