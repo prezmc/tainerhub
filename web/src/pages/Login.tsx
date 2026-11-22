@@ -8,7 +8,7 @@ import { AuthShell } from './AuthShell'
 
 export function LoginPage() {
   const state = useQuery({ queryKey: ['state'], queryFn: () => api<HubState>('/api/state') })
-  const passkeys = passkeysUsable(state.data?.passkeys)
+  const passkeys = passkeysUsable(state.data?.passkeys, state.data?.publicURL)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [recovery, setRecovery] = useState(false)

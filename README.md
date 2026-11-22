@@ -113,17 +113,16 @@ By hand, if you ever need to: `docker compose pull && docker compose up -d` in `
 
 ### Later: HTTPS and passkeys (optional)
 
-Until you do this, TainerHub runs over plain HTTP on your LAN, and you sign in with a password. To put it behind a reverse proxy such as Nginx Proxy Manager (on the same server or another one):
+Until you do this, TainerHub runs over plain HTTP on your LAN, and you sign in with a password. It's all done from the UI, with a reverse proxy such as Nginx Proxy Manager (on its own server or the hub's): open **Settings** (admins).
 
-1. **Proxy host:** your domain (e.g. `tainerhub.example.com`) → `http://<hub server IP>:8585`, with Websockets on and Force SSL. Proxy only port 8585; agents keep connecting straight to 7443.
-2. **Tell the hub its address.** In `~/tainerhub/compose.yml`, uncomment and fill in:
-   ```yaml
-   TAINERHUB_PUBLIC_URL: https://tainerhub.example.com
-   TAINERHUB_TRUSTED_PROXIES: 192.168.1.20   # the proxy's IP
-   ```
-   then `docker compose up -d`. This turns on passkeys and HTTPS-only cookies. Passkeys are tied to this address, so pick the name you'll keep.
-3. **Add passkeys:** sign in at the https:// address, then **Account & sign-in → Add a passkey**.
-4. **Optional:** once everyone uses the https:// address, stop port 8585 being reachable from the rest of the LAN, so only the proxy can use it. Docker-published ports bypass `ufw`, so use the `DOCKER-USER` chain:
+1. **Pick an address** like `tainerhub.example.com` and point its DNS at the proxy server.
+2. **Add a Proxy Host** in the proxy. Settings shows the exact values to type: scheme `http`, forward to the hub's IP and port 8585, Websockets on, and a Let's Encrypt certificate with Force SSL. Proxy only port 8585; agents keep connecting straight to 7443.
+3. **Test, then turn on.** The hub calls itself through the address, then checks DNS, the certificate and the forwarding, and learns the proxy's IP. **Turn on HTTPS** applies it straight away, no restart: passkeys switch on, and the https:// address gets HTTPS-only cookies. The LAN address keeps working with passwords, so you can always turn it off again from there. Passkeys are tied to this address, so pick a name you'll keep.
+4. **Add passkeys:** sign in at the https:// address, then **Account & sign-in → Add a passkey**.
+
+If you'd rather keep it in the compose file, set `TAINERHUB_PUBLIC_URL: https://tainerhub.example.com` and `TAINERHUB_TRUSTED_PROXIES: <proxy IP>` there instead. That takes priority and locks the Settings page.
+
+5. **Optional:** once everyone uses the https:// address, stop port 8585 being reachable from the rest of the LAN, so only the proxy can use it. Docker-published ports bypass `ufw`, so use the `DOCKER-USER` chain:
    ```bash
    sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 8585 ! -s 192.168.1.20 -j DROP
    ```
@@ -159,7 +158,7 @@ Add `TAINERHUB_PUBLIC_URL=http://localhost:8585` to try passkeys, which work on 
 **Built in**
 
 - Passwords hashed with argon2id (at least 10 characters); passkeys once HTTPS is set up (user verification required, discoverable credentials); recovery codes are single-use and stored hashed.
-- Sessions: random 256-bit tokens, stored hashed; `HttpOnly`, `SameSite=Strict` cookies, plus `Secure` and the `__Host-` prefix once `TAINERHUB_PUBLIC_URL` is https; 12-hour idle and 7-day absolute timeouts.
+- Sessions: random 256-bit tokens, stored hashed; `HttpOnly`, `SameSite=Strict` cookies, plus `Secure` and the `__Host-` prefix on requests that arrive over HTTPS; 12-hour idle and 7-day absolute timeouts.
 - CSRF: `SameSite=Strict`, plus a required custom header and an `Origin` check on every state-changing request.
 - Headers: strict Content-Security-Policy (no inline scripts or styles), `frame-ancestors 'none'`, COOP/CORP, `nosniff`, `Referrer-Policy`.
 - Input limits: 64 KiB request bodies, strict container ID validation (blocks path tricks against the Docker API), 8 MiB cap per hub↔agent message.

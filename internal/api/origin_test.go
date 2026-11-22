@@ -16,7 +16,10 @@ func TestSameOrigin(t *testing.T) {
 	if !sameOrigin("https://hub.example", "https://hub.example", r) {
 		t.Fatal("configured origin refused")
 	}
-	if sameOrigin("http://192.168.1.10:8585", "https://hub.example", r) {
-		t.Fatal("with a public URL, only it is accepted")
+	if !sameOrigin("http://192.168.1.10:8585", "https://hub.example", r) {
+		t.Fatal("the address the request arrived on must keep working after HTTPS is set up")
+	}
+	if sameOrigin("http://evil.example", "https://hub.example", r) {
+		t.Fatal("foreign origin accepted with a public URL")
 	}
 }

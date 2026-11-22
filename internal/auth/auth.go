@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
@@ -44,12 +45,13 @@ var (
 )
 
 type Service struct {
-	Store         *store.Store
-	WA            *webauthn.WebAuthn // nil when passkeys are unavailable (no public URL)
-	Log           *slog.Logger
-	PublicURL     *url.URL // nil until TAINERHUB_PUBLIC_URL is set
-	SecureCookies bool
-	Trusted       []netip.Prefix // proxies allowed to set X-Forwarded-For
+	Store *store.Store
+	Log   *slog.Logger
+
+	// web holds the public URL, its WebAuthn config and the trusted proxies.
+	// It's swapped atomically, so HTTPS can be switched on from the UI
+	// without a restart (see Reconfigure).
+	web atomic.Pointer[webConfig]
 	// SetupTokenFile, if set, holds the current setup token while setup is
 	// pending, so `tainerhub setup-link` (and the installer) can print it.
 	SetupTokenFile string
@@ -70,31 +72,64 @@ type ceremony struct {
 	expires time.Time
 }
 
+type webConfig struct {
+	publicURL *url.URL           // nil: plain-HTTP install, passwords only
+	wa        *webauthn.WebAuthn // nil when passkeys are unavailable
+	trusted   []netip.Prefix     // proxies allowed to set X-Forwarded-For/-Proto
+}
+
 // New builds the auth service. publicURL may be nil: then only passwords and
-// recovery codes work, and cookies are not marked Secure (plain HTTP).
+// recovery codes work.
 func New(st *store.Store, publicURL *url.URL, trusted []netip.Prefix, log *slog.Logger) (*Service, error) {
-	var wa *webauthn.WebAuthn
+	s := &Service{Store: st, Log: log, ceremonies: map[string]*ceremony{}, Limiter: NewLimiter(10, 15*time.Minute)}
+	if err := s.Reconfigure(publicURL, trusted); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// Reconfigure switches the public URL (and with it passkeys) and the trusted
+// proxies, live.
+func (s *Service) Reconfigure(publicURL *url.URL, trusted []netip.Prefix) error {
+	c := &webConfig{publicURL: publicURL, trusted: trusted}
 	if publicURL != nil {
-		var err error
-		wa, err = webauthn.New(&webauthn.Config{
+		wa, err := webauthn.New(&webauthn.Config{
 			RPID:          publicURL.Hostname(), // passkeys are bound to this name: don't change it later
 			RPDisplayName: "TainerHub",
 			RPOrigins:     []string{publicURL.Scheme + "://" + publicURL.Host},
 		})
 		if err != nil {
-			return nil, err
+			return err
 		}
+		c.wa = wa
 	}
-	return &Service{
-		Store:         st,
-		WA:            wa,
-		Log:           log,
-		PublicURL:     publicURL,
-		SecureCookies: publicURL != nil && publicURL.Scheme == "https",
-		Trusted:       trusted,
-		ceremonies:    map[string]*ceremony{},
-		Limiter:       NewLimiter(10, 15*time.Minute),
-	}, nil
+	s.web.Store(c)
+	return nil
+}
+
+func (s *Service) cfg() *webConfig {
+	if c := s.web.Load(); c != nil {
+		return c
+	}
+	return &webConfig{}
+}
+
+// PublicURL is the configured https:// address, or nil.
+func (s *Service) PublicURL() *url.URL { return s.cfg().publicURL }
+
+// Trusted lists the reverse proxies whose forwarding headers are believed.
+func (s *Service) Trusted() []netip.Prefix { return s.cfg().trusted }
+
+// IsHTTPS reports whether the browser reached the hub over HTTPS: directly,
+// or through a trusted reverse proxy that says so (X-Forwarded-Proto).
+func (s *Service) IsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil && s.isTrusted(ap.Addr().Unmap()) {
+		return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	}
+	return false
 }
 
 // ---------------- helpers ----------------
@@ -135,7 +170,7 @@ func (s *Service) ClientIP(r *http.Request) string {
 }
 
 func (s *Service) isTrusted(a netip.Addr) bool {
-	for _, p := range s.Trusted {
+	for _, p := range s.cfg().trusted {
 		if p.Contains(a) {
 			return true
 		}
@@ -146,33 +181,35 @@ func (s *Service) isTrusted(a netip.Addr) bool {
 // Cookie names use the __Host- prefix over HTTPS: the browser then refuses
 // them unless Secure, Path=/ and host-only, which blocks cookie injection
 // from sibling subdomains of example.com.
-func (s *Service) cookieName(base string) string {
-	if s.SecureCookies {
+// The choice is per request: a browser on the https:// address (through the
+// proxy) gets Secure __Host- cookies, one on http://<ip>:8585 plain ones.
+func (s *Service) cookieName(r *http.Request, base string) string {
+	if s.IsHTTPS(r) {
 		return "__Host-" + base
 	}
 	return base
 }
 
-func (s *Service) sessionCookie() string  { return s.cookieName("th_session") }
-func (s *Service) ceremonyCookie() string { return s.cookieName("th_ceremony") }
+func (s *Service) sessionCookie(r *http.Request) string  { return s.cookieName(r, "th_session") }
+func (s *Service) ceremonyCookie(r *http.Request) string { return s.cookieName(r, "th_ceremony") }
 
-func (s *Service) setCookie(w http.ResponseWriter, name, value string, maxAge time.Duration) {
+func (s *Service) setCookie(w http.ResponseWriter, r *http.Request, name, value string, maxAge time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   s.SecureCookies,
+		Secure:   s.IsHTTPS(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(maxAge.Seconds()),
 	})
 }
 
-func (s *Service) clearCookie(w http.ResponseWriter, name string) {
-	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, Secure: s.SecureCookies, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+func (s *Service) clearCookie(w http.ResponseWriter, r *http.Request, name string) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, Secure: s.IsHTTPS(r), SameSite: http.SameSiteStrictMode, MaxAge: -1})
 }
 
-func (s *Service) putCeremony(w http.ResponseWriter, c *ceremony) {
+func (s *Service) putCeremony(w http.ResponseWriter, r *http.Request, c *ceremony) {
 	id := randToken(24)
 	c.expires = time.Now().Add(ceremonyTimeout)
 	s.mu.Lock()
@@ -189,15 +226,15 @@ func (s *Service) putCeremony(w http.ResponseWriter, c *ceremony) {
 	}
 	s.ceremonies[id] = c
 	s.mu.Unlock()
-	s.setCookie(w, s.ceremonyCookie(), id, ceremonyTimeout)
+	s.setCookie(w, r, s.ceremonyCookie(r), id, ceremonyTimeout)
 }
 
 func (s *Service) takeCeremony(w http.ResponseWriter, r *http.Request, kind string) (*ceremony, error) {
-	ck, err := r.Cookie(s.ceremonyCookie())
+	ck, err := r.Cookie(s.ceremonyCookie(r))
 	if err != nil {
 		return nil, ErrCeremony
 	}
-	s.clearCookie(w, s.ceremonyCookie())
+	s.clearCookie(w, r, s.ceremonyCookie(r))
 	s.mu.Lock()
 	c := s.ceremonies[ck.Value]
 	delete(s.ceremonies, ck.Value)
@@ -279,8 +316,8 @@ func (s *Service) RotateSetupToken() string {
 		}
 	}
 	base := "http://<this server's IP>:8585"
-	if s.PublicURL != nil {
-		base = strings.TrimSuffix(s.PublicURL.String(), "/")
+	if u := s.PublicURL(); u != nil {
+		base = strings.TrimSuffix(u.String(), "/")
 	}
 	s.Log.Warn("No users yet. Open this link within 15 minutes to create the owner account", "url", base+"/setup?token="+tok)
 	return tok
@@ -330,10 +367,11 @@ type SetupBegin struct {
 }
 
 // PasskeysEnabled reports whether passkeys can be used (a public URL is set).
-func (s *Service) PasskeysEnabled() bool { return s.WA != nil }
+func (s *Service) PasskeysEnabled() bool { return s.cfg().wa != nil }
 
 func (s *Service) BeginSetup(w http.ResponseWriter, r *http.Request, in SetupBegin) (*protocol.CredentialCreation, error) {
-	if s.WA == nil {
+	wa := s.cfg().wa
+	if wa == nil {
 		return nil, ErrNoPasskeys
 	}
 	if need, err := s.SetupRequired(r.Context()); err != nil {
@@ -352,25 +390,26 @@ func (s *Service) BeginSetup(w http.ResponseWriter, r *http.Request, in SetupBeg
 		in.DisplayName = in.Username
 	}
 	u := store.User{Username: in.Username, DisplayName: strings.TrimSpace(in.DisplayName), Role: "owner", WebAuthnID: []byte(randToken(32))}
-	opts, data, err := s.WA.BeginRegistration(&waUser{u: u}, registrationOptions(nil)...)
+	opts, data, err := wa.BeginRegistration(&waUser{u: u}, registrationOptions(nil)...)
 	if err != nil {
 		return nil, err
 	}
-	s.putCeremony(w, &ceremony{kind: "setup", data: *data, user: u, keyName: keyName(in.PasskeyName)})
+	s.putCeremony(w, r, &ceremony{kind: "setup", data: *data, user: u, keyName: keyName(in.PasskeyName)})
 	return opts, nil
 }
 
 // FinishSetup verifies the passkey, creates the owner, signs them in and
 // returns their recovery codes (shown once).
 func (s *Service) FinishSetup(w http.ResponseWriter, r *http.Request) (store.User, []string, error) {
-	if s.WA == nil {
+	wa := s.cfg().wa
+	if wa == nil {
 		return store.User{}, nil, ErrNoPasskeys
 	}
 	c, err := s.takeCeremony(w, r, "setup")
 	if err != nil {
 		return store.User{}, nil, err
 	}
-	cred, err := s.WA.FinishRegistration(&waUser{u: c.user}, c.data, r)
+	cred, err := wa.FinishRegistration(&waUser{u: c.user}, c.data, r)
 	if err != nil {
 		return store.User{}, nil, errors.New("passkey verification failed")
 	}
@@ -393,19 +432,21 @@ func (s *Service) FinishSetup(w http.ResponseWriter, r *http.Request) (store.Use
 // ---------------- sign-in ----------------
 
 func (s *Service) BeginLogin(w http.ResponseWriter, r *http.Request) (*protocol.CredentialAssertion, error) {
-	if s.WA == nil {
+	wa := s.cfg().wa
+	if wa == nil {
 		return nil, ErrNoPasskeys
 	}
-	opts, data, err := s.WA.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
+	opts, data, err := wa.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
 	if err != nil {
 		return nil, err
 	}
-	s.putCeremony(w, &ceremony{kind: "login", data: *data})
+	s.putCeremony(w, r, &ceremony{kind: "login", data: *data})
 	return opts, nil
 }
 
 func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) (store.User, error) {
-	if s.WA == nil {
+	wa := s.cfg().wa
+	if wa == nil {
 		return store.User{}, ErrNoPasskeys
 	}
 	ip := s.ClientIP(r)
@@ -429,7 +470,7 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) (store.Use
 		found = wu
 		return wu, nil
 	}
-	cred, err := s.WA.FinishDiscoverableLogin(handler, c.data, r)
+	cred, err := wa.FinishDiscoverableLogin(handler, c.data, r)
 	if err != nil || found == nil {
 		s.Limiter.Fail(ip)
 		return store.User{}, errors.New("passkey not recognised")
@@ -474,23 +515,25 @@ func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, 
 // ---------------- adding passkeys ----------------
 
 func (s *Service) BeginAddPasskey(w http.ResponseWriter, r *http.Request, u store.User, name string) (*protocol.CredentialCreation, error) {
-	if s.WA == nil {
+	wa := s.cfg().wa
+	if wa == nil {
 		return nil, ErrNoPasskeys
 	}
 	wu, err := s.loadWAUser(r.Context(), u)
 	if err != nil {
 		return nil, err
 	}
-	opts, data, err := s.WA.BeginRegistration(wu, registrationOptions(wu.creds)...)
+	opts, data, err := wa.BeginRegistration(wu, registrationOptions(wu.creds)...)
 	if err != nil {
 		return nil, err
 	}
-	s.putCeremony(w, &ceremony{kind: "add-passkey", data: *data, user: u, keyName: keyName(name)})
+	s.putCeremony(w, r, &ceremony{kind: "add-passkey", data: *data, user: u, keyName: keyName(name)})
 	return opts, nil
 }
 
 func (s *Service) FinishAddPasskey(w http.ResponseWriter, r *http.Request, u store.User) error {
-	if s.WA == nil {
+	wa := s.cfg().wa
+	if wa == nil {
 		return ErrNoPasskeys
 	}
 	c, err := s.takeCeremony(w, r, "add-passkey")
@@ -504,7 +547,7 @@ func (s *Service) FinishAddPasskey(w http.ResponseWriter, r *http.Request, u sto
 	if err != nil {
 		return err
 	}
-	cred, err := s.WA.FinishRegistration(wu, c.data, r)
+	cred, err := wa.FinishRegistration(wu, c.data, r)
 	if err != nil {
 		return errors.New("passkey verification failed")
 	}
@@ -524,13 +567,13 @@ func (s *Service) startSession(w http.ResponseWriter, r *http.Request, u store.U
 	if err := s.Store.CreateSession(r.Context(), Hash(tok), u.ID, time.Now().Add(SessionMax), s.ClientIP(r), truncate(r.UserAgent(), 200)); err != nil {
 		return err
 	}
-	s.setCookie(w, s.sessionCookie(), tok, SessionMax)
+	s.setCookie(w, r, s.sessionCookie(r), tok, SessionMax)
 	return nil
 }
 
 // UserFromRequest returns the signed-in user, enforcing idle and absolute timeouts.
 func (s *Service) UserFromRequest(r *http.Request) (store.User, error) {
-	ck, err := r.Cookie(s.sessionCookie())
+	ck, err := r.Cookie(s.sessionCookie(r))
 	if err != nil || ck.Value == "" {
 		return store.User{}, ErrUnauthorized
 	}
@@ -555,10 +598,10 @@ func (s *Service) UserFromRequest(r *http.Request) (store.User, error) {
 }
 
 func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {
-	if ck, err := r.Cookie(s.sessionCookie()); err == nil {
+	if ck, err := r.Cookie(s.sessionCookie(r)); err == nil {
 		_ = s.Store.DeleteSession(r.Context(), Hash(ck.Value))
 	}
-	s.clearCookie(w, s.sessionCookie())
+	s.clearCookie(w, r, s.sessionCookie(r))
 }
 
 func (s *Service) RunSessionJanitor(ctx context.Context) {

@@ -40,13 +40,15 @@ type Server struct {
 	AgentAddr string
 	Web       fs.FS // built React app (index.html at root)
 
-	DataDir string // hub's data folder: knows which host is the hub's own server
+	DataDir string      // hub's data folder: knows which host is the hub's own server
+	HTTPS   HTTPSConfig // how HTTPS was configured at startup (see https.go)
 
 	jobs         jobList           // running and recently finished stack operations
 	hub          hubCache          // Docker Hub search and tag results
 	latest       latestCache       // newest published version
 	dockerLatest dockerLatestCache // newest Docker Engine release
 	execs        execList          // open terminals
+	https        httpsState        // HTTPS setup tests
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -68,7 +70,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login/recovery", s.loginRecovery)
 	mux.HandleFunc("POST /api/login/password", s.loginPassword)
 	mux.HandleFunc("POST /api/setup/password", s.setupPassword)
-	mux.HandleFunc("GET /join/{token}", s.joinScript) // one-line agent install (see join.go)
+	mux.HandleFunc("GET /join/{token}", s.joinScript)        // one-line agent install (see join.go)
+	mux.HandleFunc("GET /api/https-check", s.httpsCheckEcho) // answers the hub's own HTTPS test
 	mux.HandleFunc("POST /api/invite/check", s.checkInvite)
 	mux.HandleFunc("POST /api/invite/accept", s.acceptInvite)
 	mux.HandleFunc("POST /api/logout", s.logout)
@@ -134,6 +137,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/users/{uid}/role", s.need("admin", s.setRole))
 	mux.Handle("DELETE /api/users/{uid}", s.need("admin", s.deleteUser))
 	mux.Handle("GET /api/updates", s.need("admin", s.updates))
+	mux.Handle("GET /api/settings/https", s.need("admin", s.httpsSettings))
+	mux.Handle("POST /api/settings/https/test", s.need("admin", s.httpsTest))
+	mux.Handle("PUT /api/settings/https", s.need("admin", s.httpsEnable))
+	mux.Handle("DELETE /api/settings/https", s.need("admin", s.httpsDisable))
 	// terminals: admin-only (a shell sees everything in the container)
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/exec", s.need("admin", s.execOpen))
 	mux.Handle("GET /api/exec/{sid}", s.need("admin", s.execStream))
@@ -153,11 +160,11 @@ func (s *Server) Handler() http.Handler {
 
 // secure adds security headers and CSRF protection for state-changing calls.
 func (s *Server) secure(next http.Handler) http.Handler {
-	origin := ""
-	if u := s.Auth.PublicURL; u != nil {
-		origin = u.Scheme + "://" + u.Host
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := ""
+		if u := s.Auth.PublicURL(); u != nil { // read per request: it can change at runtime
+			origin = u.Scheme + "://" + u.Host
+		}
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
@@ -182,12 +189,13 @@ func (s *Server) secure(next http.Handler) http.Handler {
 	})
 }
 
-// sameOrigin checks a request's Origin header. With a public URL configured
-// it must match exactly; without one (plain-HTTP install reached by IP or
-// any name), its host must be the host the request was sent to.
+// sameOrigin checks a request's Origin header: it must be the configured
+// public URL, or the very host the request was sent to (e.g. the hub's LAN
+// address, which keeps working after HTTPS is set up). Either way a page on
+// another site can't make the request.
 func sameOrigin(o, configured string, r *http.Request) bool {
-	if configured != "" {
-		return o == configured
+	if configured != "" && o == configured {
+		return true
 	}
 	u, err := url.Parse(o)
 	return err == nil && u.Host != "" && strings.EqualFold(u.Host, r.Host)
@@ -244,7 +252,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"setupRequired": need, "version": version.Version, "passkeys": s.Auth.PasskeysEnabled()})
+	writeJSON(w, http.StatusOK, map[string]any{"setupRequired": need, "version": version.Version, "passkeys": s.Auth.PasskeysEnabled(), "publicURL": s.publicURLString()})
 }
 
 func (s *Server) setupBegin(w http.ResponseWriter, r *http.Request) {
@@ -391,7 +399,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		views = append(views, passkeyView{ID: base64.RawURLEncoding.EncodeToString(p.ID), Name: p.Name, CreatedAt: p.CreatedAt, LastUsedAt: p.LastUsedAt})
 	}
 	left, _ := s.Store.CountRecoveryCodes(r.Context(), u.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"user": u, "passkeys": views, "recoveryCodesLeft": left, "hasPassword": u.PasswordHash != "", "passkeysEnabled": s.Auth.PasskeysEnabled()})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u, "passkeys": views, "recoveryCodesLeft": left, "hasPassword": u.PasswordHash != "", "passkeysEnabled": s.Auth.PasskeysEnabled(), "publicURL": s.publicURLString()})
 }
 
 func (s *Server) addPasskeyBegin(w http.ResponseWriter, r *http.Request) {
