@@ -83,6 +83,10 @@ export interface Host {
   enrolledAt: string | null
   lastSeenAt: string | null
   online: boolean
+  /** IP the host's agent connects from. */
+  address?: string
+  /** The host also runs the hub. */
+  hubHost?: boolean
   hello?: Hello
   containers: number
   running: number
@@ -320,6 +324,23 @@ export interface StackSaveResult {
   stack: Stack
   jobId?: string
   deployError?: string
+}
+
+/**
+ * The address to reach a host's published ports at. The hub's own server's
+ * agent connects over Docker's internal network, so for it use the address
+ * this page was opened on instead.
+ */
+export function hostAddress(h: Host | undefined): string | undefined {
+  if (!h) return undefined
+  if (h.hubHost) return window.location.hostname
+  return h.address
+}
+
+/** "8080->80/tcp" or "0.0.0.0:8080" -> "8080"; null if not published. */
+export function publishedPort(p: string): string | null {
+  const m = p.includes('->') ? p.split('->')[0].match(/(\d+)$/) : p.match(/:(\d+)$/)
+  return m ? m[1] : null
 }
 
 /** Why a host can't run stacks, or null if it can. */

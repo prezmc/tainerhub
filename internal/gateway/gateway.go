@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -175,7 +176,11 @@ func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	agent := g.Reg.Attach(hostID, hc.Name, cancel)
+	remoteIP := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		remoteIP = h
+	}
+	agent := g.Reg.AttachFrom(hostID, hc.Name, remoteIP, cancel)
 	defer g.Reg.Detach(agent)
 	log := g.log().With("host", hc.Name, "host_id", hostID)
 	log.Info("agent connected", "remote", r.RemoteAddr, "proto", r.Proto)

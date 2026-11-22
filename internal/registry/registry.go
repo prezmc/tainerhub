@@ -106,6 +106,7 @@ func (r *Registry) notify() {
 type Agent struct {
 	HostID      string
 	Name        string
+	RemoteIP    string // address the agent connected from (its server's IP, seen from the hub)
 	ConnectedAt time.Time
 
 	out    chan wire.HubMessage
@@ -127,9 +128,15 @@ type Agent struct {
 // any previous connection for the same host. The returned agent's Out()
 // channel must be drained by the connection's writer until Done() closes.
 func (r *Registry) Attach(hostID, name string, cancel context.CancelFunc) *Agent {
+	return r.AttachFrom(hostID, name, "", cancel)
+}
+
+// AttachFrom is Attach, recording the address the agent connected from.
+func (r *Registry) AttachFrom(hostID, name, remoteIP string, cancel context.CancelFunc) *Agent {
 	a := &Agent{
 		HostID:      hostID,
 		Name:        name,
+		RemoteIP:    remoteIP,
 		ConnectedAt: time.Now(),
 		lastSeen:    time.Now(),
 		out:         make(chan wire.HubMessage, 64),
