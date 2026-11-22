@@ -67,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login/recovery", s.loginRecovery)
 	mux.HandleFunc("POST /api/login/password", s.loginPassword)
 	mux.HandleFunc("POST /api/setup/password", s.setupPassword)
+	mux.HandleFunc("GET /join/{token}", s.joinScript) // one-line agent install (see join.go)
 	mux.HandleFunc("POST /api/invite/check", s.checkInvite)
 	mux.HandleFunc("POST /api/invite/accept", s.acceptInvite)
 	mux.HandleFunc("POST /api/logout", s.logout)
@@ -124,6 +125,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts", s.need("admin", s.createHost))
 	mux.Handle("POST /api/hosts/{id}/token", s.need("admin", s.newHostToken))
 	mux.Handle("DELETE /api/hosts/{id}", s.need("admin", s.deleteHost))
+	mux.Handle("PUT /api/hosts/{id}", s.need("admin", s.renameHost))
 	mux.Handle("GET /api/audit", s.need("admin", s.audit))
 	mux.Handle("GET /api/users", s.need("admin", s.listUsers))
 	mux.Handle("POST /api/invites", s.need("admin", s.createInvite))
@@ -608,6 +610,46 @@ func agentCompose(hub, token string) string {
 volumes:
   tainerhub-agent:
 `, hub, token)
+}
+
+func (s *Server) renameHost(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validUUID(id) {
+		jsonErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	var in struct{ Name string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	in.Name = strings.TrimSpace(in.Name)
+	if in.Name == "" || len(in.Name) > 64 {
+		jsonErr(w, http.StatusBadRequest, "name is required (max 64 characters)")
+		return
+	}
+	h, err := s.Store.GetHost(r.Context(), id)
+	if err != nil {
+		s.notFoundOr(w, err)
+		return
+	}
+	if h.Name == in.Name {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := s.Store.RenameHost(r.Context(), id, in.Name); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			jsonErr(w, http.StatusConflict, "a host with that name already exists")
+			return
+		}
+		s.notFoundOr(w, err)
+		return
+	}
+	// The live connection carries the name it connected under; dropping it
+	// makes the agent reconnect (within seconds) under the new one.
+	s.Reg.Disconnect(id)
+	u := userFrom(r)
+	s.record(r, &u, "host.renamed", in.Name, map[string]string{"from": h.Name})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteHost(w http.ResponseWriter, r *http.Request) {
