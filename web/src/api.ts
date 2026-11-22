@@ -53,16 +53,20 @@ export interface Me {
   hasPassword: boolean
   /** False until the hub has an https:// public URL (passkeys need HTTPS). */
   passkeysEnabled: boolean
+  /** The https:// address passkeys work on ("" while HTTPS is off). */
+  publicURL: string
 }
 
 export interface HubState {
   setupRequired: boolean
   version: string
   passkeys: boolean
+  publicURL: string
 }
 
-/** Passkeys work only when the hub has them on and this page is a secure context (HTTPS or localhost). */
-export const passkeysUsable = (hubEnabled: boolean | undefined) => !!hubEnabled && window.isSecureContext
+/** Passkeys work only when the hub has them on and this page is open at the hub's secure address (they're tied to that name). */
+export const passkeysUsable = (hubEnabled: boolean | undefined, publicURL: string | undefined) =>
+  !!hubEnabled && window.isSecureContext && !!publicURL && window.location.origin === publicURL
 
 export interface Hello {
   hostname: string

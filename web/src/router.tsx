@@ -11,6 +11,7 @@ import { HostsPage } from './pages/Hosts'
 import { AccountPage } from './pages/Account'
 import { AuditPage } from './pages/Audit'
 import { UsersPage } from './pages/Users'
+import { SettingsPage } from './pages/Settings'
 import { InvitePage } from './pages/Invite'
 import { StacksPage } from './pages/Stacks'
 import { NewStackPage, StackPage } from './pages/StackEditor'
@@ -69,13 +70,14 @@ const hostsRoute = createRoute({ getParentRoute: () => appRoute, path: '/hosts',
 const accountRoute = createRoute({ getParentRoute: () => appRoute, path: '/account', component: AccountPage })
 const auditRoute = createRoute({ getParentRoute: () => appRoute, path: '/audit', component: AuditPage })
 const usersRoute = createRoute({ getParentRoute: () => appRoute, path: '/users', component: UsersPage })
+const settingsRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings', component: SettingsPage })
 const inviteRoute = createRoute({ getParentRoute: () => rootRoute, path: '/invite', component: InvitePage })
 
 const routeTree = rootRoute.addChildren([
   setupRoute,
   loginRoute,
   inviteRoute,
-  appRoute.addChildren([overviewRoute, containersRoute, newContainerRoute, stacksRoute, newStackRoute, stackRoute, resourcesRoute, hostsRoute, accountRoute, auditRoute, usersRoute]),
+  appRoute.addChildren([overviewRoute, containersRoute, newContainerRoute, stacksRoute, newStackRoute, stackRoute, resourcesRoute, hostsRoute, accountRoute, auditRoute, usersRoute, settingsRoute]),
 ])
 
 export const router = createRouter({ routeTree })

@@ -131,7 +131,7 @@ func run(log *slog.Logger) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	publicURL := "(not set: plain HTTP, password sign-in; set TAINERHUB_PUBLIC_URL for HTTPS and passkeys)"
+	publicURL := "(plain HTTP with passwords; turn on HTTPS and passkeys under Settings)"
 	if cfg.PublicURL != nil {
 		publicURL = cfg.PublicURL.String()
 	}
@@ -183,7 +183,13 @@ func run(log *slog.Logger) error {
 	go authSvc.RunSetupTokenLoop(ctx)
 	go authSvc.RunSessionJanitor(ctx)
 
-	apiSrv := &api.Server{Store: st, Auth: authSvc, Reg: reg, CA: ca, Log: log.With("component", "api"), AgentAddr: cfg.AgentAddr, Web: web.Dist(), DataDir: cfg.DataDir}
+	apiSrv := &api.Server{Store: st, Auth: authSvc, Reg: reg, CA: ca, Log: log.With("component", "api"), AgentAddr: cfg.AgentAddr, Web: web.Dist(), DataDir: cfg.DataDir,
+		HTTPS: api.HTTPSConfig{EnvPublicURL: cfg.PublicURL, EnvTrusted: cfg.Trusted, HTTPPort: httpPort(cfg.HTTPAddr)}}
+	if err := apiSrv.LoadHTTPSSettings(ctx); err != nil {
+		log.Warn("couldn't load the HTTPS settings saved in the UI", "err", err)
+	} else if u := authSvc.PublicURL(); cfg.PublicURL == nil && u != nil {
+		log.Info("HTTPS turned on under Settings", "public_url", u.String())
+	}
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           apiSrv.Handler(),
@@ -288,4 +294,11 @@ func printDBPassword() int {
 	}
 	fmt.Println(strings.TrimSpace(string(b)))
 	return 0
+}
+
+func httpPort(addr string) string {
+	if _, p, err := net.SplitHostPort(addr); err == nil && p != "" {
+		return p
+	}
+	return "8585"
 }

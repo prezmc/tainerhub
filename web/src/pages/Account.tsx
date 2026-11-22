@@ -40,7 +40,7 @@ export function AccountPage() {
   })
 
   const low = me.recoveryCodesLeft <= 3
-  const canAddPasskey = passkeysUsable(me.passkeysEnabled)
+  const canAddPasskey = passkeysUsable(me.passkeysEnabled, me.publicURL)
   const onlyWayIn = (n: number) => !me.hasPassword && n <= 1
 
   return (
@@ -65,8 +65,8 @@ export function AccountPage() {
                 {canAddPasskey
                   ? 'Sign in with Touch ID, Windows Hello, your phone or a security key. Register one on each device you use.'
                   : me.passkeysEnabled
-                    ? 'Passkeys need a secure connection. Open TainerHub at its https:// address to add one.'
-                    : 'Passkeys need HTTPS. Put TainerHub behind your reverse proxy and set TAINERHUB_PUBLIC_URL to its https:// address (see the README), then add them here.'}
+                    ? <>Passkeys work at TainerHub's secure address. <a href={me.publicURL + '/account'} className="font-semibold text-lime-300 underline underline-offset-2">Open {me.publicURL}</a> to add one.</>
+                    : 'Passkeys need HTTPS. An admin can set it up under Settings (it takes a few minutes with Nginx Proxy Manager), then add them here.'}
               </p>
             </div>
           </div>

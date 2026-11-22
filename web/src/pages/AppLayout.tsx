@@ -52,7 +52,7 @@ function useFleetStream() {
   return live
 }
 
-type NavTo = '/' | '/containers' | '/stacks' | '/resources' | '/hosts' | '/users' | '/audit'
+type NavTo = '/' | '/containers' | '/stacks' | '/resources' | '/hosts' | '/users' | '/audit' | '/settings'
 
 function NavPill({ to, label, exact }: { to: NavTo; label: string; exact?: boolean }) {
   return (
@@ -147,6 +147,7 @@ export function AppLayout() {
                   <NavPill to="/hosts" label="Hosts" />
                   {can(me.data.user, 'admin') && <NavPill to="/users" label="Users" />}
                   {can(me.data.user, 'admin') && <NavPill to="/audit" label="Audit" />}
+                  {can(me.data.user, 'admin') && <NavPill to="/settings" label="Settings" />}
                 </nav>
                 <button
                   onClick={openPalette}
@@ -186,9 +187,15 @@ export function AppLayout() {
               <div className="flex items-center justify-center gap-2 bg-amber-500/15 px-4 py-2 text-center text-sm text-amber-100">
                 <TriangleAlert className="size-4" />
                 Passkeys are available now: add one for faster, phishing-proof sign-in.{' '}
-                <Link to="/account" className="font-semibold underline underline-offset-2">
-                  Add one now
-                </Link>
+                {window.location.origin === me.data.publicURL ? (
+                  <Link to="/account" className="font-semibold underline underline-offset-2">
+                    Add one now
+                  </Link>
+                ) : (
+                  <a href={me.data.publicURL + '/account'} className="font-semibold underline underline-offset-2">
+                    Add one at {me.data.publicURL}
+                  </a>
+                )}
               </div>
             )}
             <main className="mx-auto max-w-[1500px] px-4 py-8 sm:px-8">
