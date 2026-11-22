@@ -111,4 +111,5 @@ jobs:
           image-ref: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.v.outputs.version }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          trivyignores: .trivyignore  # accepted CVEs, each with a reason and expiry
           exit-code: "1"
