@@ -57,27 +57,27 @@ export function LogsPanel({ container, onClose }: { container: Container; onClos
   }, [lines, follow])
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 mx-auto flex h-[46vh] max-w-[1500px] flex-col rounded-t-3xl bg-[#0d0a24]/95 shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/15 backdrop-blur-xl animate-[drawer_200ms_ease-out]">
+    <div className="fixed inset-x-0 bottom-0 z-40 mx-auto flex h-[46vh] max-w-[1500px] flex-col rounded-t-md border-t-2 border-lime-400 bg-panel shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/15 animate-[drawer_200ms_ease-out]">
       <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-5 py-3">
         <StatusDot tone={status === 'live' ? 'good' : status === 'error' ? 'bad' : 'idle'} pulse={status === 'live'} />
         <div className="min-w-0">
           <div className="truncate font-display text-base font-bold text-white">{container.name}</div>
-          <div className="text-xs text-indigo-100/50">
+          <div className="text-xs text-ink-100/50">
             {container.hostName} · {status === 'live' ? 'streaming' : status}
           </div>
         </div>
         <div className="relative ml-auto">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-indigo-100/50" />
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-100/50" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Filter lines"
-            className="w-48 rounded-lg bg-white/[0.04] py-1.5 pl-8 pr-2 text-xs ring-1 ring-inset ring-white/10 outline-none focus:ring-sky-500/60"
+            className="w-48 rounded-[3px] bg-white/[0.04] py-1.5 pl-8 pr-2 text-xs ring-1 ring-inset ring-white/10 outline-none focus:ring-lime-500/60"
           />
         </div>
         <div className="flex items-center gap-0.5">
-          <IconButton icon={ArrowDownToLine} label={follow ? 'Auto-scroll on' : 'Auto-scroll off'} className={cx(follow && 'bg-sky-500/15 text-sky-300')} onClick={() => setFollow((f) => !f)} />
-          <IconButton icon={WrapText} label={wrap ? 'Wrap on' : 'Wrap off'} className={cx(wrap && 'bg-sky-500/15 text-sky-300')} onClick={() => setWrap((w) => !w)} />
+          <IconButton icon={ArrowDownToLine} label={follow ? 'Auto-scroll on' : 'Auto-scroll off'} className={cx(follow && 'bg-lime-500/15 text-lime-300')} onClick={() => setFollow((f) => !f)} />
+          <IconButton icon={WrapText} label={wrap ? 'Wrap on' : 'Wrap off'} className={cx(wrap && 'bg-lime-500/15 text-lime-300')} onClick={() => setWrap((w) => !w)} />
           <IconButton icon={Download} label="Download logs" onClick={() => download(`${container.hostName}-${container.name}.log`, text)} />
           <IconButton icon={Eraser} label="Clear" onClick={() => setText('')} />
           <IconButton icon={X} label="Close (Esc)" onClick={onClose} />
@@ -90,7 +90,7 @@ export function LogsPanel({ container, onClose }: { container: Container; onClos
           const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
           if (!atBottom && follow) setFollow(false)
         }}
-        className={cx('mono flex-1 overflow-auto px-5 py-3 text-[12px] leading-relaxed text-indigo-100/80', wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}
+        className={cx('mono flex-1 overflow-auto px-5 py-3 text-[12px] leading-relaxed text-ink-100/80', wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre')}
       >
         {text ? lines.join('\n') : status === 'connecting' ? 'Connecting…' : 'No output.'}
       </pre>

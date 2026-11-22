@@ -116,43 +116,43 @@ export function CommandPalette({ open, onClose, onLogs, onDetails }: { open: boo
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh]" onKeyDown={onKey}>
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label="Command palette" className="relative w-full max-w-2xl overflow-hidden rounded-3xl bg-[#140f33]/95 shadow-2xl shadow-black/60 ring-1 ring-white/15 backdrop-blur-xl animate-[pop_140ms_ease-out]">
+      <div className="absolute inset-0 bg-black/60-sm" onClick={onClose} />
+      <div role="dialog" aria-modal="true" aria-label="Command palette" className="relative w-full max-w-2xl overflow-hidden rounded-md bg-panel/95 shadow-2xl shadow-black/60 ring-1 ring-white/15 animate-[pop_140ms_ease-out]">
         <div className="flex items-center gap-3 border-b border-white/10 px-5 py-4">
-          <Search className="size-5 text-indigo-100/50" />
+          <Search className="size-5 text-ink-100/50" />
           <input
             ref={input}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search, or type a command: restart pihole, logs npm, stop mosquitto"
-            className="flex-1 bg-transparent text-base text-white outline-none placeholder:text-indigo-100/40"
+            className="flex-1 bg-transparent text-base text-white outline-none placeholder:text-ink-100/40"
             aria-label="Command"
           />
           <Kbd>Esc</Kbd>
         </div>
         <ul className="max-h-[50vh] overflow-y-auto p-2" role="listbox">
-          {items.length === 0 && <li className="px-4 py-8 text-center text-sm text-indigo-100/50">{operator ? 'Nothing matches.' : 'Nothing matches, or your role cannot run that.'}</li>}
+          {items.length === 0 && <li className="px-4 py-8 text-center text-sm text-ink-100/50">{operator ? 'Nothing matches.' : 'Nothing matches, or your role cannot run that.'}</li>}
           {items.map((it, i) => (
             <li key={it.id} role="option" aria-selected={i === sel}>
               <button
                 onMouseEnter={() => setSel(i)}
                 onClick={it.run}
-                className={cx('flex w-full items-center gap-3 rounded-2xl px-4 py-2.5 text-left text-sm transition', i === sel ? 'bg-white/10 text-white' : 'text-indigo-100/80')}
+                className={cx('flex w-full items-center gap-3 rounded-md px-4 py-2.5 text-left text-sm transition', i === sel ? 'bg-white/10 text-white' : 'text-ink-100/80')}
               >
-                <it.icon className={cx('size-4', it.tone === 'danger' ? 'text-rose-300' : 'text-sky-300')} />
+                <it.icon className={cx('size-4', it.tone === 'danger' ? 'text-rose-300' : 'text-lime-300')} />
                 {it.dot && <StatusDot tone={toneOf(it.dot.state, it.dot.status)} />}
                 <span className="font-medium">{it.label}</span>
-                {it.hint && <span className="text-xs text-indigo-100/50">{it.hint}</span>}
-                {i === sel && <CornerDownLeft className="ml-auto size-4 text-indigo-100/40" />}
+                {it.hint && <span className="text-xs text-ink-100/50">{it.hint}</span>}
+                {i === sel && <CornerDownLeft className="ml-auto size-4 text-ink-100/40" />}
               </button>
             </li>
           ))}
         </ul>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-white/10 px-5 py-3 text-xs text-indigo-100/50">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-white/10 px-5 py-3 text-xs text-ink-100/50">
           <span>
-            <span className="mono text-sky-300">restart</span> · <span className="mono text-sky-300">stop</span> · <span className="mono text-sky-300">start</span> ·{' '}
-            <span className="mono text-sky-300">logs</span> · <span className="mono text-sky-300">details</span> · <span className="mono text-sky-300">pause</span> · <span className="mono text-sky-300">kill</span> ·{' '}
-            <span className="mono text-sky-300">remove</span> + a container name
+            <span className="mono text-lime-300">restart</span> · <span className="mono text-lime-300">stop</span> · <span className="mono text-lime-300">start</span> ·{' '}
+            <span className="mono text-lime-300">logs</span> · <span className="mono text-lime-300">details</span> · <span className="mono text-lime-300">pause</span> · <span className="mono text-lime-300">kill</span> ·{' '}
+            <span className="mono text-lime-300">remove</span> + a container name
           </span>
           <span className="ml-auto">↑↓ to move · ↵ to run</span>
         </div>

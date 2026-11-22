@@ -38,13 +38,13 @@ export function StacksPage() {
         subtitle={stacks.data ? `${stacks.data.filter((s) => s.managed).length} managed by TainerHub · ${stacks.data.filter((s) => !s.managed).length} started elsewhere` : undefined}
       >
         <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-indigo-100/50" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-100/50" />
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter stacks"
             aria-label="Filter stacks"
-            className="w-44 rounded-full bg-white/[0.06] py-2 pl-9 pr-3 text-sm ring-1 ring-inset ring-white/10 outline-none focus:ring-sky-500/60"
+            className="w-44 rounded-[2px] bg-ink-950/70 py-2 pl-9 pr-3 text-sm text-white ring-1 ring-inset ring-white/12 outline-none placeholder:text-ink-100/35 focus:ring-lime-400/60"
           />
         </div>
         {admin && (
@@ -55,7 +55,7 @@ export function StacksPage() {
       </PageHeader>
 
       {stacks.isPending ? (
-        <p className="text-sm text-indigo-100/60">Loading…</p>
+        <p className="text-sm text-ink-100/60">Loading…</p>
       ) : stacks.data?.length === 0 ? (
         <EmptyState icon={Layers} title="No stacks yet">
           A stack is a compose file TainerHub deploys to one host and keeps track of.
@@ -65,7 +65,7 @@ export function StacksPage() {
         <div className="space-y-8">
           {managed.length > 0 && (
             <section>
-              <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-indigo-100/50">Managed by TainerHub</h2>
+              <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink-100/50">Managed by TainerHub</h2>
               <Card className="divide-y divide-white/[0.06]">
                 {managed.map((s) => (
                   <StackRow key={s.id} s={s} actions={operator ? managedActions(s, run) : []} />
@@ -75,8 +75,8 @@ export function StacksPage() {
           )}
           {external.length > 0 && (
             <section>
-              <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-indigo-100/50">Started outside TainerHub</h2>
-              <p className="mb-3 text-sm text-indigo-100/60">
+              <h2 className="mb-1 text-xs font-semibold uppercase tracking-wider text-ink-100/50">Started outside TainerHub</h2>
+              <p className="mb-3 text-sm text-ink-100/60">
                 Compose projects found running on your hosts. Manage their containers from the Containers page
                 {admin ? ', or take one over by giving TainerHub its compose file.' : '.'}
               </p>
@@ -87,7 +87,7 @@ export function StacksPage() {
               </Card>
             </section>
           )}
-          {list.length === 0 && <p className="text-sm text-indigo-100/60">No stacks match “{filter}”.</p>}
+          {list.length === 0 && <p className="text-sm text-ink-100/60">No stacks match “{filter}”.</p>}
         </div>
       )}
     </div>
@@ -128,7 +128,7 @@ function StackRow({ s, actions, adopt }: { s: StackSummary; actions: MenuItem[];
         ) : (
           name
         )}
-        <div className="mt-0.5 truncate pl-[18px] text-xs text-indigo-100/50">
+        <div className="mt-0.5 truncate pl-[18px] text-xs text-ink-100/50">
           {s.hostName}
           {s.managed && (s.deployedAt ? ` · deployed ${timeAgo(s.deployedAt)}` : ' · never deployed')}
           {s.managed && s.updatedBy && ` · edited by ${s.updatedBy} ${timeAgo(s.updatedAt)}`}
@@ -142,7 +142,7 @@ function StackRow({ s, actions, adopt }: { s: StackSummary; actions: MenuItem[];
           </Badge>
         )}
         {s.containers > 0 && (
-          <span className="text-xs tabular-nums text-indigo-100/60">
+          <span className="text-xs tabular-nums text-ink-100/60">
             {s.running}/{s.containers} running
           </span>
         )}

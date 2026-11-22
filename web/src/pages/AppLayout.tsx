@@ -55,8 +55,8 @@ function NavPill({ to, label, exact }: { to: NavTo; label: string; exact?: boole
     <Link
       to={to}
       activeOptions={{ exact }}
-      className="whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium text-indigo-100/70 transition hover:text-white"
-      activeProps={{ className: '!bg-gradient-to-r !from-sky-500 !to-purple-500 !font-semibold !text-white shadow-lg shadow-purple-900/40' }}
+      className="relative whitespace-nowrap px-3 py-2 font-display text-[12.5px] font-medium uppercase tracking-[0.1em] text-ink-100/55 transition hover:text-white"
+      activeProps={{ className: '!text-lime-300 after:absolute after:inset-x-3 after:bottom-0 after:h-[2px] after:bg-lime-400' }}
     >
       {label}
     </Link>
@@ -95,7 +95,7 @@ export function AppLayout() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  if (me.isPending) return <div className="flex min-h-screen items-center justify-center text-sm text-indigo-100/60">Loading…</div>
+  if (me.isPending) return <div className="flex min-h-screen items-center justify-center text-sm text-ink-100/60">Loading…</div>
   if (me.isError) {
     if (me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/login" />
     return <div className="p-8 text-sm text-rose-300">{me.error.message}</div>
@@ -120,12 +120,12 @@ export function AppLayout() {
         <DetailsContext.Provider value={setDetailsFor}>
         <PaletteContext.Provider value={openPalette}>
           <div className={cx('min-h-screen', (logsFor || jobId) && 'pb-[48vh]')}>
-            <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#0a0720]/60 backdrop-blur-xl">
+            <header className="sticky top-0 z-30 border-b border-line bg-canvas/85 backdrop-blur-md">
               <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-3 px-4 py-3 sm:px-8">
                 <Link to="/" aria-label="TainerHub home">
                   <Logo />
                 </Link>
-                <nav className="order-3 flex w-full gap-1 overflow-x-auto rounded-full bg-white/[0.06] p-1 ring-1 ring-white/10 md:order-none md:ml-4 md:w-auto">
+                <nav className="order-3 flex w-full gap-0.5 overflow-x-auto lg:order-none lg:ml-4 lg:w-auto">
                   <NavPill to="/" label="Overview" exact />
                   <NavPill to="/containers" label="Containers" />
                   <NavPill to="/stacks" label="Stacks" />
@@ -135,18 +135,18 @@ export function AppLayout() {
                 </nav>
                 <button
                   onClick={openPalette}
-                  className="group ml-auto flex min-w-0 flex-1 items-center gap-2 rounded-full bg-white/[0.06] px-4 py-2.5 text-left text-sm text-indigo-100/60 ring-1 ring-white/10 transition hover:bg-white/[0.09] md:ml-0 md:max-w-xl"
+                  className="group ml-auto flex min-w-0 flex-1 items-center gap-2 rounded-[2px] bg-ink-950/70 px-3.5 py-2 text-left text-sm text-ink-100/55 ring-1 ring-line transition hover:ring-lime-400/40 lg:ml-0 lg:max-w-xl"
                 >
                   <Search className="size-4 shrink-0" />
                   <span className="truncate">
-                    Search or run a command, e.g. <span className="mono text-sky-300">restart pihole</span>
+                    Search or run a command, e.g. <span className="mono text-lime-300">restart pihole</span>
                   </span>
                   <span className="ml-auto hidden sm:block">
                     <Kbd>⌘K</Kbd>
                   </span>
                 </button>
                 <span
-                  className={cx('hidden size-2 rounded-full lg:block', live ? 'bg-emerald-400 shadow-[0_0_8px_2px] shadow-emerald-500/60' : 'animate-pulse bg-amber-400')}
+                  className={cx('hidden size-2 rounded-full lg:block', live ? 'bg-emerald-400' : 'animate-pulse bg-amber-400')}
                   title={live ? 'Live: receiving updates from the hub' : 'Reconnecting to the live update stream'}
                 />
                 <Menu
@@ -154,7 +154,7 @@ export function AppLayout() {
                     <button
                       onClick={toggle}
                       aria-label="Account menu"
-                      className="flex size-10 items-center justify-center rounded-full bg-gradient-to-br from-fuchsia-500 via-purple-500 to-sky-400 text-sm font-bold text-white shadow-lg shadow-purple-900/40 ring-2 ring-white/15"
+                      className="tag tag-sm flex size-9 items-center justify-center bg-lime-400 font-display text-sm font-bold text-ink-950 transition hover:bg-lime-300"
                     >
                       {initials}
                     </button>

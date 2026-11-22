@@ -24,7 +24,7 @@ function Root() {
 }
 
 function Splash({ text = 'Loading…' }: { text?: string }) {
-  return <div className="flex min-h-screen items-center justify-center text-sm text-indigo-100/60">{text}</div>
+  return <div className="flex min-h-screen items-center justify-center text-sm text-ink-100/60">{text}</div>
 }
 
 const rootRoute = createRootRoute({ component: Root })

@@ -55,7 +55,7 @@ export function LoginPage() {
             {busy ? 'Waiting for your passkey…' : 'Sign in with passkey'}
           </Button>
           <ErrorNote error={error} />
-          <div className="flex items-center gap-3 text-xs text-indigo-100/40">
+          <div className="flex items-center gap-3 text-xs text-ink-100/40">
             <span className="h-px flex-1 bg-white/10" />
             or
             <span className="h-px flex-1 bg-white/10" />

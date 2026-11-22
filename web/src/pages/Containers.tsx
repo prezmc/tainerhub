@@ -11,12 +11,12 @@ type Group = 'host' | 'stack' | 'state'
 type Column = { key: string; title: string; subtitle: string; count: number; tone: 'host' | 'offline' | 'stack' | 'good' | 'bad' | 'idle'; items: Container[]; host?: Host }
 
 const headerTone: Record<Column['tone'], string> = {
-  host: 'bg-gradient-to-br from-emerald-500 to-sky-500 shadow-emerald-900/40',
-  offline: 'bg-white/[0.07]',
-  stack: 'bg-gradient-to-br from-fuchsia-500 to-purple-600 shadow-purple-900/40',
-  good: 'bg-gradient-to-br from-emerald-500 to-teal-500 shadow-emerald-900/40',
-  bad: 'bg-gradient-to-br from-rose-500 to-orange-500 shadow-rose-900/40',
-  idle: 'bg-gradient-to-br from-slate-500 to-slate-600',
+  host: 'border-lime-400 bg-lime-400/[0.07]',
+  offline: 'border-ink-600 bg-white/[0.03]',
+  stack: 'border-cyan-400 bg-cyan-400/[0.07]',
+  good: 'border-emerald-400 bg-emerald-400/[0.07]',
+  bad: 'border-rose-400 bg-rose-400/[0.09]',
+  idle: 'border-ink-500 bg-white/[0.04]',
 }
 
 export function ContainersPage() {
@@ -84,7 +84,7 @@ export function ContainersPage() {
           [
             ['all', 'All', ''],
             ['running', 'Running', 'text-emerald-300'],
-            ['stopped', 'Stopped', 'text-slate-300'],
+            ['stopped', 'Stopped', 'text-ink-300'],
             ['issues', 'Issues', 'text-rose-300'],
           ] as const
         ).map(([k, label, dot]) => (
@@ -92,26 +92,26 @@ export function ContainersPage() {
             key={k}
             onClick={() => setView(k)}
             className={cx(
-              'flex items-center gap-1.5 rounded-full px-4 py-1.5 text-sm font-semibold transition',
-              view === k ? 'bg-gradient-to-r from-sky-500 to-purple-500 text-white shadow-lg shadow-purple-900/40' : 'bg-white/[0.06] text-indigo-100/80 ring-1 ring-white/15 hover:bg-white/[0.1]',
+              'flex items-center gap-1.5 rounded-[2px] px-3.5 py-1.5 font-display text-[12px] font-semibold uppercase tracking-[0.08em] transition',
+              view === k ? 'bg-lime-400 text-ink-950' : 'text-ink-100/75 ring-1 ring-inset ring-line hover:text-white hover:ring-lime-400/40',
             )}
           >
-            {dot && <span className={cx('text-[10px]', view === k ? 'text-white' : dot)}>●</span>}
+            {dot && <span className={cx('text-[10px]', view === k ? 'text-ink-950' : dot)}>●</span>}
             {label}
             <span className="tabular-nums opacity-80">{counts[k]}</span>
           </button>
         ))}
         <div className="relative ml-auto">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-indigo-100/50" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-100/50" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Filter"
-            className="w-48 rounded-full bg-white/[0.06] py-1.5 pl-9 pr-3 text-sm text-white ring-1 ring-white/15 outline-none placeholder:text-indigo-100/40 focus:ring-2 focus:ring-purple-400/60"
+            className="w-48 rounded-[2px] bg-ink-950/70 py-1.5 pl-9 pr-3 text-sm text-white ring-1 ring-inset ring-white/12 outline-none placeholder:text-ink-100/35 focus:ring-lime-400/60"
           />
         </div>
-        <div className="flex items-center gap-1 rounded-full bg-white/[0.06] p-1 text-xs ring-1 ring-white/10">
-          <span className="px-2 text-indigo-100/60">Group by</span>
+        <div className="flex items-center gap-1 rounded-[3px] bg-ink-950/60 p-0.5 text-xs ring-1 ring-line">
+          <span className="px-2 text-ink-100/60">Group by</span>
           {(['host', 'stack', 'state'] as const).map((g) => (
             <button
               key={g}
@@ -119,7 +119,7 @@ export function ContainersPage() {
                 setGroup(g)
                 savePref('th.group', g)
               }}
-              className={cx('rounded-full px-3 py-1 font-semibold capitalize transition', group === g ? 'bg-white text-[#0a0720]' : 'text-indigo-100/80 hover:text-white')}
+              className={cx('rounded-[2px] px-3 py-1 font-semibold capitalize transition', group === g ? 'bg-lime-400 text-ink-950' : 'text-ink-100/80 hover:text-white')}
             >
               {g}
             </button>
@@ -129,24 +129,24 @@ export function ContainersPage() {
 
       <div className="flex snap-x gap-5 overflow-x-auto pb-4">
         {columns.map((col) => (
-          <section key={col.key} className="w-[min(100%,380px)] shrink-0 snap-start rounded-3xl bg-white/[0.04] p-3.5 ring-1 ring-white/10 backdrop-blur-xl">
-            <div className={cx('rounded-2xl p-4 text-white shadow-lg', headerTone[col.tone])}>
+          <section key={col.key} className="w-[min(100%,380px)] shrink-0 snap-start rounded-md bg-ink-900/40 p-3 ring-1 ring-line">
+            <div className={cx('rounded-[3px] border-l-4 p-4 text-white', headerTone[col.tone])}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="truncate font-display text-xl font-bold">{col.title}</div>
-                  <div className="mt-0.5 truncate text-xs text-white/85">{col.subtitle}</div>
+                  <div className="mt-0.5 truncate text-xs text-ink-100/65">{col.subtitle}</div>
                 </div>
                 <div className="font-display text-3xl font-bold tabular-nums">{col.count}</div>
               </div>
             </div>
             <div className="mt-3 space-y-2.5">
               {col.host && !col.host.online ? (
-                <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-indigo-100/50">
+                <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-ink-100/50">
                   <WifiOff className="size-5" />
                   Agent offline
                 </div>
               ) : col.items.length === 0 ? (
-                <div className="py-10 text-center text-sm text-indigo-100/50">Nothing here</div>
+                <div className="py-10 text-center text-sm text-ink-100/50">Nothing here</div>
               ) : (
                 col.items.map((c) => <ContainerCard key={c.hostId + c.id} c={c} operator={operator} showHost={group !== 'host'} />)
               )}
@@ -162,7 +162,7 @@ const pill: Record<string, string> = {
   bad: 'bg-rose-400/15 text-rose-300',
   running: 'bg-emerald-400/15 text-emerald-300',
   paused: 'bg-amber-400/15 text-amber-300',
-  stopped: 'bg-white/10 text-slate-300',
+  stopped: 'bg-white/10 text-ink-300',
 }
 
 function ContainerCard({ c, operator, showHost }: { c: Container; operator: boolean; showHost: boolean }) {
@@ -178,41 +178,41 @@ function ContainerCard({ c, operator, showHost }: { c: Container; operator: bool
   return (
     <div
       className={cx(
-        'group rounded-2xl p-3.5 ring-1 transition hover:-translate-y-0.5',
-        bad ? 'bg-gradient-to-br from-rose-500/20 to-orange-500/10 ring-rose-400/40' : 'bg-white/[0.06] ring-white/10 hover:ring-white/20',
+        'group rounded-md p-3.5 ring-1 transition hover:-translate-y-0.5',
+        bad ? 'bg-rose-500/[0.1] ring-rose-400/40' : 'bg-ink-900/70 ring-line hover:ring-lime-400/30',
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <button onClick={() => openDetails(c)} className="truncate text-left font-display text-[15px] font-bold text-white hover:text-sky-200">
+        <button onClick={() => openDetails(c)} className="truncate text-left font-display text-[15px] font-bold text-white hover:text-lime-200">
           {c.name}
         </button>
-        <span className={cx('shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-semibold', pill[bad ? 'bad' : running ? 'running' : paused ? 'paused' : 'stopped'])}>{label}</span>
+        <span className={cx('shrink-0 rounded-[2px] px-1.5 py-[3px] font-mono text-[10.5px] font-medium uppercase leading-none tracking-wider', pill[bad ? 'bad' : running ? 'running' : paused ? 'paused' : 'stopped'])}>{label}</span>
       </div>
-      <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-indigo-100/70">
+      <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-ink-100/70">
         <span className="flex min-w-0 items-center gap-1 truncate">
           {c.project && (
             <>
-              <Boxes className="size-3 shrink-0 text-fuchsia-300" />
+              <Boxes className="size-3 shrink-0 text-cyan-300" />
               <span className="truncate">{c.project}</span>
             </>
           )}
-          {showHost && <span className="truncate text-indigo-100/50">{c.project ? ' · ' : ''}{c.hostName}</span>}
+          {showHost && <span className="truncate text-ink-100/50">{c.project ? ' · ' : ''}{c.hostName}</span>}
         </span>
         <span className="shrink-0">{c.status.replace(/\s*\((un)?healthy\)/, '')}</span>
       </div>
       <div className="mt-3 flex items-center gap-3">
         {running ? (
-          <div className="mono flex flex-1 items-center gap-3 text-[11px] text-indigo-100/70">
+          <div className="mono flex flex-1 items-center gap-3 text-[11px] text-ink-100/70">
             <span className="flex items-center gap-1.5">
-              <span className="h-1 w-10 overflow-hidden rounded-full bg-white/10">
-                <span className="block h-full rounded-full bg-gradient-to-r from-emerald-400 to-sky-400" style={{ width: `${Math.min(c.cpu ?? 0, 100)}%` }} />
+              <span className="h-1 w-10 overflow-hidden rounded-[2px] bg-white/10">
+                <span className="block h-full bg-lime-400" style={{ width: `${Math.min(c.cpu ?? 0, 100)}%` }} />
               </span>
               {c.cpu === undefined ? '–' : `${c.cpu.toFixed(1)}%`}
             </span>
             <span>{mem(c.mem)}</span>
           </div>
         ) : (
-          <span className="mono flex-1 truncate text-[11px] text-indigo-100/40" title={c.image}>
+          <span className="mono flex-1 truncate text-[11px] text-ink-100/40" title={c.image}>
             {c.image}
           </span>
         )}
