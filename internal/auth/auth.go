@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,9 @@ type Service struct {
 	PublicURL     *url.URL // nil until TAINERHUB_PUBLIC_URL is set
 	SecureCookies bool
 	Trusted       []netip.Prefix // proxies allowed to set X-Forwarded-For
+	// SetupTokenFile, if set, holds the current setup token while setup is
+	// pending, so `tainerhub setup-link` (and the installer) can print it.
+	SetupTokenFile string
 
 	mu         sync.Mutex
 	ceremonies map[string]*ceremony
@@ -266,6 +270,14 @@ func (s *Service) RotateSetupToken() string {
 	s.setupToken = tok
 	s.setupExp = time.Now().Add(setupTokenTTL)
 	s.mu.Unlock()
+	if s.SetupTokenFile != "" {
+		tmp := s.SetupTokenFile + ".tmp"
+		if err := os.WriteFile(tmp, []byte(tok+"\n"), 0o600); err == nil {
+			_ = os.Rename(tmp, s.SetupTokenFile)
+		} else {
+			s.Log.Warn("could not save the setup token for `tainerhub setup-link`", "err", err)
+		}
+	}
 	base := "http://<this server's IP>:8585"
 	if s.PublicURL != nil {
 		base = strings.TrimSuffix(s.PublicURL.String(), "/")
@@ -279,6 +291,7 @@ func (s *Service) RunSetupTokenLoop(ctx context.Context) {
 	for {
 		need, err := s.SetupRequired(ctx)
 		if err == nil && !need {
+			s.clearSetupToken()
 			return
 		}
 		if err == nil {
@@ -289,6 +302,16 @@ func (s *Service) RunSetupTokenLoop(ctx context.Context) {
 			return
 		case <-time.After(setupTokenTTL):
 		}
+	}
+}
+
+// clearSetupToken ends setup: the token stops working and its file goes.
+func (s *Service) clearSetupToken() {
+	s.mu.Lock()
+	s.setupToken = ""
+	s.mu.Unlock()
+	if s.SetupTokenFile != "" {
+		_ = os.Remove(s.SetupTokenFile)
 	}
 }
 
@@ -360,9 +383,7 @@ func (s *Service) FinishSetup(w http.ResponseWriter, r *http.Request) (store.Use
 	if err != nil {
 		return store.User{}, nil, err
 	}
-	s.mu.Lock()
-	s.setupToken = ""
-	s.mu.Unlock()
+	s.clearSetupToken()
 	if err := s.startSession(w, r, u); err != nil {
 		return store.User{}, nil, err
 	}

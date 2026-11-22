@@ -1,10 +1,13 @@
-# TainerHub hub. Install:
+# TainerHub hub. Easiest install (does all of this and prints your setup link):
 #
+#   curl -fsSL https://raw.githubusercontent.com/prezmc/tainerhub/main/install.sh | sh
+#
+# By hand:
 #   mkdir -p ~/tainerhub && cd ~/tainerhub
 #   curl -fsSLO https://raw.githubusercontent.com/prezmc/tainerhub/main/deploy/hub/compose.yml
-#   docker compose up -d && docker compose logs tainerhub    # prints the database password (save it) and the setup link
-#
-# Then open http://<this server's IP>:8585/setup?token=... and create your account.
+#   docker compose up -d
+#   docker exec tainerhub /tainerhub db-password   # save this
+#   docker exec tainerhub /tainerhub setup-link    # open http://<this server's IP>:8585 + this
 # HTTPS through a reverse proxy, and passkeys, can be added later (see the README).
 
 services:

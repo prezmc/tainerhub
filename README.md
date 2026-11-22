@@ -61,19 +61,26 @@ deploy/                 compose files for the hub stack and the agent
 
 ### 1. Install the hub
 
-On any server with Docker:
+On any Linux server with Docker, as root or a user in the `docker` group:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/prezmc/tainerhub/main/install.sh | sh
+```
+
+It sets up `~/tainerhub`, starts the hub, and ends by printing:
+
+- **The database password.** The hub replaced the database's default password with a random one, kept in its `/data` volume. You won't need it day to day; save a copy in your password manager in case you ever restore the database without that volume.
+- **Your setup link**, e.g. `http://192.168.1.10:8585/setup?token=...`. Open it within 15 minutes, create your username and password, and save the recovery codes. Lost it? `docker exec tainerhub /tainerhub setup-link` prints a fresh one.
+
+Prefer to do it by hand? The script only does this:
 
 ```bash
 mkdir -p ~/tainerhub && cd ~/tainerhub
 curl -fsSLO https://raw.githubusercontent.com/prezmc/tainerhub/main/deploy/hub/compose.yml
 docker compose up -d
-docker compose logs tainerhub
+docker exec tainerhub /tainerhub db-password
+docker exec tainerhub /tainerhub setup-link    # open http://<server IP>:8585 + what this prints
 ```
-
-The log prints two things:
-
-- **A database password.** On first start the hub replaces the database's default password with a random one and keeps it in its `/data` volume. You don't need it day to day, but save a copy (e.g. in your password manager) in case you ever restore the database without that volume.
-- **A one-time setup link.** Open it with your server's IP, e.g. `http://192.168.1.10:8585/setup?token=...` (valid 15 minutes; a new one is printed every 15 minutes until setup is done). Create your username and password, and save the recovery codes.
 
 ### 2. Add your servers
 

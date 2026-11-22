@@ -122,9 +122,7 @@ func (s *Service) SetupWithPassword(w http.ResponseWriter, r *http.Request, in S
 	if err != nil {
 		return store.User{}, nil, err
 	}
-	s.mu.Lock()
-	s.setupToken = ""
-	s.mu.Unlock()
+	s.clearSetupToken()
 	return u, codes, s.startSession(w, r, u)
 }
 
