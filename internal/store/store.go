@@ -131,13 +131,15 @@ type User struct {
 	Role        string    `json:"role"`
 	WebAuthnID  []byte    `json:"-"`
 	CreatedAt   time.Time `json:"createdAt"`
+	// PasswordHash is an encoded argon2id hash, or "" for no password.
+	PasswordHash string `json:"-"`
 }
 
-const userCols = `id::text, username, display_name, role, webauthn_id, created_at`
+const userCols = `id::text, username, display_name, role, webauthn_id, created_at, password_hash`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.WebAuthnID, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.WebAuthnID, &u.CreatedAt, &u.PasswordHash)
 	return u, notFound(err)
 }
 
@@ -159,9 +161,10 @@ func (s *Store) UserByUsername(ctx context.Context, username string) (User, erro
 	return scanUser(s.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE lower(username) = lower($1)`, username))
 }
 
-// CreateFirstOwner creates the initial owner with one passkey and recovery
-// codes. It fails with ErrConflict if any user already exists.
-func (s *Store) CreateFirstOwner(ctx context.Context, u User, pk Passkey, recoveryHashes [][]byte) (User, error) {
+// CreateFirstOwner creates the initial owner with recovery codes and either
+// a passkey or a password (u.PasswordHash; pk nil). It fails with
+// ErrConflict if any user already exists.
+func (s *Store) CreateFirstOwner(ctx context.Context, u User, pk *Passkey, recoveryHashes [][]byte) (User, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return User{}, err
@@ -178,14 +181,16 @@ func (s *Store) CreateFirstOwner(ctx context.Context, u User, pk Passkey, recove
 		return User{}, ErrConflict
 	}
 	created, err := scanUser(tx.QueryRow(ctx,
-		`INSERT INTO users (username, display_name, role, webauthn_id) VALUES ($1, $2, 'owner', $3) RETURNING `+userCols,
-		u.Username, u.DisplayName, u.WebAuthnID))
+		`INSERT INTO users (username, display_name, role, webauthn_id, password_hash) VALUES ($1, $2, 'owner', $3, $4) RETURNING `+userCols,
+		u.Username, u.DisplayName, u.WebAuthnID, u.PasswordHash))
 	if err != nil {
 		return User{}, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO passkeys (id, user_id, name, credential) VALUES ($1, $2::uuid, $3, $4)`,
-		pk.ID, created.ID, pk.Name, pk.Credential); err != nil {
-		return User{}, err
+	if pk != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO passkeys (id, user_id, name, credential) VALUES ($1, $2::uuid, $3, $4)`,
+			pk.ID, created.ID, pk.Name, pk.Credential); err != nil {
+			return User{}, err
+		}
 	}
 	for _, h := range recoveryHashes {
 		if _, err := tx.Exec(ctx, `INSERT INTO recovery_codes (user_id, code_hash) VALUES ($1::uuid, $2)`, created.ID, h); err != nil {
@@ -236,11 +241,13 @@ func (s *Store) UpdatePasskeyAfterLogin(ctx context.Context, id []byte, credenti
 	return err
 }
 
-// DeletePasskey removes a passkey unless it is the user's last one.
+// DeletePasskey removes a passkey unless it is the user's last way to sign
+// in (their last passkey and they have no password).
 func (s *Store) DeletePasskey(ctx context.Context, userID string, id []byte) error {
 	tag, err := s.db.Exec(ctx, `
 		DELETE FROM passkeys WHERE id = $2 AND user_id = $1::uuid
-		AND (SELECT count(*) FROM passkeys WHERE user_id = $1::uuid) > 1`, userID, id)
+		AND ((SELECT count(*) FROM passkeys WHERE user_id = $1::uuid) > 1
+		     OR (SELECT password_hash FROM users WHERE id = $1::uuid) <> '')`, userID, id)
 	if err != nil {
 		return err
 	}
@@ -248,6 +255,15 @@ func (s *Store) DeletePasskey(ctx context.Context, userID string, id []byte) err
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SetPasswordHash sets (or with "" removes) a user's password.
+func (s *Store) SetPasswordHash(ctx context.Context, userID, hash string) error {
+	tag, err := s.db.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1::uuid`, userID, hash)
+	if err == nil && tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return err
 }
 
 // ---------------- recovery codes ----------------

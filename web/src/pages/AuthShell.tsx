@@ -13,7 +13,7 @@ export function AuthShell({ title, subtitle, children }: { title: string; subtit
           {subtitle && <p className="mt-2 text-sm text-ink-100/60">{subtitle}</p>}
         </div>
         <div className="rounded-md border-t-2 border-lime-400 bg-panel p-6 shadow-2xl shadow-black/50 ring-1 ring-line">{children}</div>
-        <p className="mt-6 text-center text-xs text-ink-100/40">Secured with passkeys · no passwords stored</p>
+        <p className="mt-6 text-center text-xs text-ink-100/40">Passwords hashed with argon2id · passkeys once on HTTPS</p>
       </div>
     </div>
   )

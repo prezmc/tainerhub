@@ -43,21 +43,22 @@ type config struct {
 
 func loadConfig() (config, error) {
 	var c config
-	raw := os.Getenv("TAINERHUB_PUBLIC_URL")
-	if raw == "" {
-		return c, errors.New("TAINERHUB_PUBLIC_URL is required, e.g. https://tainerhub.example.com")
+	// Optional: the https:// address users browse to once TainerHub is behind
+	// a reverse proxy. Without it the hub works over plain HTTP with password
+	// sign-in; setting it turns on passkeys and Secure cookies.
+	if raw := os.Getenv("TAINERHUB_PUBLIC_URL"); raw != "" {
+		u, err := url.Parse(strings.TrimSuffix(raw, "/"))
+		if err != nil || u.Host == "" {
+			return c, fmt.Errorf("TAINERHUB_PUBLIC_URL is not a valid URL: %q", raw)
+		}
+		if u.Scheme != "https" && u.Hostname() != "localhost" {
+			return c, errors.New("TAINERHUB_PUBLIC_URL must be https (passkeys only work over HTTPS, except on localhost); leave it unset to use plain HTTP with passwords")
+		}
+		c.PublicURL = u
 	}
-	u, err := url.Parse(strings.TrimSuffix(raw, "/"))
-	if err != nil || u.Host == "" {
-		return c, fmt.Errorf("TAINERHUB_PUBLIC_URL is not a valid URL: %q", raw)
-	}
-	if u.Scheme != "https" && u.Hostname() != "localhost" {
-		return c, errors.New("TAINERHUB_PUBLIC_URL must be https (passkeys only work over HTTPS, except on localhost)")
-	}
-	c.PublicURL = u
-	c.HTTPAddr = envOr("TAINERHUB_HTTP_ADDR", ":8080")
+	c.HTTPAddr = envOr("TAINERHUB_HTTP_ADDR", ":8585")
 	c.AgentListen = envOr("TAINERHUB_AGENT_LISTEN", ":7443")
-	c.AgentAddr = envOr("TAINERHUB_AGENT_ADDR", u.Hostname()+":7443")
+	c.AgentAddr = os.Getenv("TAINERHUB_AGENT_ADDR") // optional: default is chosen per request
 	c.DataDir = envOr("TAINERHUB_DATA_DIR", "/data")
 	c.DatabaseURL = os.Getenv("TAINERHUB_DATABASE_URL")
 	if c.DatabaseURL == "" {
@@ -70,11 +71,16 @@ func loadConfig() (config, error) {
 		}
 		c.DBPassword = strings.TrimSpace(string(b))
 	}
-	agentHost, _, err := net.SplitHostPort(c.AgentAddr)
-	if err != nil {
-		return c, fmt.Errorf("TAINERHUB_AGENT_ADDR must be host:port: %w", err)
+	// Agents verify the gateway by the hub's pinned CA, not by name, so these
+	// names only matter to other TLS clients.
+	c.AgentSANs = []string{"localhost", "127.0.0.1"}
+	if c.AgentAddr != "" {
+		agentHost, _, err := net.SplitHostPort(c.AgentAddr)
+		if err != nil {
+			return c, fmt.Errorf("TAINERHUB_AGENT_ADDR must be host:port: %w", err)
+		}
+		c.AgentSANs = append(c.AgentSANs, agentHost)
 	}
-	c.AgentSANs = []string{agentHost, "localhost", "127.0.0.1"}
 	for _, s := range strings.Split(os.Getenv("TAINERHUB_AGENT_SANS"), ",") {
 		if s = strings.TrimSpace(s); s != "" {
 			c.AgentSANs = append(c.AgentSANs, s)
@@ -118,7 +124,11 @@ func run(log *slog.Logger) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	log.Info("tainerhub starting", "version", version.Version, "public_url", cfg.PublicURL.String(), "agent_addr", cfg.AgentAddr)
+	publicURL := "(not set: plain HTTP, password sign-in; set TAINERHUB_PUBLIC_URL for HTTPS and passkeys)"
+	if cfg.PublicURL != nil {
+		publicURL = cfg.PublicURL.String()
+	}
+	log.Info("tainerhub starting", "version", version.Version, "public_url", publicURL, "agent_addr", cfg.AgentAddr)
 
 	st, err := store.Open(ctx, cfg.DatabaseURL, cfg.DBPassword)
 	if err != nil {
@@ -188,7 +198,7 @@ func run(log *slog.Logger) error {
 }
 
 func healthcheck() int {
-	addr := envOr("TAINERHUB_HTTP_ADDR", ":8080")
+	addr := envOr("TAINERHUB_HTTP_ADDR", ":8585")
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
 	}

@@ -160,17 +160,17 @@ export function AppLayout() {
                     </button>
                   )}
                   items={[
-                    { label: 'Account & passkeys', icon: Fingerprint, onClick: () => navigate({ to: '/account' }) },
+                    { label: 'Account & sign-in', icon: Fingerprint, onClick: () => navigate({ to: '/account' }) },
                     { label: 'Sign out', icon: LogOut, onClick: logout },
                   ]}
                 />
               </div>
             </header>
 
-            {me.data.passkeys.length === 0 && (
+            {me.data.passkeysEnabled && me.data.passkeys.length === 0 && (
               <div className="flex items-center justify-center gap-2 bg-amber-500/15 px-4 py-2 text-center text-sm text-amber-100">
                 <TriangleAlert className="size-4" />
-                You have no passkeys.{' '}
+                Passkeys are available now: add one for faster, phishing-proof sign-in.{' '}
                 <Link to="/account" className="font-semibold underline underline-offset-2">
                   Add one now
                 </Link>

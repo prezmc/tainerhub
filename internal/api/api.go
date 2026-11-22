@@ -1,4 +1,4 @@
-// Package api is the hub's browser-facing HTTP server (default :8080, behind
+// Package api is the hub's browser-facing HTTP server (default :8585, behind
 // Nginx Proxy Manager). It serves the React UI and a JSON API under /api.
 package api
 
@@ -11,7 +11,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"sort"
 	"strconv"
@@ -28,13 +30,15 @@ import (
 )
 
 type Server struct {
-	Store     *store.Store
-	Auth      *auth.Service
-	Reg       *registry.Registry
-	CA        *pki.CA
-	Log       *slog.Logger
-	AgentAddr string // what agents should dial, e.g. tainerhub.example.com:7443
-	Web       fs.FS  // built React app (index.html at root)
+	Store *store.Store
+	Auth  *auth.Service
+	Reg   *registry.Registry
+	CA    *pki.CA
+	Log   *slog.Logger
+	// AgentAddr is what agents dial, e.g. 192.168.1.10:7443. Empty: use the
+	// host the admin's browser reached the hub on, port 7443 (see agentAddrFor).
+	AgentAddr string
+	Web       fs.FS // built React app (index.html at root)
 
 	jobs jobList // running and recently finished stack operations
 }
@@ -56,6 +60,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login/begin", s.loginBegin)
 	mux.HandleFunc("POST /api/login/finish", s.loginFinish)
 	mux.HandleFunc("POST /api/login/recovery", s.loginRecovery)
+	mux.HandleFunc("POST /api/login/password", s.loginPassword)
+	mux.HandleFunc("POST /api/setup/password", s.setupPassword)
 	mux.HandleFunc("POST /api/logout", s.logout)
 
 	// any signed-in user
@@ -64,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/me/passkeys/finish", s.need("viewer", s.addPasskeyFinish))
 	mux.Handle("DELETE /api/me/passkeys/{id}", s.need("viewer", s.deletePasskey))
 	mux.Handle("POST /api/me/recovery-codes", s.need("viewer", s.regenRecovery))
+	mux.Handle("POST /api/me/password", s.need("viewer", s.changePassword))
 	mux.Handle("GET /api/containers", s.need("viewer", s.containers))
 	mux.Handle("GET /api/events", s.need("viewer", s.events))
 	mux.Handle("GET /api/hosts", s.need("viewer", s.hosts))
@@ -108,7 +115,10 @@ func (s *Server) Handler() http.Handler {
 
 // secure adds security headers and CSRF protection for state-changing calls.
 func (s *Server) secure(next http.Handler) http.Handler {
-	origin := s.Auth.PublicURL.Scheme + "://" + s.Auth.PublicURL.Host
+	origin := ""
+	if u := s.Auth.PublicURL; u != nil {
+		origin = u.Scheme + "://" + u.Host
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
@@ -125,13 +135,24 @@ func (s *Server) secure(next http.Handler) http.Handler {
 				jsonErr(w, http.StatusForbidden, "missing request header")
 				return
 			}
-			if o := r.Header.Get("Origin"); o != "" && o != origin {
+			if o := r.Header.Get("Origin"); o != "" && !sameOrigin(o, origin, r) {
 				jsonErr(w, http.StatusForbidden, "cross-origin request refused")
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sameOrigin checks a request's Origin header. With a public URL configured
+// it must match exactly; without one (plain-HTTP install reached by IP or
+// any name), its host must be the host the request was sent to.
+func sameOrigin(o, configured string, r *http.Request) bool {
+	if configured != "" {
+		return o == configured
+	}
+	u, err := url.Parse(o)
+	return err == nil && u.Host != "" && strings.EqualFold(u.Host, r.Host)
 }
 
 func (s *Server) need(role string, fn http.HandlerFunc) http.Handler {
@@ -185,7 +206,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"setupRequired": need, "version": version.Version})
+	writeJSON(w, http.StatusOK, map[string]any{"setupRequired": need, "version": version.Version, "passkeys": s.Auth.PasskeysEnabled()})
 }
 
 func (s *Server) setupBegin(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +258,57 @@ func (s *Server) loginFinish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
 }
 
+func (s *Server) setupPassword(w http.ResponseWriter, r *http.Request) {
+	var in auth.SetupPassword
+	if !readJSON(w, r, &in) {
+		return
+	}
+	u, codes, err := s.Auth.SetupWithPassword(w, r, in)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.record(r, &u, "setup.owner_created", u.Username, map[string]string{"method": "password"})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u, "recoveryCodes": codes})
+}
+
+func (s *Server) loginPassword(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Username, Password string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	u, err := s.Auth.LoginWithPassword(w, r, in.Username, in.Password)
+	if err != nil {
+		if errors.Is(err, auth.ErrRateLimited) {
+			jsonErr(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+		if !errors.Is(err, auth.ErrBadPassword) {
+			s.fail(w, err)
+			return
+		}
+		s.record(r, nil, "login.failed", truncate(in.Username, 64), map[string]string{"method": "password"})
+		jsonErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	s.record(r, &u, "login", u.Username, map[string]string{"method": "password"})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u})
+}
+
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Current, New string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	u := userFrom(r)
+	if err := s.Auth.ChangePassword(r.Context(), u, in.Current, in.New); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.record(r, &u, "password.changed", u.Username, nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) loginRecovery(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Username, Code string }
 	if !readJSON(w, r, &in) {
@@ -281,7 +353,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		views = append(views, passkeyView{ID: base64.RawURLEncoding.EncodeToString(p.ID), Name: p.Name, CreatedAt: p.CreatedAt, LastUsedAt: p.LastUsedAt})
 	}
 	left, _ := s.Store.CountRecoveryCodes(r.Context(), u.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"user": u, "passkeys": views, "recoveryCodesLeft": left})
+	writeJSON(w, http.StatusOK, map[string]any{"user": u, "passkeys": views, "recoveryCodesLeft": left, "hasPassword": u.PasswordHash != "", "passkeysEnabled": s.Auth.PasskeysEnabled()})
 }
 
 func (s *Server) addPasskeyBegin(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +389,7 @@ func (s *Server) deletePasskey(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.Store.DeletePasskey(r.Context(), u.ID, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			jsonErr(w, http.StatusBadRequest, "passkey not found, or it is your last one")
+			jsonErr(w, http.StatusBadRequest, "passkey not found, or it is your only way to sign in (set a password first)")
 			return
 		}
 		s.fail(w, err)
@@ -391,8 +463,13 @@ func (s *Server) hostViews(ctx context.Context) ([]hostView, error) {
 }
 
 func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Name string }
+	var in struct{ Name, AgentAddr string }
 	if !readJSON(w, r, &in) {
+		return
+	}
+	addr, err := s.agentAddrFor(r, in.AgentAddr)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	in.Name = strings.TrimSpace(in.Name)
@@ -409,21 +486,52 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.issueToken(w, r, h)
+	s.issueToken(w, r, h, addr)
 }
 
 func (s *Server) newHostToken(w http.ResponseWriter, r *http.Request) {
+	var in struct{ AgentAddr string }
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in) // body is optional
+	addr, err := s.agentAddrFor(r, in.AgentAddr)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	h, err := s.Store.GetHost(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.notFoundOr(w, err)
 		return
 	}
-	s.issueToken(w, r, h)
+	s.issueToken(w, r, h, addr)
+}
+
+// agentAddrFor picks the address new agents should dial: the admin's choice,
+// else TAINERHUB_AGENT_ADDR, else the host this request reached the hub on
+// with port 7443. That last guess is right for a plain install opened by IP,
+// and wrong behind a reverse proxy on another server, so the UI shows it and
+// lets the admin change it.
+func (s *Server) agentAddrFor(r *http.Request, requested string) (string, error) {
+	addr := strings.TrimSpace(requested)
+	if addr == "" {
+		addr = s.AgentAddr
+	}
+	if addr == "" {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		addr = net.JoinHostPort(strings.Trim(host, "[]"), "7443")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || port == "" || strings.ContainsAny(addr, " /\\\"'\n") {
+		return "", errors.New("hub address for agents must look like 192.168.1.10:7443 or hub.lan:7443")
+	}
+	return addr, nil
 }
 
 // issueToken creates a one-time join token (valid 1 hour) and returns it with
 // a ready-to-paste compose file for the agent.
-func (s *Server) issueToken(w http.ResponseWriter, r *http.Request, h store.Host) {
+func (s *Server) issueToken(w http.ResponseWriter, r *http.Request, h store.Host, agentAddr string) {
 	tok := wire.JoinToken{ID: randID(), Secret: randID() + randID(), CAFingerprint: s.CA.Fingerprint()}
 	expires := time.Now().Add(time.Hour)
 	if err := s.Store.CreateJoinToken(r.Context(), tok.ID, h.ID, gateway.HashSecret(tok.Secret), expires); err != nil {
@@ -437,7 +545,8 @@ func (s *Server) issueToken(w http.ResponseWriter, r *http.Request, h store.Host
 		"host":      h,
 		"joinToken": encoded,
 		"expiresAt": expires,
-		"compose":   agentCompose(s.AgentAddr, encoded),
+		"agentAddr": agentAddr,
+		"compose":   agentCompose(agentAddr, encoded),
 	})
 }
 

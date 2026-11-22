@@ -162,7 +162,7 @@ func (a *Agent) enroll(ctx context.Context) (tls.Certificate, error) {
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, // replaced by VerifyConnection below
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			return verifyPinned(cs, tok.CAFingerprint, a.serverName())
+			return verifyPinned(cs, tok.CAFingerprint)
 		},
 	}
 	client := &http.Client{
@@ -204,7 +204,9 @@ func (a *Agent) enroll(ctx context.Context) (tls.Certificate, error) {
 	return a.loadCreds()
 }
 
-func verifyPinned(cs tls.ConnectionState, fingerprint, serverName string) error {
+// verifyPinned accepts the hub if its chain includes the CA whose fingerprint
+// the join token carries.
+func verifyPinned(cs tls.ConnectionState, fingerprint string) error {
 	if len(cs.PeerCertificates) == 0 {
 		return errors.New("hub sent no certificate")
 	}
@@ -219,10 +221,26 @@ func verifyPinned(cs tls.ConnectionState, fingerprint, serverName string) error 
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(ca)
+	return verifyHub(cs, roots)
+}
+
+// verifyHub checks the hub's certificate against the hub's own private CA.
+// It deliberately skips the hostname check: that CA belongs to this one hub
+// and issues server certificates only to it (agent certificates are
+// client-auth only), so a valid chain identifies the hub whatever address
+// the agent used to reach it, an IP, a LAN name, or a VPN address.
+func verifyHub(cs tls.ConnectionState, roots *x509.CertPool) error {
+	if len(cs.PeerCertificates) == 0 {
+		return errors.New("hub sent no certificate")
+	}
+	inter := x509.NewCertPool()
+	for _, c := range cs.PeerCertificates[1:] {
+		inter.AddCert(c)
+	}
 	_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-		Roots:     roots,
-		DNSName:   serverName,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		Roots:         roots,
+		Intermediates: inter,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	})
 	return err
 }
@@ -264,10 +282,11 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			MinVersion:   tls.VersionTLS13,
-			Certificates: []tls.Certificate{cert},
-			RootCAs:      roots,
-			ServerName:   a.serverName(),
+			MinVersion:         tls.VersionTLS13,
+			Certificates:       []tls.Certificate{cert},
+			ServerName:         a.serverName(),
+			InsecureSkipVerify: true, // replaced by VerifyConnection: CA check without a hostname check
+			VerifyConnection:   func(cs tls.ConnectionState) error { return verifyHub(cs, roots) },
 		},
 		ForceAttemptHTTP2: true,
 	}

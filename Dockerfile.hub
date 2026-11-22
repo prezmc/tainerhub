@@ -1,4 +1,4 @@
-# TainerHub hub: web UI + API (:8080, behind Nginx Proxy Manager) and agent gateway (:7443, mTLS)
+# TainerHub hub: web UI + API (:8585, optionally behind a reverse proxy) and agent gateway (:7443, mTLS)
 # syntax=docker/dockerfile:1
 
 FROM --platform=$BUILDPLATFORM node:22-alpine AS web
@@ -25,5 +25,5 @@ COPY --from=build /out/tainerhub /tainerhub
 COPY --from=build --chown=65532:65532 /out/data /data
 USER nonroot:nonroot
 VOLUME /data
-EXPOSE 8080 7443
+EXPOSE 8585 7443
 ENTRYPOINT ["/tainerhub"]

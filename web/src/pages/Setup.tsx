@@ -1,9 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { browserSupportsWebAuthn } from '@simplewebauthn/browser'
-import { ArrowRight, Fingerprint, Terminal } from 'lucide-react'
-import { errorText, passkeySetup } from '../api'
+import { ArrowRight, Terminal, UserPlus } from 'lucide-react'
+import { api, errorText, type User } from '../api'
 import { Button, ErrorNote, Input, RecoveryCodes } from '../ui'
 import { AuthShell } from './AuthShell'
 
@@ -11,7 +10,8 @@ export function SetupPage() {
   const token = new URLSearchParams(window.location.search).get('token') ?? ''
   const [username, setUsername] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [passkeyName, setPasskeyName] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [codes, setCodes] = useState<string[] | null>(null)
@@ -20,10 +20,14 @@ export function SetupPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (password !== confirm) {
+      setError("The passwords don't match.")
+      return
+    }
     setBusy(true)
     setError(null)
     try {
-      const res = await passkeySetup({ token, username, displayName, passkeyName })
+      const res = await api<{ user: User; recoveryCodes: string[] }>('/api/setup/password', { method: 'POST', body: { token, username, displayName, password } })
       // Drop the one-time token from the address bar and history.
       window.history.replaceState(null, '', '/setup')
       setCodes(res.recoveryCodes)
@@ -70,20 +74,17 @@ export function SetupPage() {
   }
 
   return (
-    <AuthShell title="Create your account" subtitle="You'll sign in with a passkey: Touch ID, Windows Hello, your phone or a security key.">
-      {!browserSupportsWebAuthn() ? (
-        <ErrorNote error="This browser doesn't support passkeys. Use a current Chrome, Safari, Edge or Firefox over HTTPS." />
-      ) : (
-        <form onSubmit={submit} className="space-y-4">
-          <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required autoComplete="username" placeholder="admin" />
-          <Input label="Display name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your name" />
-          <Input label="Name this passkey" value={passkeyName} onChange={(e) => setPasskeyName(e.target.value)} placeholder="MacBook Touch ID" hint="Helps you tell your passkeys apart later." />
-          <ErrorNote error={error} />
-          <Button variant="primary" icon={Fingerprint} className="w-full py-2.5" disabled={!username} loading={busy}>
-            {busy ? 'Waiting for your passkey…' : 'Create account with passkey'}
-          </Button>
-        </form>
-      )}
+    <AuthShell title="Create your account" subtitle="This is the owner account. You can add passkeys later, once TainerHub is on HTTPS.">
+      <form onSubmit={submit} className="space-y-4">
+        <Input label="Username" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required autoComplete="username" placeholder="admin" />
+        <Input label="Display name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Your name" />
+        <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={10} autoComplete="new-password" hint="At least 10 characters." />
+        <Input label="Confirm password" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required autoComplete="new-password" />
+        <ErrorNote error={error} />
+        <Button variant="primary" icon={UserPlus} className="w-full" disabled={!username || !password} loading={busy}>
+          Create account
+        </Button>
+      </form>
     </AuthShell>
   )
 }

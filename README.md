@@ -4,7 +4,7 @@
 
 A self-hosted Docker manager: one hub with a web UI, and a small agent on each Docker host. A Portainer alternative built around:
 
-- **Passkey sign-in** (WebAuthn) with recovery codes. No passwords and no external identity provider.
+- **Simple to start, strong when you want it.** Install with one compose file and sign in with a password over plain HTTP. Later, put it behind your reverse proxy for HTTPS and add passkeys. Recovery codes throughout; no external identity provider.
 - **One view of every host.** Agents dial *out* to the hub, so managed hosts open no ports.
 - **mTLS everywhere between hub and agents**, using certificates from the hub's own private CA.
 - **Built-in history and alerts** (phase 3: VictoriaMetrics, 90-day retention, email alerts).
@@ -17,7 +17,7 @@ Design doc: see the "TainerHub: A Portainer Alternative — Design" doc.
 | --- | --- |
 | Hub ↔ agent protocol: join-token enrollment, CA pinning, mTLS, reconnects, keepalive, revocation | Done, covered by an end-to-end test |
 | Agent: container list, Docker events, start/stop/restart/pause/kill/remove, log streaming | Done, tested against a fake Docker Engine |
-| First-run setup link, passkey registration and sign-in, recovery codes, sessions, rate limiting | Done, needs a first real-browser test |
+| First-run setup link, password sign-in (argon2id), optional passkeys once on HTTPS, recovery codes, sessions, rate limiting | Done |
 | Postgres store with migrations, audit log | Done |
 | Web UI (Forest theme: green-black with a lime accent and clipped-corner "tag" buttons; Space Grotesk + Outfit): Overview with live fleet map, sortable by CPU / memory / name / status, attention card, top consumers and activity feed; Containers board grouped by host, stack or state; ⌘K command palette ("restart pihole"); live logs; hosts; passkeys; audit log | Done |
 | Container details (ports, mounts, networks, health-check history, restart policy, labels; environment values admin-only) | Done |
@@ -30,15 +30,15 @@ Design doc: see the "TainerHub: A Portainer Alternative — Design" doc.
 ## How it fits together
 
 ```
- Browser ──HTTPS 443──> Nginx Proxy Manager ──HTTP──> tainerhub :8080  (UI + /api)
+ Browser ──HTTPS 443──> Nginx Proxy Manager ──HTTP──> tainerhub :8585  (UI + /api)
                                                           │
                                                        Postgres
- tainerhub-agent (each server) ──mTLS, HTTP/2──> tainerhub :7443  (agent gateway, NOT behind NPM)
+ tainerhub-agent (each server) ──mTLS, HTTP/2──> tainerhub :7443  (agent gateway, never behind a proxy)
         │
    /var/run/docker.sock
 ```
 
-Each agent keeps **one long-lived, full-duplex HTTP/2 stream** to the hub, carrying newline-delimited JSON in both directions (see `internal/wire`). This does the same job as the gRPC stream in the design but uses only Go's standard library. Port 7443 must reach the hub directly: NPM would terminate TLS and strip the agents' client certificates.
+Each agent keeps **one long-lived, full-duplex HTTP/2 stream** to the hub, carrying newline-delimited JSON in both directions (see `internal/wire`). This does the same job as the gRPC stream in the design but uses only Go's standard library. Port 7443 must reach the hub directly: a reverse proxy would terminate TLS and strip the agents' client certificates. Agents trust the hub by its pinned private CA rather than by hostname, so they can reach it by IP, LAN name or VPN address.
 
 ## Repository layout
 
@@ -51,7 +51,7 @@ internal/gateway/       agent-facing mTLS endpoint (+ end-to-end test)
 internal/registry/      connected agents, in-flight commands and log streams
 internal/agent/         agent: enrollment, connection loop, Docker Engine client
 internal/store/         Postgres store and SQL migrations
-internal/auth/          passkeys, recovery codes, sessions
+internal/auth/          passwords, passkeys, recovery codes, sessions
 internal/api/           REST API, SSE log streaming, serves the UI
 web/                    React + TypeScript UI (Vite, TanStack Router/Query, Tailwind)
 deploy/                 compose files for the hub stack and the agent
@@ -59,59 +59,55 @@ deploy/                 compose files for the hub stack and the agent
 
 ## Getting started
 
-### 1. Push to GitHub and let CI build the images
+### 1. Install the hub
 
-```bash
-cd ~/TainerHub
-git init -b main
-git add .
-git commit -m "TainerHub phase 1 starter"
-git remote add origin https://github.com/prezmc/tainerhub.git
-git push -u origin main
-```
-
-The `ci` workflow resolves Go modules (and commits `go.sum` on its first run), builds the UI, runs `go vet` and the tests, then builds multi-arch images (amd64 + arm64):
-
-- `ghcr.io/prezmc/tainerhub:latest`
-- `ghcr.io/prezmc/tainerhub-agent:latest`
-
-The repo is private, so the images are too. Either make the two packages public (GitHub → your profile → Packages → package → Package settings → Change visibility), or on each server run `docker login ghcr.io -u prezmc` with a personal access token that has `read:packages`.
-
-### 2. Run the hub (Server 1, next to NPM)
+On any server with Docker:
 
 ```bash
 mkdir -p ~/tainerhub && cd ~/tainerhub
-cp <repo>/deploy/hub/compose.yml .
-mkdir -p secrets && chmod 700 secrets
-openssl rand -base64 32 | tr -d '\n' > secrets/db_password && chmod 644 secrets/db_password
-docker network ls            # find NPM's network name, e.g. npm_default
-NPM_NETWORK=npm_default docker compose up -d
-docker compose logs -f tainerhub
+curl -fsSLO https://raw.githubusercontent.com/prezmc/tainerhub/main/deploy/hub/compose.yml
+docker compose up -d
+docker compose logs tainerhub
 ```
 
-The log prints a one-time setup link: `https://tainerhub.example.com/setup?token=...` (valid 15 minutes; a new one is printed every 15 minutes until setup is done).
+The log prints a one-time setup link. Open it with your server's IP, e.g. `http://192.168.1.10:8585/setup?token=...` (valid 15 minutes; a new one is printed every 15 minutes until setup is done). Create your username and password, and save the recovery codes.
 
-### 3. Nginx Proxy Manager
+### 2. Add your servers
 
-Add a proxy host:
+In TainerHub, go to **Hosts → Add host**, name the server, and copy the compose file it shows. On that server:
 
-- Domain: `tainerhub.example.com` → `http://tainerhub:8080`
-- Websockets support on; SSL: Force SSL, HTTP/2, HSTS
-- Certificate: reuse your `*.example.com` wildcard, or request one with the Cloudflare DNS challenge
-- DNS: point `tainerhub.example.com` at the server's LAN IP in local DNS (or DNS-only, grey cloud, in Cloudflare)
+```bash
+mkdir -p ~/tainerhub-agent && cd ~/tainerhub-agent
+nano compose.yml          # paste the file
+docker compose up -d
+```
 
-`TAINERHUB_PUBLIC_URL` must match the browser address exactly, because passkeys are bound to that hostname.
+The host turns green within seconds. Do this for every server, including the hub's own: the hub never touches the Docker socket itself. Agents connect to the hub on port 7443, so that port must be reachable from each server (the Add host dialog pre-fills the hub's address; change it if agents should use a different IP or name).
 
-### 4. Create your account and add hosts
+### Updating
 
-1. Open the setup link, pick a username and register a passkey. Save the recovery codes.
-2. **Hosts → Add host** → name it → copy the generated compose file.
-3. On that server: save it as `compose.yml` and run `docker compose up -d`. The host turns green within seconds.
-4. Repeat for every server, **including Server 1**: the hub never touches the Docker socket itself.
+When a new version is published (each green CI run on `main` publishes `ghcr.io/prezmc/tainerhub` and `ghcr.io/prezmc/tainerhub-agent`), run this in `~/tainerhub` and in each `~/tainerhub-agent`:
 
-The agent's compose file mounts `/opt/tainerhub/stacks` from the host at the **same path** inside the agent. That is where compose stacks live (see below); keep the path identical on both sides.
+```bash
+docker compose pull && docker compose up -d
+```
 
-Agents need to reach `tainerhub.example.com:7443` over the LAN or VPN. If they connect by IP instead, add the IP to `TAINERHUB_AGENT_SANS` on the hub and use `IP:7443` as `TAINERHUB_HUB`.
+### Later: HTTPS and passkeys (optional)
+
+Until you do this, TainerHub runs over plain HTTP on your LAN, and you sign in with a password. To put it behind a reverse proxy such as Nginx Proxy Manager (on the same server or another one):
+
+1. **Proxy host:** your domain (e.g. `tainerhub.example.com`) → `http://<hub server IP>:8585`, with Websockets on and Force SSL. Proxy only port 8585; agents keep connecting straight to 7443.
+2. **Tell the hub its address.** In `~/tainerhub/compose.yml`, uncomment and fill in:
+   ```yaml
+   TAINERHUB_PUBLIC_URL: https://tainerhub.example.com
+   TAINERHUB_TRUSTED_PROXIES: 192.168.1.20   # the proxy's IP
+   ```
+   then `docker compose up -d`. This turns on passkeys and HTTPS-only cookies. Passkeys are tied to this address, so pick the name you'll keep.
+3. **Add passkeys:** sign in at the https:// address, then **Account & sign-in → Add a passkey**.
+4. **Optional:** once everyone uses the https:// address, stop port 8585 being reachable from the rest of the LAN, so only the proxy can use it. Docker-published ports bypass `ufw`, so use the `DOCKER-USER` chain:
+   ```bash
+   sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdstport 8585 ! -s 192.168.1.20 -j DROP
+   ```
 
 ## Compose stacks
 
@@ -132,24 +128,24 @@ make test          # Go tests (needs Go 1.26+)
 TAINERHUB_REAL_DOCKER=1 DOCKER_SOCKET=/var/run/docker.sock go test ./internal/agent -run Real   # stack lifecycle against a real Docker Engine
 make agent         # bin/tainerhub-agent
 make hub           # builds the UI, then bin/tainerhub with the UI embedded
-cd web && npm run dev   # UI on :5173, proxying /api to a hub on :8080
+cd web && npm run dev   # UI on :5173, proxying /api to a hub on :8585
 ```
 
 To run a hub locally: start Postgres, then
-`TAINERHUB_PUBLIC_URL=http://localhost:8080 TAINERHUB_DATABASE_URL=postgres://... TAINERHUB_DATA_DIR=./data ./bin/tainerhub`.
-Passkeys work on `http://localhost` without HTTPS.
+`TAINERHUB_DATABASE_URL=postgres://... TAINERHUB_DATA_DIR=./data ./bin/tainerhub`.
+Add `TAINERHUB_PUBLIC_URL=http://localhost:8585` to try passkeys, which work on `http://localhost` without HTTPS.
 
 ## Security, speed and reliability
 
 **Built in**
 
-- Passkeys only (user verification required, discoverable credentials); recovery codes are single-use and stored hashed.
-- Sessions: random 256-bit tokens, stored hashed; `__Host-` cookies (`Secure`, `HttpOnly`, `SameSite=Strict`); 12-hour idle and 7-day absolute timeouts.
+- Passwords hashed with argon2id (at least 10 characters); passkeys once HTTPS is set up (user verification required, discoverable credentials); recovery codes are single-use and stored hashed.
+- Sessions: random 256-bit tokens, stored hashed; `HttpOnly`, `SameSite=Strict` cookies, plus `Secure` and the `__Host-` prefix once `TAINERHUB_PUBLIC_URL` is https; 12-hour idle and 7-day absolute timeouts.
 - CSRF: `SameSite=Strict`, plus a required custom header and an `Origin` check on every state-changing request.
 - Headers: strict Content-Security-Policy (no inline scripts or styles), `frame-ancestors 'none'`, COOP/CORP, `nosniff`, `Referrer-Policy`.
 - Input limits: 64 KiB request bodies, strict container ID validation (blocks path tricks against the Docker API), 8 MiB cap per hub↔agent message.
 - Memory caps against floods: pending sign-in ceremonies, the rate-limiter table, and 16 log streams per host.
-- Hub ↔ agent: TLS 1.3 only, mutual certificates, CA pinned through the join token, certificate serial checked on every connection. Agents accept only whitelisted actions, so even a compromised hub cannot run arbitrary Docker API calls through them.
+- Hub ↔ agent: TLS 1.3 only, mutual certificates, CA pinned through the join token (agents trust only the hub's own CA, so no hostname setup is needed), certificate serial checked on every connection. Agents accept only whitelisted actions, so even a compromised hub cannot run arbitrary Docker API calls through them.
 - Containers: distroless images, read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`; the hub runs as a non-root user.
 - CI: `govulncheck`, `npm audit`, a Trivy image scan (fails on fixable high/critical CVEs), SBOM + provenance on images, and Dependabot for Go, npm, Actions and base images.
 - Speed: the UI gets live pushes over Server-Sent Events instead of polling; JS/CSS are pre-compressed (Brotli/gzip) with immutable caching; the whole UI is about 125 KB gzipped.
@@ -159,6 +155,8 @@ No software can promise zero vulnerabilities. The plan is defense in depth plus 
 
 ## Security notes
 
+- **Plain HTTP is for your LAN only.** Until you add HTTPS, passwords and session cookies cross the network unencrypted. Don't expose port 8585 to the internet; use the reverse-proxy steps above for remote access.
+- The database is only reachable from the hub (an internal Docker network) and uses a default password. To set your own, put `DB_PASSWORD=...` in a `.env` file next to the hub's `compose.yml` **before the first start**.
 - **Back up the hub's `/data` volume.** It holds the CA key. Losing it means re-enrolling every agent; leaking it lets someone impersonate the hub to agents.
 - Join tokens are single-use, expire after 1 hour, and pin the hub CA's SHA-256 fingerprint, so an agent can't be tricked into enrolling with a fake hub.
 - Removing a host deletes its record; its certificate is refused from then on and its live connection is dropped.

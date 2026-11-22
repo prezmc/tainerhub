@@ -21,7 +21,7 @@ services:
       # resolves relative bind mounts (./data) to paths the host must also see.
       - /opt/tainerhub/stacks:/opt/tainerhub/stacks
     environment:
-      TAINERHUB_HUB: tainerhub.example.com:7443
+      TAINERHUB_HUB: 192.168.1.10:7443   # the hub server, port 7443 (never through a proxy)
       # One-time token from the Hosts page, valid for 1 hour. Remove after the first start.
       TAINERHUB_JOIN_TOKEN: thj1_paste-token-here
 

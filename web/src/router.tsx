@@ -1,6 +1,6 @@
 import { createRootRoute, createRoute, createRouter, Navigate, Outlet, useRouterState } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { api } from './api'
+import { api, type HubState } from './api'
 import { AppLayout } from './pages/AppLayout'
 import { SetupPage } from './pages/Setup'
 import { LoginPage } from './pages/Login'
@@ -15,7 +15,7 @@ import { NewStackPage, StackPage } from './pages/StackEditor'
 
 function Root() {
   const path = useRouterState({ select: (s) => s.location.pathname })
-  const state = useQuery({ queryKey: ['state'], queryFn: () => api<{ setupRequired: boolean; version: string }>('/api/state') })
+  const state = useQuery({ queryKey: ['state'], queryFn: () => api<HubState>('/api/state') })
   if (state.isPending) return <Splash />
   if (state.isError) return <Splash text="Can't reach the TainerHub API." />
   if (state.data.setupRequired && path !== '/setup') return <Navigate to="/setup" />
