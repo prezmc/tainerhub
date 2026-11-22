@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import {
   Boxes,
+  Download,
   CornerDownLeft,
   Fingerprint,
   Info,
@@ -26,7 +27,7 @@ import { useMe } from './AppLayout'
 
 type Item = { id: string; icon: LucideIcon; label: string; hint?: string; tone?: 'danger'; run: () => void; dot?: Container }
 
-const actionIcons: Record<Action, LucideIcon> = { start: Play, stop: Square, restart: RotateCw, pause: Pause, unpause: Play, kill: Zap, remove: Trash2 }
+const actionIcons: Record<Action, LucideIcon> = { start: Play, stop: Square, restart: RotateCw, pause: Pause, unpause: Play, kill: Zap, remove: Trash2, recreate: Download }
 const VERBS = [...ACTIONS, 'logs', 'details'] as const
 
 /**

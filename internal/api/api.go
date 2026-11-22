@@ -45,6 +45,7 @@ type Server struct {
 	jobs   jobList     // running and recently finished stack operations
 	hub    hubCache    // Docker Hub search and tag results
 	latest latestCache // newest published version
+	execs  execList    // open terminals
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -66,6 +67,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login/recovery", s.loginRecovery)
 	mux.HandleFunc("POST /api/login/password", s.loginPassword)
 	mux.HandleFunc("POST /api/setup/password", s.setupPassword)
+	mux.HandleFunc("POST /api/invite/check", s.checkInvite)
+	mux.HandleFunc("POST /api/invite/accept", s.acceptInvite)
 	mux.HandleFunc("POST /api/logout", s.logout)
 
 	// any signed-in user
@@ -91,6 +94,14 @@ func (s *Server) Handler() http.Handler {
 	// operators
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/{action}", s.need("operator", s.containerAction))
 	mux.Handle("POST /api/hosts/{id}/images/pull", s.need("operator", s.pullImage))
+	// image updates: check now, and pull & recreate a standalone container
+	mux.Handle("POST /api/hosts/{id}/check-updates", s.need("operator", func(w http.ResponseWriter, r *http.Request) {
+		s.runOp(w, r, wire.Operation{Kind: wire.OpImagesCheckUpdates}, "images")
+	}))
+	mux.Handle("POST /api/hosts/{id}/containers/{cid}/recreate", s.need("operator", func(w http.ResponseWriter, r *http.Request) {
+		cid := r.PathValue("cid")
+		s.runOp(w, r, wire.Operation{Kind: wire.OpContainerRecreate, Target: cid}, s.containerName(r.PathValue("id"), cid))
+	}))
 	mux.Handle("DELETE /api/hosts/{id}/images/{rid}", s.need("operator", s.removeResource(wire.OpImageRemove)))
 	mux.Handle("DELETE /api/hosts/{id}/networks/{rid}", s.need("operator", s.removeResource(wire.OpNetworkRemove)))
 	mux.Handle("POST /api/hosts/{id}/images/prune", s.need("operator", s.prune(wire.OpImagesPrune)))
@@ -114,7 +125,18 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{id}/token", s.need("admin", s.newHostToken))
 	mux.Handle("DELETE /api/hosts/{id}", s.need("admin", s.deleteHost))
 	mux.Handle("GET /api/audit", s.need("admin", s.audit))
+	mux.Handle("GET /api/users", s.need("admin", s.listUsers))
+	mux.Handle("POST /api/invites", s.need("admin", s.createInvite))
+	mux.Handle("DELETE /api/invites/{iid}", s.need("admin", s.deleteInvite))
+	mux.Handle("PUT /api/users/{uid}/role", s.need("admin", s.setRole))
+	mux.Handle("DELETE /api/users/{uid}", s.need("admin", s.deleteUser))
 	mux.Handle("GET /api/updates", s.need("admin", s.updates))
+	// terminals: admin-only (a shell sees everything in the container)
+	mux.Handle("POST /api/hosts/{id}/containers/{cid}/exec", s.need("admin", s.execOpen))
+	mux.Handle("GET /api/exec/{sid}", s.need("admin", s.execStream))
+	mux.Handle("POST /api/exec/{sid}/input", s.need("admin", s.execInput))
+	mux.Handle("POST /api/exec/{sid}/resize", s.need("admin", s.execResize))
+	mux.Handle("DELETE /api/exec/{sid}", s.need("admin", s.execClose))
 	mux.Handle("POST /api/hosts/{id}/update", s.need("admin", s.updateHost))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { jsonErr(w, http.StatusNotFound, "not found") })
@@ -879,6 +901,18 @@ func (s *Server) removeWithVolumes(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Reg.AddActivity(registry.Activity{Kind: "user", Action: "remove", HostID: a.HostID, Host: a.Name, Container: name, Actor: u.Username})
 	writeJSON(w, http.StatusOK, res)
+}
+
+// containerName is a container's name on a connected host, else its ID.
+func (s *Server) containerName(hostID, cid string) string {
+	if a := s.Reg.Get(hostID); a != nil {
+		for _, c := range a.Status().Containers {
+			if c.ID == cid {
+				return c.Name
+			}
+		}
+	}
+	return cid
 }
 
 // logs streams container logs as Server-Sent Events (one "log" event per chunk).

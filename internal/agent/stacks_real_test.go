@@ -120,3 +120,127 @@ func TestStackRealDocker(t *testing.T) {
 		t.Fatal("remove deleted bind-mounted data")
 	}
 }
+
+// TestExecRealDocker opens a terminal in a real container, types a line and
+// reads the answer. Opt-in like TestStackRealDocker.
+func TestExecRealDocker(t *testing.T) {
+	if os.Getenv("TAINERHUB_REAL_DOCKER") != "1" {
+		t.Skip("set TAINERHUB_REAL_DOCKER=1 to run against a real Docker daemon")
+	}
+	socket := os.Getenv("DOCKER_SOCKET")
+	if socket == "" {
+		socket = "/var/run/docker.sock"
+	}
+	name := "tainerhub-exectest"
+	_ = exec.Command("docker", "rm", "-f", name).Run()
+	if out, err := exec.Command("docker", "run", "-d", "--name", name, "alpine:3", "sleep", "300").CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	defer exec.Command("docker", "rm", "-f", name).Run()
+
+	d := NewSocketDocker(socket)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sess, err := d.Exec(ctx, name, []string{"sh", "-c", "echo ready; read x; echo got:$x; exit 3"}, 80, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	buf := make([]byte, 4096)
+	var out strings.Builder
+	readUntil := func(want string) {
+		for !strings.Contains(out.String(), want) {
+			n, err := sess.Read(buf)
+			out.Write(buf[:n])
+			if err != nil {
+				t.Fatalf("waiting for %q: %v (got %q)", want, err, out.String())
+			}
+		}
+	}
+	readUntil("ready")
+	if _, err := sess.Write([]byte("hello\n")); err != nil {
+		t.Fatal(err)
+	}
+	readUntil("got:hello")
+	if err := sess.Resize(ctx, 120, 40); err != nil {
+		t.Logf("resize after exit is fine to fail: %v", err)
+	}
+	for { // drain to EOF
+		if _, err := sess.Read(buf); err != nil {
+			break
+		}
+	}
+	if code, ok := sess.ExitCode(ctx); !ok || code != 3 {
+		t.Fatalf("exit code = %d, %v", code, ok)
+	}
+}
+
+// TestRecreateRealDocker needs a registry at localhost:5001 (docker run -d -p
+// 127.0.0.1:5001:5000 registry:2). It publishes v1 of a tiny image, runs a
+// container with its own settings, publishes v2, and checks that the update is
+// detected and that recreating keeps the settings but takes v2's defaults.
+func TestRecreateRealDocker(t *testing.T) {
+	if os.Getenv("TAINERHUB_REAL_REGISTRY") != "1" {
+		t.Skip("set TAINERHUB_REAL_REGISTRY=1 (and run a registry on localhost:5001)")
+	}
+	socket := os.Getenv("DOCKER_SOCKET")
+	ref := "localhost:5001/thdemo:latest"
+	publish := func(v string) {
+		t.Helper()
+		cmd := exec.Command("docker", "build", "-q", "-t", ref, "-")
+		cmd.Stdin = strings.NewReader("FROM alpine:3\nENV DEMO_VERSION=" + v + "\nLABEL demo.version=" + v + "\nCMD [\"sleep\",\"3600\"]\n")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build: %v %s", err, out)
+		}
+		if out, err := exec.Command("docker", "push", "-q", ref).CombinedOutput(); err != nil {
+			t.Fatalf("push: %v %s", err, out)
+		}
+	}
+	name := "thdemo"
+	_ = exec.Command("docker", "rm", "-f", name).Run()
+	defer exec.Command("docker", "rm", "-f", name).Run()
+	publish("1")
+	if out, err := exec.Command("docker", "run", "-d", "--name", name, "-e", "MINE=kept", "-p", "127.0.0.1:18089:80", "--label", "mine=yes", "--restart", "unless-stopped", ref).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	d := NewSocketDocker(socket)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	r, err := d.checkUpdates(ctx)
+	if err != nil || r.Images[ref] {
+		t.Fatalf("v1 should be current: %+v %v", r, err)
+	}
+	_ = exec.Command("docker", "tag", ref, "thdemo-v1:keep").Run()
+	defer exec.Command("docker", "rmi", "thdemo-v1:keep").Run()
+	publish("2")
+	// The real situation: the registry has v2, this host's tag still points at v1.
+	if out, err := exec.Command("docker", "tag", "thdemo-v1:keep", ref).CombinedOutput(); err != nil {
+		t.Fatalf("retag v1: %v %s", err, out)
+	}
+	r, err = d.checkUpdates(ctx)
+	if err != nil || !r.Images[ref] {
+		t.Fatalf("v2 should be detected: %+v %v", r, err)
+	}
+
+	res, err := d.recreate(ctx, name)
+	if err != nil || res.Status != "updated" {
+		t.Fatalf("recreate: %+v %v", res, err)
+	}
+	out, _ := exec.Command("docker", "inspect", name, "--format", "{{json .Config.Env}} {{index .Config.Labels \"mine\"}} {{index .Config.Labels \"demo.version\"}} {{json .HostConfig.PortBindings}} {{.HostConfig.RestartPolicy.Name}} {{.State.Running}}").CombinedOutput()
+	got := string(out)
+	for _, want := range []string{"MINE=kept", "DEMO_VERSION=2", " yes 2 ", "18089", "unless-stopped", "true"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("after recreate, %q missing from: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "DEMO_VERSION=1") {
+		t.Fatalf("the old image's env was frozen into the new container: %s", got)
+	}
+	if list, _ := exec.Command("docker", "ps", "-a", "--filter", "name=thdemo-tainerhub-old", "-q").Output(); len(strings.TrimSpace(string(list))) > 0 {
+		t.Fatal("old container left behind")
+	}
+	if res, err := d.recreate(ctx, name); err != nil || res.Status != "current" {
+		t.Fatalf("second recreate should be a no-op: %+v %v", res, err)
+	}
+}

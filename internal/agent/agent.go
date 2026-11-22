@@ -290,8 +290,14 @@ type session struct {
 	snap   chan struct{}
 
 	mu    sync.Mutex
-	logs  map[string]context.CancelFunc
-	usage map[string]Usage // container ID -> latest sample
+	logs  map[string]context.CancelFunc // log streams, stack ops and terminals, by command ID
+	usage map[string]Usage              // container ID -> latest sample
+	execs map[string]*execState         // open terminals, by command ID
+}
+
+type execState struct {
+	sess *ExecSession
+	in   chan []byte
 }
 
 func (s *session) send(m wire.AgentMessage) bool {
@@ -331,7 +337,7 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	var wg sync.WaitGroup
 	defer wg.Wait() // runs last: after cancel below has stopped every goroutine
 	defer cancel()
-	s := &session{a: a, ctx: ctx, cancel: cancel, out: make(chan wire.AgentMessage, 128), snap: make(chan struct{}, 1), logs: map[string]context.CancelFunc{}, usage: map[string]Usage{}}
+	s := &session{a: a, ctx: ctx, cancel: cancel, out: make(chan wire.AgentMessage, 128), snap: make(chan struct{}, 1), logs: map[string]context.CancelFunc{}, usage: map[string]Usage{}, execs: map[string]*execState{}}
 
 	pr, pw := io.Pipe()
 	defer pw.Close()
@@ -564,8 +570,9 @@ func (s *session) handle(c wire.Command) {
 	case c.Op != nil:
 		go func() {
 			timeout := time.Minute
-			if c.Op.Kind == wire.OpImagePull {
-				timeout = 15 * time.Minute
+			switch c.Op.Kind {
+			case wire.OpImagePull, wire.OpContainerRecreate, wire.OpImagesCheckUpdates:
+				timeout = 15 * time.Minute // pulls and registry round trips
 			}
 			ctx, cancel := context.WithTimeout(s.ctx, timeout)
 			defer cancel()
@@ -582,7 +589,9 @@ func (s *session) handle(c wire.Command) {
 			}
 			if wire.OpKinds[c.Op.Kind] {
 				s.a.log.Info("resource operation", "kind", c.Op.Kind, "target", c.Op.Target, "arg", c.Op.Arg, "ok", res.OK, "err", res.Error)
-				s.requestSnapshot()
+			}
+			if wire.OpKinds[c.Op.Kind] || c.Op.Kind == wire.OpImagesCheckUpdates {
+				s.requestSnapshot() // e.g. fresh update badges
 			}
 			s.send(wire.AgentMessage{Result: &res})
 		}()
@@ -608,6 +617,29 @@ func (s *session) handle(c wire.Command) {
 		}()
 	case c.Stack != nil:
 		go s.runStack(c.ID, *c.Stack)
+	case c.Exec != nil:
+		s.startExec(c.ID, *c.Exec)
+	case c.ExecInput != nil:
+		s.mu.Lock()
+		e := s.execs[c.ExecInput.Session]
+		s.mu.Unlock()
+		if e != nil {
+			select {
+			case e.in <- c.ExecInput.Data:
+			default: // the process isn't reading; drop rather than stall every host command
+			}
+		}
+	case c.ExecResize != nil:
+		s.mu.Lock()
+		e := s.execs[c.ExecResize.Session]
+		s.mu.Unlock()
+		if e != nil && wire.ValidExecResize(*c.ExecResize) {
+			go func() {
+				ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+				defer cancel()
+				_ = e.sess.Resize(ctx, c.ExecResize.Cols, c.ExecResize.Rows)
+			}()
+		}
 	case c.Cancel != "":
 		s.mu.Lock()
 		if cancel, ok := s.logs[c.Cancel]; ok {
@@ -641,6 +673,72 @@ func (s *session) runStack(id string, c wire.StackCommand) {
 	s.a.log.Info("stack operation", "action", c.Action, "stack", c.Name, "ok", err == nil, "err", end.Error)
 	s.send(wire.AgentMessage{Log: &end})
 	s.requestSnapshot()
+}
+
+// startExec opens a terminal and pumps its output back as LogChunks. It
+// ends when the process exits, the hub cancels it, or the session drops.
+func (s *session) startExec(id string, c wire.ExecStart) {
+	ex, ok := s.a.cfg.Docker.(Execer)
+	end := func(msg string) {
+		s.send(wire.AgentMessage{Log: &wire.LogChunk{CommandID: id, EOF: true, Error: msg}})
+	}
+	if !ok {
+		end("this agent can't open terminals")
+		return
+	}
+	if err := wire.ValidExecStart(c); err != nil {
+		end(err.Error())
+		return
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.mu.Lock()
+	s.logs[id] = cancel
+	s.mu.Unlock()
+	go func() {
+		defer func() {
+			cancel()
+			s.mu.Lock()
+			delete(s.logs, id)
+			delete(s.execs, id)
+			s.mu.Unlock()
+		}()
+		sess, err := ex.Exec(ctx, c.ContainerID, c.Cmd, c.Cols, c.Rows)
+		if err != nil {
+			end(err.Error())
+			return
+		}
+		defer sess.Close()
+		st := &execState{sess: sess, in: make(chan []byte, 256)}
+		s.mu.Lock()
+		s.execs[id] = st
+		s.mu.Unlock()
+		s.a.log.Info("terminal opened", "container", c.ContainerID)
+		go func() { // input
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case b := <-st.in:
+					if _, err := sess.Write(b); err != nil {
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+		go func() { <-ctx.Done(); sess.Close() }() // unblocks the copy below
+		_, _ = io.Copy(&chunkWriter{s: s, id: id}, sess)
+		msg := ""
+		if ctx.Err() == nil {
+			ectx, ecancel := context.WithTimeout(s.ctx, 3*time.Second)
+			if code, ok := sess.ExitCode(ectx); ok && code != 0 {
+				msg = fmt.Sprintf("process exited with code %d", code)
+			}
+			ecancel()
+		}
+		end(msg)
+		s.a.log.Info("terminal closed", "container", c.ContainerID)
+	}()
 }
 
 // chunkWriter turns log bytes into LogChunk messages of at most 32 KiB.

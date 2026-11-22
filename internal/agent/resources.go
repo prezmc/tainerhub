@@ -56,6 +56,18 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return d.removeWithVolumes(ctx, op.Target, names)
 	case wire.OpSelfUpdate:
 		return d.selfUpdate(ctx)
+	case wire.OpImagesCheckUpdates:
+		r, err := d.checkUpdates(ctx)
+		if err == nil {
+			d.updates.set(r)
+		}
+		return r, err
+	case wire.OpContainerRecreate:
+		r, err := d.recreate(ctx, op.Target)
+		if err == nil {
+			_ = d.refreshUpdates(ctx) // the badge should go away now
+		}
+		return r, err
 	case wire.OpNetworksPrune:
 		return d.prune(ctx, "/networks/prune", nil, "NetworksDeleted")
 	}

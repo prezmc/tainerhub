@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, can, errorText, type Activity, type Container, type DetailResponse, type Host, type Me, type VolumeRes } from './api'
 import { cx, useConfirm, useToast } from './ui'
 
-export type Action = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'kill' | 'remove'
+export type Action = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'kill' | 'remove' | 'recreate'
 export const ACTIONS: Action[] = ['start', 'stop', 'restart', 'pause', 'unpause', 'kill', 'remove']
 
 const pastTense: Record<Action, string> = {
@@ -14,6 +14,7 @@ const pastTense: Record<Action, string> = {
   unpause: 'resumed',
   kill: 'killed',
   remove: 'removed',
+  recreate: 'updated',
 }
 
 /** Live data: kept fresh by the SSE stream in AppLayout; polling is only a fallback. */
@@ -116,6 +117,11 @@ export function useContainerAction() {
       const destructive: Partial<Record<Action, { title: string; body: string; confirm: string }>> = {
         stop: { title: `Stop ${c.name}?`, body: `It stays stopped on ${c.hostName} until you start it again.`, confirm: 'Stop' },
         kill: { title: `Kill ${c.name}?`, body: 'Sends SIGKILL immediately. The process gets no chance to shut down cleanly.', confirm: 'Kill' },
+        recreate: {
+          title: `Pull and recreate ${c.name}?`,
+          body: `Pulls the newest ${c.image} and replaces the container with an identical one on the new image. It restarts; if the new one doesn't start, the old one is put back automatically.`,
+          confirm: 'Pull & recreate',
+        },
         remove: {
           title: `Remove ${c.name}?`,
           body: `The container is deleted from ${c.hostName}, even if it's running. Its named volumes and image are kept.${fromStack}`,
@@ -150,7 +156,7 @@ export function useContainerAction() {
           m.mutate({ c, action })
           return true
         }
-        if (!(await confirm({ ...d, body, danger: true }))) return false
+        if (!(await confirm({ ...d, body, danger: action !== 'recreate' }))) return false
       }
       m.mutate({ c, action })
       return true
@@ -165,6 +171,11 @@ export function useContainerAction() {
 
 export const LogsContext = createContext<(c: Container) => void>(() => {})
 export const useOpenLogs = () => useContext(LogsContext)
+
+// ---- terminal drawer, opened from anywhere (admins) ----
+
+export const TerminalContext = createContext<(c: Container) => void>(() => {})
+export const useOpenTerminal = () => useContext(TerminalContext)
 
 // ---- container details panel, opened from anywhere ----
 

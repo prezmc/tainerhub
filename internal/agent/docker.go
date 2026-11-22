@@ -46,8 +46,9 @@ type Usage struct {
 // SocketDocker talks to the Docker Engine API over its Unix socket using only
 // the standard library (no Docker SDK dependency).
 type SocketDocker struct {
-	c      *http.Client
-	socket string // path of the Docker socket inside this container
+	c       *http.Client
+	socket  string      // path of the Docker socket inside this container
+	updates updateCache // last image update check, shown on each container
 }
 
 func NewSocketDocker(socketPath string) *SocketDocker {
@@ -182,8 +183,10 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			Status:  r.Status,
 			Created: r.Created,
 			Project: r.Labels["com.docker.compose.project"],
-			Ports:   ports,
-			Labels:  r.Labels,
+			// from the last update check (RunUpdateChecks / OpImagesCheckUpdates)
+			UpdateAvailable: d.updates.has(r.Image),
+			Ports:           ports,
+			Labels:          r.Labels,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

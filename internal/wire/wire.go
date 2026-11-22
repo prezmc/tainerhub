@@ -94,6 +94,10 @@ type Container struct {
 	CPU      float64 `json:"cpu,omitempty"`
 	Mem      int64   `json:"mem,omitempty"`       // bytes, excluding page cache
 	MemLimit int64   `json:"mem_limit,omitempty"` // bytes
+
+	// UpdateAvailable: the registry has a newer image for this container's
+	// tag (checked every few hours; see OpImagesCheckUpdates).
+	UpdateAvailable bool `json:"update,omitempty"`
 }
 
 type Snapshot struct {
@@ -118,9 +122,62 @@ type Command struct {
 	Logs   *LogsRequest     `json:"logs,omitempty"`
 	// Stack runs a compose operation. Its output streams back as LogChunks
 	// with this command's ID; the final chunk (EOF) carries any error.
-	Stack  *StackCommand `json:"stack,omitempty"`
-	Cancel string        `json:"cancel,omitempty"` // ID of a running command to stop
+	Stack *StackCommand `json:"stack,omitempty"`
+	// Exec opens an interactive terminal in a container. Its output streams
+	// back as LogChunks with this command's ID; ExecInput and ExecResize
+	// address it by that ID, and Cancel ends it.
+	Exec       *ExecStart  `json:"exec,omitempty"`
+	ExecInput  *ExecInput  `json:"exec_input,omitempty"`
+	ExecResize *ExecResize `json:"exec_resize,omitempty"`
+	Cancel     string      `json:"cancel,omitempty"` // ID of a running command to stop
 }
+
+// ---------------- exec (terminal) ----------------
+
+type ExecStart struct {
+	ContainerID string   `json:"container_id"`
+	Cmd         []string `json:"cmd"` // empty: bash if the container has it, else sh
+	Cols        int      `json:"cols"`
+	Rows        int      `json:"rows"`
+}
+
+type ExecInput struct {
+	Session string `json:"session"`
+	Data    []byte `json:"data"`
+}
+
+type ExecResize struct {
+	Session string `json:"session"`
+	Cols    int    `json:"cols"`
+	Rows    int    `json:"rows"`
+}
+
+// DefaultShell runs bash where the image has it, otherwise sh.
+var DefaultShell = []string{"/bin/sh", "-c", "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi"}
+
+func ValidExecStart(e ExecStart) error {
+	if !ValidContainerRef(e.ContainerID) {
+		return errors.New("invalid container")
+	}
+	if len(e.Cmd) > 32 {
+		return errors.New("command has too many arguments")
+	}
+	for _, a := range e.Cmd {
+		if len(a) > 1024 || strings.ContainsRune(a, 0) {
+			return errors.New("command argument too long or invalid")
+		}
+	}
+	if !validTermSize(e.Cols, e.Rows) {
+		return errors.New("invalid terminal size")
+	}
+	return nil
+}
+
+func validTermSize(cols, rows int) bool {
+	return cols >= 1 && cols <= 1000 && rows >= 1 && rows <= 1000
+}
+
+func ValidExecResize(r ExecResize) bool { return validTermSize(r.Cols, r.Rows) }
 
 // ---------------- compose stacks ----------------
 
@@ -339,7 +396,28 @@ const (
 	// in (pull newer images, recreate what changed). On the hub's server that
 	// project is the whole hub. Takes no arguments.
 	OpSelfUpdate = "agent.update"
+	// OpImagesCheckUpdates asks the registry, now, whether each container's
+	// image tag has a newer image. Result: ImageUpdates.
+	OpImagesCheckUpdates = "images.check_updates"
+	// OpContainerRecreate pulls the container's image and recreates it with
+	// the same settings, rolling back if the new one doesn't start. Standalone
+	// containers only: compose ones are updated through their stack.
+	OpContainerRecreate = "container.recreate"
 )
+
+// ImageUpdates maps image references (as containers use them) to whether a
+// newer image is available.
+type ImageUpdates struct {
+	Checked int64             `json:"checked"` // unix seconds
+	Images  map[string]bool   `json:"images"`
+	Errors  map[string]string `json:"errors,omitempty"`
+}
+
+type RecreateResult struct {
+	Status   string `json:"status"` // "updated" or "current"
+	OldImage string `json:"oldImage"`
+	NewImage string `json:"newImage"`
+}
 
 // SelfUpdateResult says what the agent started.
 type SelfUpdateResult struct {
@@ -357,6 +435,7 @@ var OpKinds = map[string]bool{
 	OpImagePull: true, OpImageRemove: true, OpImagesPrune: true,
 	OpVolumeRemove: true, OpVolumesPrune: true, OpNetworkRemove: true, OpNetworksPrune: true,
 	OpContainerRemoveVolumes: true, OpSelfUpdate: true,
+	OpImagesCheckUpdates: false, OpContainerRecreate: true,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -365,7 +444,7 @@ func ValidOperation(op Operation) error {
 		return errors.New("unknown operation")
 	}
 	switch op.Kind {
-	case OpContainerInspect, OpVolumeRemove, OpNetworkRemove:
+	case OpContainerInspect, OpVolumeRemove, OpNetworkRemove, OpContainerRecreate:
 		if !ValidContainerRef(op.Target) {
 			return errors.New("invalid target")
 		}
