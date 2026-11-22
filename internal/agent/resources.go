@@ -47,6 +47,9 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return d.networks(ctx)
 	case wire.OpNetworkRemove:
 		return nil, d.remove(ctx, "/networks/"+url.PathEscape(op.Target))
+	case wire.OpContainerRemoveVolumes:
+		names, _ := wire.RemoveVolumeNames(op.Arg) // validated above
+		return d.removeWithVolumes(ctx, op.Target, names)
 	case wire.OpNetworksPrune:
 		return d.prune(ctx, "/networks/prune", nil, "NetworksDeleted")
 	}
@@ -353,4 +356,83 @@ func (d *SocketDocker) inspect(ctx context.Context, id string) (wire.ContainerDe
 	}
 	sort.Slice(out.Ports, func(i, j int) bool { return out.Ports[i].Container < out.Ports[j].Container })
 	return out, nil
+}
+
+// removeWithVolumes removes a container with its anonymous volumes, then
+// deletes the requested named volumes, but only ones this container
+// actually mounted and that no other container uses once it is gone.
+func (d *SocketDocker) removeWithVolumes(ctx context.Context, id string, names []string) (wire.RemoveVolumesResult, error) {
+	res := wire.RemoveVolumesResult{Removed: []string{}, Kept: []wire.KeptVolume{}}
+	var insp struct {
+		Mounts []struct{ Type, Name string }
+	}
+	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/json", nil, &insp); err != nil {
+		return res, err
+	}
+	mounted := map[string]bool{}
+	for _, m := range insp.Mounts {
+		if m.Type != "volume" || m.Name == "" {
+			continue
+		}
+		if isAnonymousVolume(m.Name) {
+			res.Anonymous++
+		} else {
+			mounted[m.Name] = true
+		}
+	}
+	// v=1 makes Docker delete the container's anonymous volumes with it.
+	if err := d.remove(ctx, "/containers/"+url.PathEscape(id)+"?force=1&v=1"); err != nil {
+		return res, err
+	}
+	for _, n := range names {
+		if !mounted[n] {
+			res.Kept = append(res.Kept, wire.KeptVolume{Name: n, Reason: "not used by this container"})
+			continue
+		}
+		users, err := d.volumeUsers(ctx, n)
+		if err != nil {
+			res.Kept = append(res.Kept, wire.KeptVolume{Name: n, Reason: err.Error()})
+			continue
+		}
+		if len(users) > 0 {
+			res.Kept = append(res.Kept, wire.KeptVolume{Name: n, Reason: "still used by " + strings.Join(users, ", ")})
+			continue
+		}
+		if err := d.remove(ctx, "/volumes/"+url.PathEscape(n)); err != nil {
+			res.Kept = append(res.Kept, wire.KeptVolume{Name: n, Reason: err.Error()})
+			continue
+		}
+		res.Removed = append(res.Removed, n)
+	}
+	return res, nil
+}
+
+// volumeUsers lists the containers (running or not) that mount a volume.
+func (d *SocketDocker) volumeUsers(ctx context.Context, name string) ([]string, error) {
+	f, _ := json.Marshal(map[string][]string{"volume": {name}})
+	var cs []struct{ Names []string }
+	if err := d.getJSON(ctx, "/containers/json", url.Values{"all": {"1"}, "filters": {string(f)}}, &cs); err != nil {
+		return nil, err
+	}
+	out := []string{}
+	for _, c := range cs {
+		if len(c.Names) > 0 {
+			out = append(out, strings.TrimPrefix(c.Names[0], "/"))
+		}
+	}
+	return out, nil
+}
+
+// isAnonymousVolume recognises the 64-hex-digit names Docker gives
+// volumes nobody named.
+func isAnonymousVolume(name string) bool {
+	if len(name) != 64 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !(name[i] >= '0' && name[i] <= '9' || name[i] >= 'a' && name[i] <= 'f') {
+			return false
+		}
+	}
+	return true
 }

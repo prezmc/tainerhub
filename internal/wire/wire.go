@@ -331,13 +331,21 @@ const (
 	OpNetworksList     = "networks.list"
 	OpNetworkRemove    = "network.remove"
 	OpNetworksPrune    = "networks.prune"
+	// OpContainerRemoveVolumes removes a container (even if running) with its
+	// anonymous volumes, then deletes the named volumes listed in Arg
+	// (comma-separated) that it mounted and nothing else uses.
+	OpContainerRemoveVolumes = "container.remove_volumes"
 )
+
+// MaxRemoveVolumes caps how many named volumes one removal may delete.
+const MaxRemoveVolumes = 32
 
 // OpKinds lists every allowed operation and whether it changes state.
 var OpKinds = map[string]bool{
 	OpContainerInspect: false, OpImagesList: false, OpVolumesList: false, OpNetworksList: false,
 	OpImagePull: true, OpImageRemove: true, OpImagesPrune: true,
 	OpVolumeRemove: true, OpVolumesPrune: true, OpNetworkRemove: true, OpNetworksPrune: true,
+	OpContainerRemoveVolumes: true,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -358,12 +366,36 @@ func ValidOperation(op Operation) error {
 		if !ValidImageRef(op.Arg) {
 			return errors.New("invalid image reference")
 		}
+	case OpContainerRemoveVolumes:
+		if !ValidContainerRef(op.Target) {
+			return errors.New("invalid container")
+		}
+		if _, err := RemoveVolumeNames(op.Arg); err != nil {
+			return err
+		}
 	case OpImagesPrune, OpVolumesPrune, OpNetworksPrune:
 		if op.Arg != "" && op.Arg != "all" {
 			return errors.New("invalid prune mode")
 		}
 	}
 	return nil
+}
+
+// RemoveVolumeNames splits and checks the Arg of OpContainerRemoveVolumes.
+func RemoveVolumeNames(arg string) ([]string, error) {
+	if arg == "" {
+		return nil, nil
+	}
+	names := strings.Split(arg, ",")
+	if len(names) > MaxRemoveVolumes {
+		return nil, errors.New("too many volumes")
+	}
+	for _, n := range names {
+		if !ValidContainerRef(n) {
+			return nil, errors.New("invalid volume name")
+		}
+	}
+	return names, nil
 }
 
 // ValidImageID accepts "sha256:<hex>" or bare hex IDs.
@@ -492,6 +524,18 @@ type Network struct {
 	Builtin  bool     `json:"builtin"`
 	Project  string   `json:"project,omitempty"`
 	UsedBy   []string `json:"usedBy"`
+}
+
+// RemoveVolumesResult reports what OpContainerRemoveVolumes did.
+type RemoveVolumesResult struct {
+	Anonymous int          `json:"anonymous"` // anonymous volumes removed with the container
+	Removed   []string     `json:"removed"`   // named volumes deleted
+	Kept      []KeptVolume `json:"kept"`      // named volumes left alone, and why
+}
+
+type KeptVolume struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 type PruneResult struct {
