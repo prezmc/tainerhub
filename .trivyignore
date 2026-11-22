@@ -1,0 +1,9 @@
+# Accepted vulnerabilities. Every entry needs a reason and an expiry date
+# (exp:YYYY-MM-DD); after it, the scan fails again and the entry must be
+# re-checked or removed.
+
+# golang.org/x/net/html denial of service (fixed in x/net 0.62.0). Found only
+# in the bundled docker compose v5.8.0 binary in the agent image, which reads
+# YAML and talks to the Docker socket but does not parse untrusted HTML.
+# Remove once a docker/compose-bin release ships x/net >= 0.62.0.
+CVE-2026-78661 exp:2026-12-31
