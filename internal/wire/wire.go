@@ -64,6 +64,18 @@ type Hello struct {
 	Arch          string `json:"arch"`
 	NCPU          int    `json:"ncpu"`
 	MemTotal      int64  `json:"mem_total"`
+
+	// Stacks says whether this agent can run compose stacks. Nil from agents
+	// older than stack support.
+	Stacks *StackSupport `json:"stacks,omitempty"`
+}
+
+// StackSupport reports the agent's compose setup. Error is set (and stacks
+// are unavailable) when something is missing, e.g. the stacks folder mount.
+type StackSupport struct {
+	Dir            string `json:"dir"`
+	ComposeVersion string `json:"compose_version,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 type Container struct {
@@ -98,13 +110,80 @@ type DockerEvent struct {
 }
 
 // Command is an instruction from the hub. ID correlates results and logs.
-// Exactly one of Action, Logs or Cancel is set.
+// Exactly one of Action, Op, Logs, Stack or Cancel is set.
 type Command struct {
 	ID     string           `json:"id"`
 	Action *ContainerAction `json:"action,omitempty"`
 	Op     *Operation       `json:"op,omitempty"`
 	Logs   *LogsRequest     `json:"logs,omitempty"`
-	Cancel string           `json:"cancel,omitempty"` // ID of a running command to stop
+	// Stack runs a compose operation. Its output streams back as LogChunks
+	// with this command's ID; the final chunk (EOF) carries any error.
+	Stack  *StackCommand `json:"stack,omitempty"`
+	Cancel string        `json:"cancel,omitempty"` // ID of a running command to stop
+}
+
+// ---------------- compose stacks ----------------
+
+// Stack actions.
+const (
+	StackDeploy  = "deploy"  // write the files, then `up -d --remove-orphans`
+	StackStart   = "start"   // start existing containers
+	StackStop    = "stop"    // stop containers, keep them
+	StackRestart = "restart" // restart containers
+	StackDown    = "down"    // remove containers and networks (volumes only if Volumes)
+	StackRemove  = "remove"  // down, then delete the stack's files on the host
+)
+
+// Size limits for a stack's files.
+const (
+	MaxComposeBytes = 256 << 10
+	MaxEnvBytes     = 64 << 10
+)
+
+type StackCommand struct {
+	Action  string `json:"action"`
+	Name    string `json:"name"`              // compose project name
+	Compose string `json:"compose,omitempty"` // deploy only
+	Env     string `json:"env,omitempty"`     // deploy only: contents of .env
+	Pull    bool   `json:"pull,omitempty"`    // deploy: pull newer images first
+	Volumes bool   `json:"volumes,omitempty"` // down / remove: also delete named volumes
+}
+
+// ValidStackName accepts compose project names: lowercase letters, digits,
+// '-' and '_', starting with a letter or digit. The name is also the stack's
+// folder name on the host, so it can never contain '/' or '..'.
+func ValidStackName(s string) bool {
+	if len(s) == 0 || len(s) > 63 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || (i > 0 && (c == '-' || c == '_'))) {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidStackCommand(c StackCommand) error {
+	switch c.Action {
+	case StackDeploy, StackStart, StackStop, StackRestart, StackDown, StackRemove:
+	default:
+		return errors.New("unknown stack action")
+	}
+	if !ValidStackName(c.Name) {
+		return errors.New("invalid stack name: use lowercase letters, digits, '-' and '_' (max 63)")
+	}
+	if c.Action == StackDeploy && strings.TrimSpace(c.Compose) == "" {
+		return errors.New("compose file is empty")
+	}
+	if len(c.Compose) > MaxComposeBytes {
+		return errors.New("compose file is too large (max 256 KB)")
+	}
+	if len(c.Env) > MaxEnvBytes {
+		return errors.New(".env is too large (max 64 KB)")
+	}
+	return nil
 }
 
 // Valid container actions.

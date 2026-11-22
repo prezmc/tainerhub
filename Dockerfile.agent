@@ -1,6 +1,10 @@
 # TainerHub agent: runs on every Docker host and connects out to the hub.
 # syntax=docker/dockerfile:1
 
+# The official, statically linked `docker compose` binary for running stacks.
+# Dependabot (docker ecosystem) keeps this tag current.
+FROM docker/compose-bin:v5.8.0 AS compose
+
 FROM --platform=$BUILDPLATFORM golang:1-alpine AS build
 ARG TARGETOS TARGETARCH VERSION=dev
 WORKDIR /src
@@ -14,5 +18,6 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
 # Runs as root because it needs the Docker socket (which is root-equivalent).
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/tainerhub-agent /tainerhub-agent
+COPY --from=compose /docker-compose /usr/local/bin/docker-compose
 VOLUME /data
 ENTRYPOINT ["/tainerhub-agent"]

@@ -35,6 +35,8 @@ type Server struct {
 	Log       *slog.Logger
 	AgentAddr string // what agents should dial, e.g. tainerhub.example.com:7443
 	Web       fs.FS  // built React app (index.html at root)
+
+	jobs jobList // running and recently finished stack operations
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -71,6 +73,9 @@ func (s *Server) Handler() http.Handler {
 	for _, kind := range []string{"images", "volumes", "networks"} {
 		mux.Handle("GET /api/hosts/{id}/"+kind, s.need("viewer", s.listResources(kind)))
 	}
+	mux.Handle("GET /api/stacks", s.need("viewer", s.listStacks))
+	mux.Handle("GET /api/stacks/{sid}", s.need("viewer", s.getStack))
+	mux.Handle("GET /api/jobs/{jid}", s.need("viewer", s.jobStream))
 
 	// operators
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/{action}", s.need("operator", s.containerAction))
@@ -82,6 +87,12 @@ func (s *Server) Handler() http.Handler {
 	// volumes hold data: removing them is admin-only
 	mux.Handle("DELETE /api/hosts/{id}/volumes/{rid}", s.need("admin", s.removeResource(wire.OpVolumeRemove)))
 	mux.Handle("POST /api/hosts/{id}/volumes/prune", s.need("admin", s.prune(wire.OpVolumesPrune)))
+	// stack lifecycle on definitions an admin has saved
+	mux.Handle("POST /api/stacks/{sid}/{action}", s.need("operator", s.stackAction))
+	// writing a compose file is root on the host: admins only (see stacks.go)
+	mux.Handle("POST /api/stacks", s.need("admin", s.createStack))
+	mux.Handle("PUT /api/stacks/{sid}", s.need("admin", s.updateStack))
+	mux.Handle("DELETE /api/stacks/{sid}", s.need("admin", s.deleteStack))
 
 	// admins
 	mux.Handle("POST /api/hosts", s.need("admin", s.createHost))
@@ -447,6 +458,8 @@ func agentCompose(hub, token string) string {
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - tainerhub-agent:/data
+      # Compose stacks. Keep the same path on both sides (relative bind mounts).
+      - /opt/tainerhub/stacks:/opt/tainerhub/stacks
     environment:
       TAINERHUB_HUB: %s
       # One-time token, valid for 1 hour. It can be removed after the first start.

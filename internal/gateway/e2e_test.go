@@ -193,9 +193,14 @@ func TestEnrollConnectActLogsRevoke(t *testing.T) {
 	}
 
 	docker := &fakeDocker{running: map[string]bool{}, events: make(chan wire.DockerEvent, 1)}
+	fakeCompose := dir + "/docker-compose"
+	if err := os.WriteFile(fakeCompose, []byte("#!/bin/sh\ncase \"$*\" in *version*) echo 5.8.0;; *\" up \"*) echo 'Container web-1  Started';; esac\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	ag, err := agent.New(agent.Config{
 		HubAddr: "127.0.0.1:" + port, JoinToken: token, DataDir: dir + "/agent", Version: "test",
-		Docker: docker, Log: log, PingEvery: 200 * time.Millisecond, DeadAfter: 2 * time.Second, SnapshotEvery: time.Hour, StatsEvery: 300 * time.Millisecond,
+		Docker: docker, Log: log,
+		Stacks: &agent.StackRunner{Dir: dir + "/stacks", Bin: fakeCompose, Socket: "/var/run/docker.sock", WorkDir: dir + "/agent/compose"}, PingEvery: 200 * time.Millisecond, DeadAfter: 2 * time.Second, SnapshotEvery: time.Hour, StatsEvery: 300 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +242,34 @@ func TestEnrollConnectActLogsRevoke(t *testing.T) {
 	})
 	if err := a.Do(context.Background(), wire.ContainerAction{ContainerID: "nope", Action: wire.ActionStop}); err == nil || !strings.Contains(err.Error(), "no such container") {
 		t.Fatalf("expected agent error to propagate, got %v", err)
+	}
+
+	// 3b. a compose stack deploy streams its output and outcome back
+	if sup := a.Status().Hello.Stacks; sup == nil || sup.Error != "" || sup.ComposeVersion != "5.8.0" {
+		t.Fatalf("stack support not reported: %+v", sup)
+	}
+	ch, err := a.Stack(context.Background(), wire.StackCommand{Action: wire.StackDeploy, Name: "web", Compose: "services: {}\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	var last wire.LogChunk
+	for c := range ch {
+		out.Write(c.Data)
+		last = c
+	}
+	if !last.EOF || last.Error != "" || !strings.Contains(out.String(), "Container web-1  Started") {
+		t.Fatalf("stack deploy: final=%+v output:\n%s", last, out.String())
+	}
+	if b, _ := os.ReadFile(dir + "/stacks/web/compose.yaml"); string(b) != "services: {}\n" {
+		t.Fatalf("compose file on host = %q", b)
+	}
+	ch, _ = a.Stack(context.Background(), wire.StackCommand{Action: wire.StackStart, Name: "never-deployed"})
+	for c := range ch {
+		last = c
+	}
+	if !strings.Contains(last.Error, "not been deployed") {
+		t.Fatalf("expected agent error for an undeployed stack, got %+v", last)
 	}
 
 	// 4. docker events reach the hub

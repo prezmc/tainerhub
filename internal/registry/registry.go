@@ -213,10 +213,7 @@ func (a *Agent) close() {
 		delete(a.pending, id)
 	}
 	for id, ch := range a.logs {
-		select {
-		case ch <- wire.LogChunk{CommandID: id, EOF: true, Error: ErrOffline.Error()}:
-		default:
-		}
+		deliverFinal(ch, wire.LogChunk{CommandID: id, EOF: true, Error: ErrOffline.Error()})
 		close(ch)
 		delete(a.logs, id)
 	}
@@ -242,13 +239,16 @@ func (a *Agent) Handle(m wire.AgentMessage, onEvent func(string, wire.DockerEven
 		}
 	case m.Log != nil:
 		if ch, ok := a.logs[m.Log.CommandID]; ok {
-			select {
-			case ch <- *m.Log:
-			default: // slow browser: drop rather than stall the whole stream
-			}
 			if m.Log.EOF {
+				// The final chunk carries the outcome, so it must arrive.
+				deliverFinal(ch, *m.Log)
 				close(ch)
 				delete(a.logs, m.Log.CommandID)
+			} else {
+				select {
+				case ch <- *m.Log:
+				default: // slow consumer: drop rather than stall the whole stream
+				}
 			}
 		}
 	}
@@ -358,7 +358,42 @@ func (a *Agent) forget(id string) {
 // Logs starts a log stream. The returned channel closes at EOF. Call stop
 // when the consumer goes away; it tells the agent to stop following.
 func (a *Agent) Logs(ctx context.Context, req wire.LogsRequest) (<-chan wire.LogChunk, func(), error) {
+	return a.stream(ctx, wire.Command{Logs: &req})
+}
+
+// Stack starts a compose operation on the host. Its output arrives on the
+// returned channel, which closes after a final chunk with EOF set; that
+// chunk's Error is the outcome ("" for success, ErrOffline if the host
+// disconnected). The hub never cancels it: stopping a half-finished deploy
+// would leave the stack in a worse state than letting it finish.
+func (a *Agent) Stack(ctx context.Context, c wire.StackCommand) (<-chan wire.LogChunk, error) {
+	if err := wire.ValidStackCommand(c); err != nil {
+		return nil, err
+	}
+	ch, _, err := a.stream(ctx, wire.Command{Stack: &c})
+	return ch, err
+}
+
+// deliverFinal sends the last chunk of a stream even when the buffer is full,
+// by dropping the oldest buffered chunk. Callers hold a.mu, and only holders
+// of a.mu send on these channels, so after one receive there is room.
+func deliverFinal(ch chan wire.LogChunk, c wire.LogChunk) {
+	select {
+	case ch <- c:
+		return
+	default:
+	}
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- c
+}
+
+// stream sends a command whose output comes back as LogChunks.
+func (a *Agent) stream(ctx context.Context, cmd wire.Command) (<-chan wire.LogChunk, func(), error) {
 	id := newID()
+	cmd.ID = id
 	ch := make(chan wire.LogChunk, 256)
 	a.mu.Lock()
 	select {
@@ -373,7 +408,7 @@ func (a *Agent) Logs(ctx context.Context, req wire.LogsRequest) (<-chan wire.Log
 	}
 	a.logs[id] = ch
 	a.mu.Unlock()
-	if err := a.send(ctx, wire.HubMessage{Command: &wire.Command{ID: id, Logs: &req}}); err != nil {
+	if err := a.send(ctx, wire.HubMessage{Command: &cmd}); err != nil {
 		a.mu.Lock()
 		delete(a.logs, id)
 		a.mu.Unlock()

@@ -345,7 +345,22 @@ function TopConsumers({ containers }: { containers: Container[] }) {
   )
 }
 
-const userVerbs: Record<string, string> = { start: 'started', stop: 'stopped', restart: 'restarted', pause: 'paused', unpause: 'resumed', kill: 'killed', remove: 'removed' }
+const userVerbs: Record<string, string> = {
+  start: 'started',
+  stop: 'stopped',
+  restart: 'restarted',
+  pause: 'paused',
+  unpause: 'resumed',
+  kill: 'killed',
+  remove: 'removed',
+  'stack.deploy': 'deployed stack',
+  'stack.pull': 'pulled and redeployed stack',
+  'stack.start': 'started stack',
+  'stack.stop': 'stopped stack',
+  'stack.restart': 'restarted stack',
+  'stack.down': 'took down stack',
+  'stack.remove': 'deleted stack',
+}
 
 function describe(a: Activity): { text: React.ReactNode; color: string } {
   const who = a.container ?? a.host

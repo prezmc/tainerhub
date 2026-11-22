@@ -9,6 +9,7 @@ import { CommandPalette } from './CommandPalette'
 import { Logo } from './Logo'
 import { LogsPanel } from './LogsPanel'
 import { DetailsPanel } from './DetailsPanel'
+import { JobContext, JobPanel } from '../stacks'
 
 const MeContext = createContext<Me | null>(null)
 export const useMe = () => useContext(MeContext)!
@@ -47,7 +48,7 @@ function useFleetStream() {
   return live
 }
 
-type NavTo = '/' | '/containers' | '/resources' | '/hosts' | '/audit'
+type NavTo = '/' | '/containers' | '/stacks' | '/resources' | '/hosts' | '/audit'
 
 function NavPill({ to, label, exact }: { to: NavTo; label: string; exact?: boolean }) {
   return (
@@ -71,6 +72,16 @@ export function AppLayout() {
   const [detailsFor, setDetailsFor] = useState<Container | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const openPalette = useCallback(() => setPaletteOpen(true), [])
+  const [jobId, setJobId] = useState<string | null>(null)
+  // The logs and job drawers share the bottom of the screen: one at a time.
+  const openJob = useCallback((id: string) => {
+    setLogsFor(null)
+    setJobId(id)
+  }, [])
+  const openLogs = useCallback((c: Container) => {
+    setJobId(null)
+    setLogsFor(c)
+  }, [])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -104,10 +115,11 @@ export function AppLayout() {
 
   return (
     <MeContext.Provider value={me.data}>
-      <LogsContext.Provider value={setLogsFor}>
+      <LogsContext.Provider value={openLogs}>
+        <JobContext.Provider value={openJob}>
         <DetailsContext.Provider value={setDetailsFor}>
         <PaletteContext.Provider value={openPalette}>
-          <div className={cx('min-h-screen', logsFor && 'pb-[48vh]')}>
+          <div className={cx('min-h-screen', (logsFor || jobId) && 'pb-[48vh]')}>
             <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#0a0720]/60 backdrop-blur-xl">
               <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-3 px-4 py-3 sm:px-8">
                 <Link to="/" aria-label="TainerHub home">
@@ -116,6 +128,7 @@ export function AppLayout() {
                 <nav className="order-3 flex w-full gap-1 overflow-x-auto rounded-full bg-white/[0.06] p-1 ring-1 ring-white/10 md:order-none md:ml-4 md:w-auto">
                   <NavPill to="/" label="Overview" exact />
                   <NavPill to="/containers" label="Containers" />
+                  <NavPill to="/stacks" label="Stacks" />
                   <NavPill to="/resources" label="Resources" />
                   <NavPill to="/hosts" label="Hosts" />
                   {can(me.data.user, 'admin') && <NavPill to="/audit" label="Audit" />}
@@ -169,9 +182,11 @@ export function AppLayout() {
           </div>
           {detailsFor && <LiveDetails c={detailsFor} onClose={() => setDetailsFor(null)} />}
           {logsFor && <LogsPanel container={logsFor} onClose={() => setLogsFor(null)} />}
-          <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onLogs={setLogsFor} onDetails={setDetailsFor} />
+          {jobId && <JobPanel jobId={jobId} onClose={() => setJobId(null)} />}
+          <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onLogs={openLogs} onDetails={setDetailsFor} />
         </PaletteContext.Provider>
         </DetailsContext.Provider>
+        </JobContext.Provider>
       </LogsContext.Provider>
     </MeContext.Provider>
   )

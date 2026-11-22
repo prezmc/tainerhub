@@ -10,6 +10,8 @@ import { ResourcesPage } from './pages/Resources'
 import { HostsPage } from './pages/Hosts'
 import { AccountPage } from './pages/Account'
 import { AuditPage } from './pages/Audit'
+import { StacksPage } from './pages/Stacks'
+import { NewStackPage, StackPage } from './pages/StackEditor'
 
 function Root() {
   const path = useRouterState({ select: (s) => s.location.pathname })
@@ -32,6 +34,18 @@ const appRoute = createRoute({ getParentRoute: () => rootRoute, id: 'app', compo
 const overviewRoute = createRoute({ getParentRoute: () => appRoute, path: '/', component: OverviewPage })
 const containersRoute = createRoute({ getParentRoute: () => appRoute, path: '/containers', component: ContainersPage })
 const resourcesRoute = createRoute({ getParentRoute: () => appRoute, path: '/resources', component: ResourcesPage })
+const stacksRoute = createRoute({ getParentRoute: () => appRoute, path: '/stacks', component: StacksPage })
+const newStackRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/stacks/new',
+  component: NewStackPage,
+  // ?host=&name= prefill the form when taking over a stack started elsewhere
+  validateSearch: (s: Record<string, unknown>): { host?: string; name?: string } => ({
+    host: typeof s.host === 'string' ? s.host : undefined,
+    name: typeof s.name === 'string' ? s.name : undefined,
+  }),
+})
+const stackRoute = createRoute({ getParentRoute: () => appRoute, path: '/stacks/$stackId', component: StackPage })
 const hostsRoute = createRoute({ getParentRoute: () => appRoute, path: '/hosts', component: HostsPage })
 const accountRoute = createRoute({ getParentRoute: () => appRoute, path: '/account', component: AccountPage })
 const auditRoute = createRoute({ getParentRoute: () => appRoute, path: '/audit', component: AuditPage })
@@ -39,7 +53,7 @@ const auditRoute = createRoute({ getParentRoute: () => appRoute, path: '/audit',
 const routeTree = rootRoute.addChildren([
   setupRoute,
   loginRoute,
-  appRoute.addChildren([overviewRoute, containersRoute, resourcesRoute, hostsRoute, accountRoute, auditRoute]),
+  appRoute.addChildren([overviewRoute, containersRoute, stacksRoute, newStackRoute, stackRoute, resourcesRoute, hostsRoute, accountRoute, auditRoute]),
 ])
 
 export const router = createRouter({ routeTree })
