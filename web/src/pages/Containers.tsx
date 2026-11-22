@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowDown, Boxes, ChevronDown, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
+import { ArrowDown, ChevronDown, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
 import { can, isUnhealthy, mem, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, type Action, type SortKey } from '../fleet'
 import { Button, IconButton, Menu, StatusDot, cx, toneOf } from '../ui'
 import { useMe } from './AppLayout'
+import { StackLink } from '../stacks'
 
 type View = 'all' | 'running' | 'stopped' | 'issues'
 type Group = 'host' | 'stack' | 'state'
@@ -260,12 +261,7 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
           </button>
           {(c.project || showHost) && (
             <div className="flex min-w-0 items-center gap-1 truncate text-xs text-ink-100/50">
-              {c.project && (
-                <>
-                  <Boxes className="size-3 shrink-0 text-cyan-300" />
-                  <span className="truncate">{c.project}</span>
-                </>
-              )}
+              <StackLink c={c} />
               {showHost && <span className="truncate">{c.project ? ' · ' : ''}{c.hostName}</span>}
             </div>
           )}
