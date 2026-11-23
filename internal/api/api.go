@@ -123,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/remove-with-volumes", s.need("admin", s.removeWithVolumes))
 	// stack lifecycle on definitions an admin has saved
 	mux.Handle("POST /api/stacks/{sid}/{action}", s.need("operator", s.stackAction))
+	mux.Handle("POST /api/stacks/takeover-check", s.need("admin", s.checkTakeover))
 	mux.Handle("GET /api/stacks/{sid}/move", s.need("admin", s.moveCheck))
 	mux.Handle("POST /api/stacks/{sid}/move", s.need("admin", s.startMove))
 	mux.Handle("DELETE /api/moves/{mid}/leftovers", s.need("admin", s.removeLeftovers))
