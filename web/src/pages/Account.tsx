@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { useRouter } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Fingerprint, KeyRound, LockKeyhole, Plus, RefreshCw, Save, Trash2 } from 'lucide-react'
-import { api, errorText, passkeyAdd, passkeysUsable, timeAgo } from '../api'
+import { Fingerprint, KeyRound, LockKeyhole, LogIn, LogOut, MonitorSmartphone, Plus, RefreshCw, Save, ShieldAlert, Trash2 } from 'lucide-react'
+import { api, errorText, needsReauth, passkeyAdd, passkeysUsable, timeAgo } from '../api'
 import { Badge, Button, Card, ErrorNote, IconButton, Input, Modal, PageHeader, RecoveryCodes, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
 
@@ -12,6 +13,9 @@ export function AccountPage() {
   const confirm = useConfirm()
   const [name, setName] = useState('')
   const [codes, setCodes] = useState<string[] | null>(null)
+  const [reauth, setReauth] = useState(false)
+  // Sensitive changes need a recent sign-in; offer one instead of a bare error.
+  const onError = (e: unknown) => (needsReauth(e) ? setReauth(true) : toast('bad', errorText(e)))
 
   const add = useMutation({
     mutationFn: () => passkeyAdd(name),
@@ -20,7 +24,7 @@ export function AccountPage() {
       toast('good', 'Passkey added')
       qc.invalidateQueries({ queryKey: ['me'] })
     },
-    onError: (e) => toast('bad', errorText(e)),
+    onError,
   })
   const del = useMutation({
     mutationFn: (id: string) => api(`/api/me/passkeys/${id}`, { method: 'DELETE' }),
@@ -28,7 +32,7 @@ export function AccountPage() {
       toast('good', 'Passkey removed')
       qc.invalidateQueries({ queryKey: ['me'] })
     },
-    onError: (e) => toast('bad', errorText(e)),
+    onError,
   })
   const regen = useMutation({
     mutationFn: () => api<{ recoveryCodes: string[] }>('/api/me/recovery-codes', { method: 'POST' }),
@@ -36,7 +40,13 @@ export function AccountPage() {
       setCodes(r.recoveryCodes)
       qc.invalidateQueries({ queryKey: ['me'] })
     },
-    onError: (e) => toast('bad', errorText(e)),
+    onError,
+  })
+
+  const others = useMutation({
+    mutationFn: () => api<{ signedOut: number }>('/api/me/sessions/sign-out-others', { method: 'POST' }),
+    onSuccess: (r) => toast('good', r.signedOut === 1 ? 'Signed out 1 other session' : `Signed out ${r.signedOut} other sessions`),
+    onError,
   })
 
   const low = me.recoveryCodesLeft <= 3
@@ -52,7 +62,9 @@ export function AccountPage() {
       </PageHeader>
 
       <div className="space-y-6">
-        <PasswordCard hasPassword={me.hasPassword} />
+        {reauth && <ReauthCard />}
+
+        <PasswordCard hasPassword={me.hasPassword} onReauth={() => setReauth(true)} />
 
         <Card className="p-6">
           <div className="mb-5 flex items-start gap-3">
@@ -137,6 +149,29 @@ export function AccountPage() {
             </Button>
           </div>
         </Card>
+
+        <Card className="p-6">
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex flex-1 items-start gap-3">
+              <div className="rounded-[3px] bg-white/[0.04] p-2.5 text-ink-100/70 ring-1 ring-inset ring-white/10">
+                <MonitorSmartphone className="size-5" />
+              </div>
+              <div>
+                <h2 className="font-semibold text-white">Other sessions</h2>
+                <p className="text-sm text-ink-100/60">Signed in on a device you no longer use, or one that isn't yours? Sign it out. This browser stays signed in.</p>
+              </div>
+            </div>
+            <Button
+              icon={LogOut}
+              loading={others.isPending}
+              onClick={async () => {
+                if (await confirm({ title: 'Sign out other sessions?', body: 'Every other browser and device signed in to your account will have to sign in again.', confirm: 'Sign out others' })) others.mutate()
+              }}
+            >
+              Sign out other sessions
+            </Button>
+          </div>
+        </Card>
       </div>
 
       <Modal open={!!codes} onClose={() => setCodes(null)} title="Your new recovery codes">
@@ -146,7 +181,41 @@ export function AccountPage() {
   )
 }
 
-function PasswordCard({ hasPassword }: { hasPassword: boolean }) {
+/** Shown when the hub wants a recent sign-in before a sensitive change. */
+function ReauthCard() {
+  const qc = useQueryClient()
+  const router = useRouter()
+  const [busy, setBusy] = useState(false)
+  const signInAgain = async () => {
+    setBusy(true)
+    try {
+      await api('/api/logout', { method: 'POST' })
+    } finally {
+      qc.clear()
+      router.history.push('/login?next=' + encodeURIComponent('/account'))
+    }
+  }
+  return (
+    <Card className="p-6">
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex flex-1 items-start gap-3">
+          <div className="rounded-[3px] bg-amber-500/10 p-2.5 text-amber-300 ring-1 ring-inset ring-amber-500/20">
+            <ShieldAlert className="size-5" />
+          </div>
+          <div>
+            <h2 className="font-semibold text-white">Sign in again to continue</h2>
+            <p className="text-sm text-ink-100/60">For your safety, changing how you sign in needs a sign-in from the last 10 minutes. Sign in again, then come back here and try once more.</p>
+          </div>
+        </div>
+        <Button variant="primary" icon={LogIn} loading={busy} onClick={signInAgain}>
+          Sign in again
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+function PasswordCard({ hasPassword, onReauth }: { hasPassword: boolean; onReauth: () => void }) {
   const qc = useQueryClient()
   const toast = useToast()
   const [current, setCurrent] = useState('')
@@ -160,10 +229,10 @@ function PasswordCard({ hasPassword }: { hasPassword: boolean }) {
       setNext('')
       setAgain('')
       setError(null)
-      toast('good', hasPassword ? 'Password changed' : 'Password set')
+      toast('good', `${hasPassword ? 'Password changed' : 'Password set'}. Other sessions were signed out.`)
       qc.invalidateQueries({ queryKey: ['me'] })
     },
-    onError: (e) => setError(errorText(e)),
+    onError: (e) => (needsReauth(e) ? onReauth() : setError(errorText(e))),
   })
   return (
     <Card className="p-6">
