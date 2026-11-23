@@ -288,7 +288,7 @@ Admins have **Add host** (see [Getting started](getting-started.md#4-add-your-ot
 
 At the top of the page, admins see a card with three parts.
 
-**TainerHub updates.** The running version, the latest published version and its description. When servers are behind, each one is listed with an **Update** button, and **Update everything** updates them all (the hub's server last). See [Keep TainerHub up to date](getting-started.md#6-keep-tainerhub-up-to-date).
+**TainerHub updates.** The running version, the latest published version and its description, and when the hub last asked GitHub. It asks every 15 minutes; **Check now** asks right away (at most every 30 seconds) and also refreshes the latest Docker Engine release. When servers are behind, each one is listed with an **Update** button, and **Update everything** updates them all (the hub's server last). See [Keep TainerHub up to date](getting-started.md#6-keep-tainerhub-up-to-date).
 
 **Docker Engine.** Each online host's Docker version, marked **newer available** or **up to date** against the latest Docker Engine release. Click **Update Docker…** (or **Check…**) to open a dialog that:
 
