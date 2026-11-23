@@ -85,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/me/passkeys/{id}", s.need("viewer", s.deletePasskey))
 	mux.Handle("POST /api/me/recovery-codes", s.need("viewer", s.regenRecovery))
 	mux.Handle("POST /api/me/password", s.need("viewer", s.changePassword))
+	mux.Handle("POST /api/me/sessions/sign-out-others", s.need("viewer", s.signOutOthers))
 	mux.Handle("GET /api/containers", s.need("viewer", s.containers))
 	mux.Handle("GET /api/events", s.need("viewer", s.events))
 	mux.Handle("GET /api/hosts", s.need("viewer", s.hosts))
@@ -314,6 +315,10 @@ func (s *Server) setupPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, codes, err := s.Auth.SetupWithPassword(w, r, in)
+	if errors.Is(err, auth.ErrRateLimited) {
+		jsonErr(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -351,12 +356,62 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userFrom(r)
-	if err := s.Auth.ChangePassword(r.Context(), u, in.Current, in.New); err != nil {
+	err := s.Auth.ChangePassword(r, u, in.Current, in.New)
+	switch {
+	case errors.Is(err, auth.ErrReauth):
+		reauthErr(w)
+		return
+	case errors.Is(err, auth.ErrRateLimited):
+		jsonErr(w, http.StatusTooManyRequests, err.Error())
+		return
+	case errors.Is(err, auth.ErrUnauthorized):
+		jsonErr(w, http.StatusUnauthorized, "not signed in")
+		return
+	case err != nil:
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.record(r, &u, "password.changed", u.Username, nil)
+	action := "password.changed"
+	if u.PasswordHash == "" {
+		action = "password.set"
+	}
+	s.record(r, &u, action, u.Username, map[string]string{"otherSessions": "signed out"})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// signOutOthers ends every session of the caller except this one.
+func (s *Server) signOutOthers(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	n, err := s.Auth.SignOutOtherSessions(r, u)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.record(r, &u, "sessions.signed_out_others", u.Username, map[string]string{"sessions": strconv.FormatInt(n, 10)})
+	writeJSON(w, http.StatusOK, map[string]any{"signedOut": n})
+}
+
+// reauthErr tells the browser this change needs a recent sign-in; the
+// "reauth" flag lets the UI offer to sign in again.
+func reauthErr(w http.ResponseWriter) {
+	writeJSON(w, http.StatusForbidden, map[string]any{"error": auth.ErrReauth.Error(), "reauth": true})
+}
+
+// fresh checks that the caller signed in recently, answering 403 if not.
+// Used for changes that would give a stolen session lasting access.
+func (s *Server) fresh(w http.ResponseWriter, r *http.Request) bool {
+	err := s.Auth.RequireFreshSignIn(r)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, auth.ErrReauth):
+		reauthErr(w)
+	case errors.Is(err, auth.ErrUnauthorized):
+		jsonErr(w, http.StatusUnauthorized, "not signed in")
+	default:
+		s.fail(w, err)
+	}
+	return false
 }
 
 func (s *Server) loginRecovery(w http.ResponseWriter, r *http.Request) {
@@ -407,6 +462,9 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addPasskeyBegin(w http.ResponseWriter, r *http.Request) {
+	if !s.fresh(w, r) {
+		return
+	}
 	var in struct{ Name string }
 	if !readJSON(w, r, &in) {
 		return
@@ -421,6 +479,9 @@ func (s *Server) addPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) addPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if !s.fresh(w, r) {
+		return
+	}
 	u := userFrom(r)
 	if err := s.Auth.FinishAddPasskey(w, r, u); err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
@@ -431,6 +492,9 @@ func (s *Server) addPasskeyFinish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deletePasskey(w http.ResponseWriter, r *http.Request) {
+	if !s.fresh(w, r) {
+		return
+	}
 	u := userFrom(r)
 	id, err := base64.RawURLEncoding.DecodeString(r.PathValue("id"))
 	if err != nil {
@@ -450,6 +514,9 @@ func (s *Server) deletePasskey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) regenRecovery(w http.ResponseWriter, r *http.Request) {
+	if !s.fresh(w, r) {
+		return
+	}
 	u := userFrom(r)
 	codes, err := s.Auth.RegenerateRecoveryCodes(r.Context(), u)
 	if err != nil {

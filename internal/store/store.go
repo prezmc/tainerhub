@@ -335,6 +335,43 @@ func (s *Store) DeleteSession(ctx context.Context, tokenHash []byte) error {
 	return err
 }
 
+// DeleteOtherSessions signs a user out everywhere except the session whose
+// token hash is keep, and returns how many sessions it ended.
+func (s *Store) DeleteOtherSessions(ctx context.Context, userID string, keep []byte) (int64, error) {
+	if keep == nil {
+		keep = []byte{} // nil would be NULL, and "<> NULL" matches nothing
+	}
+	tag, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1::uuid AND token_hash <> $2`, userID, keep)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// SetPasswordAndRevoke sets a user's password and ends their other sessions
+// in one transaction, so a new password always shuts out old sign-ins.
+func (s *Store) SetPasswordAndRevoke(ctx context.Context, userID, hash string, keep []byte) error {
+	if keep == nil {
+		keep = []byte{} // nil would be NULL, and "<> NULL" matches nothing
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	tag, err := tx.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1::uuid`, userID, hash)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1::uuid AND token_hash <> $2`, userID, keep); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) PurgeSessions(ctx context.Context, idleCutoff time.Time) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM sessions WHERE expires_at < now() OR last_seen_at < $1`, idleCutoff)
 	return err
