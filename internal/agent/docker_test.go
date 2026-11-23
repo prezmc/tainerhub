@@ -96,7 +96,7 @@ func TestOperations(t *testing.T) {
 		t.Fatalf("volumes: %+v", v)
 	}
 	res, err = d.Operate(ctx, wire.Operation{Kind: wire.OpImagesPrune})
-	if err != nil || res.(wire.PruneResult) != (wire.PruneResult{Deleted: 1, Reclaimed: 5}) {
+	if pr, _ := res.(wire.PruneResult); err != nil || pr.Deleted != 1 || pr.Reclaimed != 5 || len(pr.Kept) != 0 {
 		t.Fatalf("prune: %v %+v", err, res)
 	}
 	res, err = d.Operate(ctx, wire.Operation{Kind: wire.OpImagePull, Arg: "nginx:1.27"})

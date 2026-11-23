@@ -326,6 +326,8 @@ export interface NetworkRes {
 export interface PruneResult {
   deleted: number
   reclaimed: number
+  /** Unused images Docker refused to remove, with its reason. */
+  kept?: { name: string; reason: string }[]
 }
 
 export function size(n: number): string {
