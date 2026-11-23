@@ -58,8 +58,11 @@ func TestFirstStartReplacesDefaultPassword(t *testing.T) {
 	if st, _ := os.Stat(filepath.Join(dir, dbPasswordFile)); st.Mode().Perm() != 0o600 {
 		t.Fatalf("password file mode %v", st.Mode().Perm())
 	}
-	if !strings.Contains(out.String(), "SAVE THIS") || !strings.Contains(out.String(), pg.password) {
-		t.Fatalf("password not printed for the admin:\n%s", out.String())
+	if !strings.Contains(out.String(), "SAVE THIS") || !strings.Contains(out.String(), "db-password") {
+		t.Fatalf("admin not told how to see the password:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), pg.password) {
+		t.Fatal("the database password went into the logs")
 	}
 
 	// Second start: uses the saved password quietly.

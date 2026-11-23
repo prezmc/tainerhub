@@ -176,7 +176,7 @@ No software can promise zero vulnerabilities. The plan is defense in depth plus 
 ## Security notes
 
 - **Plain HTTP is for your LAN only.** Until you add HTTPS, passwords and session cookies cross the network unencrypted. Don't expose port 8585 to the internet; use the reverse-proxy steps above for remote access.
-- The database is only reachable from the hub (an internal Docker network). Postgres starts with a well-known default password, which the hub replaces with a random 192-bit one on first start; it's saved in `/data/db_password` and printed once in the logs. If you prefer to choose it yourself, put `DB_PASSWORD=...` in a `.env` file next to the hub's `compose.yml` **before the first start**, and the hub leaves it alone.
+- The database is only reachable from the hub (an internal Docker network). Postgres starts with a well-known default password, which the hub replaces with a random 192-bit one on first start; it's saved in `/data/db_password` (see it with `docker exec tainerhub /tainerhub db-password`; it never goes in the logs). If you prefer to choose it yourself, put `DB_PASSWORD=...` in a `.env` file next to the hub's `compose.yml` **before the first start**, and the hub leaves it alone.
 - **Back up the hub's `/data` volume.** It holds the CA key and the database password. Losing it means re-enrolling every agent; leaking it lets someone impersonate the hub to agents.
 - Join tokens are single-use, expire after 1 hour, and pin the hub CA's SHA-256 fingerprint, so an agent can't be tricked into enrolling with a fake hub.
 - Removing a host deletes its record; its certificate is refused from then on and its live connection is dropped.
