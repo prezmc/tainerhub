@@ -13,12 +13,17 @@ import (
 
 func subtleEq(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
 
+// validUsername accepts 2-32 ASCII letters, digits, dots, dashes and
+// underscores. ASCII only: Unicode letters allow look-alike names (Cyrillic
+// "а" for Latin "a") that could pass for another user in the UI and audit
+// log. It checks new names only; existing accounts keep signing in.
 func validUsername(s string) bool {
 	if len(s) < 2 || len(s) > 32 {
 		return false
 	}
-	for _, r := range s {
-		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '-' || r == '_') {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_') {
 			return false
 		}
 	}

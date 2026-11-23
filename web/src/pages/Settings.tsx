@@ -22,6 +22,36 @@ type TestResult = {
   tlsError?: string
 }
 
+// rangeWidth sorts what was typed into the trusted-proxy box: a single
+// address is ideal; a range works but trusts every address in it; a range
+// wider than /16 (IPv4) or /48 (IPv6) the hub refuses.
+function rangeWidth(value: string): 'single' | 'range' | 'too-broad' {
+  let worst: 'single' | 'range' | 'too-broad' = 'single'
+  for (const f of value.split(/[\s,]+/).filter(Boolean)) {
+    const [addr, bitsText] = f.split('/')
+    if (bitsText === undefined) continue
+    const v6 = addr.includes(':')
+    const bits = Number(bitsText)
+    const full = v6 ? 128 : 32
+    if (!Number.isInteger(bits) || bits >= full) continue
+    if (bits < (v6 ? 48 : 16)) return 'too-broad'
+    worst = 'range'
+  }
+  return worst
+}
+
+function TrustedWarning({ value }: { value: string }) {
+  const width = rangeWidth(value)
+  if (width === 'single') return null
+  if (width === 'too-broad') return <ErrorNote error="That range is too broad: anything in it could pretend to be any visitor. Enter your proxy's own IP (ranges can be at most /16 for IPv4 or /48 for IPv6)." />
+  return (
+    <div className="flex items-start gap-2 rounded-[3px] bg-amber-500/10 px-3 py-2.5 text-sm text-amber-200 ring-1 ring-inset ring-amber-500/25">
+      <CircleAlert className="mt-0.5 size-4 shrink-0" />
+      <span>Every address in this range will be trusted to report visitors' IPs and HTTPS. Prefer your proxy's single IP unless its address changes.</span>
+    </div>
+  )
+}
+
 // Settings → HTTPS & passkeys: walks through putting TainerHub behind a
 // reverse proxy (Nginx Proxy Manager on its own server), checks it from the
 // hub's side, and switches it on without a restart.
@@ -194,8 +224,14 @@ export function SettingsPage() {
                 <p>
                   TainerHub trusts the proxy's IP to say visitors arrived over HTTPS. The test found it; change it only if your proxy uses more than one address.
                 </p>
-                <div className="max-w-md">
-                  <Input label="Proxy IP (trusted)" value={trusted} onChange={(e) => setTrusted(e.target.value)} hint="IP addresses or ranges, separated by commas" />
+                <div className="max-w-md space-y-2">
+                  <Input label="Proxy IP (trusted)" value={trusted} onChange={(e) => setTrusted(e.target.value)} hint="Your proxy's IP address; separate several with commas" />
+                  {result.proxyIp && trusted.trim() !== result.proxyIp && (
+                    <button type="button" onClick={() => setTrusted(result.proxyIp ?? '')} className="text-xs text-lime-300 hover:text-lime-200">
+                      Use only {result.proxyIp}, the address the test saw
+                    </button>
+                  )}
+                  <TrustedWarning value={trusted} />
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {result.ok ? (

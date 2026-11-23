@@ -128,7 +128,17 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                   <KV k="Limits" v={[d.nanoCpus ? `${d.nanoCpus / 1e9} CPUs` : '', d.memoryLimit ? mem(d.memoryLimit) : ''].filter(Boolean).join(' · ')} />
                 )}
                 {(d.entrypoint?.length || d.cmd?.length) && (
-                  <KV k="Command" v={<span className="mono break-all text-xs">{[...(d.entrypoint ?? []), ...(d.cmd ?? [])].join(' ')}</span>} />
+                  <KV
+                    k="Command"
+                    v={
+                      <span className="mono break-all text-xs">
+                        {[...(d.entrypoint ?? []), ...(d.cmd ?? [])].join(' ')}
+                        {!q.data?.envRevealed && (d.entrypoint?.length ?? 0) + (d.cmd?.length ?? 0) > 1 && (
+                          <span className="ml-2 font-sans text-ink-100/50">(arguments hidden for your role)</span>
+                        )}
+                      </span>
+                    }
+                  />
                 )}
                 {d.state.error && <KV k="Error" v={<span className="text-rose-300">{d.state.error}</span>} />}
               </Section>
@@ -206,6 +216,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                         </div>
                       ))}
                   </div>
+                  {!q.data?.envRevealed && <p className="mt-2 text-xs text-ink-100/40">Labels can hold credentials (e.g. reverse-proxy auth), so most values are hidden for your role; admins see them.</p>}
                 </Section>
               )}
 
