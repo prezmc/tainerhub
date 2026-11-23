@@ -42,6 +42,9 @@ type Registry struct {
 
 	dockerStatsMu sync.Mutex
 	dockerStats   map[string]bool // host ID -> stats from Docker instead of cgroup files
+
+	loadMu sync.Mutex
+	load   map[string]*loadHistory // host ID -> recent host load; kept across reconnects
 }
 
 // SetStatsFromDocker records a host's stats source and tells its agent now
@@ -331,7 +334,7 @@ func (a *Agent) Handle(m wire.AgentMessage, onEvent func(string, wire.DockerEven
 		a.hello = m.Hello
 		changed = true
 	case m.Snapshot != nil:
-		changed = !reflect.DeepEqual(a.containers, m.Snapshot.Containers)
+		changed = !reflect.DeepEqual(a.containers, m.Snapshot.Containers) || m.Snapshot.Host != nil
 		a.containers = m.Snapshot.Containers
 		a.snapshotAt = time.Unix(m.Snapshot.At, 0)
 		a.snapSum = [32]byte{}
@@ -356,6 +359,9 @@ func (a *Agent) Handle(m wire.AgentMessage, onEvent func(string, wire.DockerEven
 		}
 	}
 	a.mu.Unlock()
+	if m.Snapshot != nil && a.reg != nil {
+		a.reg.recordLoad(a.HostID, m.Snapshot.Host, time.Now())
+	}
 	if changed && a.notify != nil {
 		a.notify()
 	}
@@ -386,6 +392,9 @@ func (a *Agent) HandleSnapshot(s *wire.Snapshot, sum [32]byte) {
 	a.snapshotAt = time.Unix(s.At, 0)
 	a.snapSum = sum
 	a.mu.Unlock()
+	if a.reg != nil {
+		a.reg.recordLoad(a.HostID, s.Host, time.Now())
+	}
 	if changed && a.notify != nil {
 		a.notify()
 	}

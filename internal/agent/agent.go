@@ -74,6 +74,8 @@ type Agent struct {
 	// creds is the client certificate in use. Renewal replaces it; only one
 	// renewal runs at a time (before a session, or inside one).
 	creds atomic.Pointer[tls.Certificate]
+	// hostStats measures the whole host for the hub's placement suggestions.
+	hostStats *hostSampler
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -111,7 +113,11 @@ func New(cfg Config) (*Agent, error) {
 	if l == nil {
 		l = slog.Default()
 	}
-	return &Agent{cfg: cfg, log: l}, nil
+	disk := ""
+	if cfg.Stacks != nil {
+		disk = cfg.Stacks.Dir
+	}
+	return &Agent{cfg: cfg, log: l, hostStats: newHostSampler(disk)}, nil
 }
 
 func (a *Agent) serverName() string {
@@ -558,6 +564,7 @@ type session struct {
 	usage map[string]Usage              // container ID -> latest sample
 	list  []wire.Container              // last container list from Docker; nil until the first
 	execs map[string]*execState         // open terminals, by command ID
+	host  *wire.HostStats               // latest whole-host sample, sent with each snapshot
 }
 
 type execState struct {
@@ -787,8 +794,9 @@ func (s *session) publish() {
 			cs[i].MemLimit = u.MemLimit
 		}
 	}
+	host := s.host
 	s.mu.Unlock()
-	s.send(wire.AgentMessage{Snapshot: &wire.Snapshot{At: time.Now().Unix(), Containers: cs}})
+	s.send(wire.AgentMessage{Snapshot: &wire.Snapshot{At: time.Now().Unix(), Containers: cs, Host: host}})
 }
 
 // statsLoop samples CPU and memory for running containers (8 at a time) and
@@ -847,8 +855,10 @@ func (s *session) statsLoop() {
 			}(c.ID)
 		}
 		wg.Wait()
+		host := s.a.hostStats.Sample()
 		s.mu.Lock()
 		s.usage = next
+		s.host = host
 		s.mu.Unlock()
 		s.publish()
 	}

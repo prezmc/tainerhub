@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, BadgeCheck, Download, Plus, Rocket, Search, Star, X } from 'lucide-react'
@@ -6,6 +6,7 @@ import { api, errorText, stackProblem, type StackSaveResult } from '../api'
 import { Badge, Button, Card, ErrorNote, IconButton, Input, PageHeader, cx, useToast } from '../ui'
 import { useFleet } from '../fleet'
 import { useOpenJob, useStacks } from '../stacks'
+import { HostSelect, useDefaultHost } from '../placement'
 
 type Repo = { name: string; description: string; stars: number; pulls: number; official: boolean }
 type Tag = { name: string; updated: string; size: number }
@@ -89,9 +90,7 @@ export function NewContainerPage() {
   const [vols, setVols] = useState<Vol[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!hostId && hosts.length) setHostId((hosts.find((h) => !stackProblem(h)) ?? hosts[0]).id)
-  }, [hostId, hosts])
+  useDefaultHost(hostId, setHostId)
 
   const search = useQuery({
     queryKey: ['hub-search', submitted],
@@ -246,19 +245,7 @@ export function NewContainerPage() {
             <Input label="Name" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} disabled={!image} placeholder="my-app" hint="Container and stack name." />
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Host</span>
-              <select
-                value={hostId}
-                onChange={(e) => setHostId(e.target.value)}
-                disabled={!image}
-                className="w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none focus:ring-lime-400/60"
-              >
-                {hosts.map((h) => (
-                  <option key={h.id} value={h.id} className="bg-panel">
-                    {h.name}
-                    {!h.online ? ' (offline)' : stackProblem(h) ? ' (not ready)' : ''}
-                  </option>
-                ))}
-              </select>
+              <HostSelect value={hostId} onChange={setHostId} disabled={!image} className="w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none focus:ring-lime-400/60" />
             </label>
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Restart</span>

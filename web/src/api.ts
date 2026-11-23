@@ -95,6 +95,48 @@ export interface Host {
   containers: number
   running: number
   unhealthy: number
+  /** Recent CPU, memory and disk use; missing from older agents and offline hosts. */
+  load?: HostLoad
+}
+
+/** A host's load: averages over the last 15 minutes, plus the latest sample. */
+export interface HostLoad {
+  /** Share of all cores busy, 0-100. */
+  cpu?: number
+  cpuNow?: number
+  memAvailable: number
+  memAvailableNow: number
+  load1: number
+  /** Free and total bytes on the stacks folder's disk. */
+  diskFree?: number
+  diskTotal?: number
+  samples: number
+  since: string
+  at: string
+}
+
+/** How well a host fits some work, from /api/placement. */
+export interface PlacementHost {
+  hostId: string
+  hostName: string
+  eligible: boolean
+  reason?: string
+  /** The stack already runs here. */
+  current?: boolean
+  cpu?: number
+  mem?: number
+  cpuAfter?: number
+  memAfter?: number
+  diskFree?: number
+  /** Headroom left after placing the work, 0-100: higher is better. */
+  score?: number
+  suggested?: boolean
+}
+
+export interface Placement {
+  /** The stack's current use: CPU as % of one core, memory in bytes. */
+  footprint?: { cpu: number; mem: number }
+  hosts: PlacementHost[]
 }
 
 export interface Container {
