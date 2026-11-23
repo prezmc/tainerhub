@@ -30,6 +30,13 @@ func main() {
 
 	socket := envOr("DOCKER_SOCKET", "/var/run/docker.sock")
 	docker := agent.NewSocketDocker(socket)
+	// Container CPU and memory come from the host's cgroup files when they're
+	// mounted (see deploy/agent/compose.yml); asking Docker costs the server more.
+	if cgDir := envOr("TAINERHUB_CGROUP_DIR", "/host/sys/fs/cgroup"); docker.UseCgroups(cgDir) {
+		log.Info("reading container stats from cgroup files", "dir", cgDir)
+	} else {
+		log.Info("reading container stats from Docker; mount /sys/fs/cgroup:" + cgDir + ":ro to lower the cost")
+	}
 	dataDir := envOr("TAINERHUB_DATA_DIR", "/data")
 	cfg := agent.Config{
 		HubAddr:       os.Getenv("TAINERHUB_HUB"),

@@ -29,7 +29,7 @@ Design doc: see the "TainerHub: A Portainer Alternative — Design" doc.
 | Image update checks (every 6 hours or on demand) with an "update" badge, and Pull & recreate for standalone containers with automatic rollback | Done |
 | Users: invite by one-time link with a role, change roles, remove users | Done |
 | Resources: images, volumes, networks across hosts with "used by", pull/update, remove, prune (volume deletion admin-only) | Done |
-| Live CPU and memory per container (sampled every 10 s by the agent, same formulas as `docker stats`) | Done |
+| Live CPU and memory per container (sampled every 10 s while TainerHub is open, from cgroup files, same formulas as `docker stats`) | Done |
 | Roles (owner/admin/operator/viewer) | Enforced by the API and the UI |
 | Compose stacks: create, edit and deploy compose files per host from the browser, with streamed output; start / stop / restart / down / pull & redeploy; projects started outside TainerHub are listed and can be taken over (see below) | Done; agent side tested against a real Docker Engine |
 | Not yet: exec console, user invites, password + TOTP fallback, agent cert auto-renewal (certs last 1 year), private registries, metrics history, alerts | Phases 2 to 4 |
@@ -168,7 +168,7 @@ Set `TAINERHUB_PPROF_ADDR=127.0.0.1:6060` on the hub or an agent to serve Go's p
 - Containers: distroless images, read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`; the hub runs as a non-root user.
 - CI: `govulncheck`, `npm audit`, a Trivy image scan (fails on fixable high/critical CVEs), SBOM + provenance on images, and Dependabot for Go, npm, Actions and base images.
 - Speed: the UI gets live pushes over Server-Sent Events instead of polling; JS/CSS are pre-compressed (Brotli/gzip) with immutable caching; the whole UI is about 125 KB gzipped.
-- Light on your servers: agents sample container CPU and memory every 10 seconds only while someone has TainerHub open, and once a minute otherwise, using Docker's one-shot stats (one reading per container instead of two). Each sample is work for the Docker Engine, so this keeps an idle TainerHub close to free.
+- Light on your servers: agents read container CPU and memory straight from the kernel's cgroup files (the compose files mount `/sys/fs/cgroup` read-only for this), which costs the Docker Engine nothing. They sample every 10 seconds while someone has TainerHub open and once a minute otherwise. Without the mount, or on cgroup v1, they ask Docker instead, using one-shot stats.
 - Reliability: agents reconnect with backoff and resend full state; hub↔agent keepalives drop dead links within 90 s; Docker health checks for the hub (database ping) and the agent (recent hub contact); graceful shutdown; Postgres starts healthy before the hub.
 
 No software can promise zero vulnerabilities. The plan is defense in depth plus automated scanning on every push, and Dependabot keeps dependencies current.
