@@ -154,6 +154,15 @@ func (a *Agent) Run(ctx context.Context) error {
 			backoff = time.Second
 			continue
 		}
+		// The hub's clock says the certificate has expired even though ours
+		// did not (or it expired during the session): renew it right away.
+		if errors.Is(err, errCertExpired) {
+			a.log.Warn("the hub refused the connection because the client certificate has expired; renewing it", "expired", a.creds.Load().Leaf.NotAfter)
+			if a.renewNow(ctx) {
+				backoff = time.Second
+				continue
+			}
+		}
 		if time.Since(started) > time.Minute {
 			backoff = time.Second
 		}
@@ -333,13 +342,36 @@ func (a *Agent) certDue(cert *tls.Certificate) bool {
 	return cert.Leaf != nil && time.Until(cert.Leaf.NotAfter) < a.cfg.RenewBefore
 }
 
-// renewIfDue renews the client certificate if it is near expiry and reports
-// whether it did. Failures only log a warning: the current certificate keeps
-// working until it expires, and the next check tries again.
+// errCertExpired means the hub refused to connect because our certificate
+// has expired; the hub still renews it for wire.RenewGrace after expiry.
+var errCertExpired = errors.New(wire.CertExpiredText)
+
+// renewIfDue renews the client certificate if it is near expiry (or past
+// it) and reports whether it did. Failures only log a warning: the current
+// certificate keeps working until it expires, and the next check (on the
+// next connection attempt, with backoff) tries again.
 func (a *Agent) renewIfDue(ctx context.Context) bool {
 	cur := a.creds.Load()
 	if cur == nil || !a.certDue(cur) {
 		return false
+	}
+	return a.renewNow(ctx)
+}
+
+// renewNow renews the client certificate regardless of its expiry date.
+func (a *Agent) renewNow(ctx context.Context) bool {
+	cur := a.creds.Load()
+	if cur == nil || cur.Leaf == nil {
+		return false
+	}
+	if since := time.Since(cur.Leaf.NotAfter); since > 0 {
+		if since > wire.RenewGrace {
+			a.log.Error("the client certificate expired too long ago for the hub to renew it; re-enroll this agent with a new join token from the Hosts page",
+				"expired", cur.Leaf.NotAfter, "renewable_for", wire.RenewGrace)
+		} else {
+			a.log.Warn("the client certificate has expired; asking the hub to renew it", "expired", cur.Leaf.NotAfter,
+				"renewable_until", cur.Leaf.NotAfter.Add(wire.RenewGrace))
+		}
 	}
 	next, err := a.renew(ctx, *cur)
 	if err != nil {
@@ -625,7 +657,11 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("hub: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		text := strings.TrimSpace(string(msg))
+		if resp.StatusCode == http.StatusUnauthorized && strings.Contains(text, wire.CertExpiredText) {
+			return fmt.Errorf("hub: %s: %w", resp.Status, errCertExpired)
+		}
+		return fmt.Errorf("hub: %s: %s", resp.Status, text)
 	}
 	a.log.Info("connected to hub", "hub", a.cfg.HubAddr, "proto", resp.Proto)
 

@@ -211,6 +211,7 @@ type Agent struct {
 	hello      *wire.Hello
 	containers []wire.Container
 	snapshotAt time.Time
+	snapSum    [32]byte // hash of the last snapshot's container list, if known
 	pending    map[string]chan wire.CommandResult
 	logs       map[string]chan wire.LogChunk
 }
@@ -333,6 +334,7 @@ func (a *Agent) Handle(m wire.AgentMessage, onEvent func(string, wire.DockerEven
 		changed = !reflect.DeepEqual(a.containers, m.Snapshot.Containers)
 		a.containers = m.Snapshot.Containers
 		a.snapshotAt = time.Unix(m.Snapshot.At, 0)
+		a.snapSum = [32]byte{}
 	case m.Result != nil:
 		if ch, ok := a.pending[m.Result.CommandID]; ok {
 			ch <- *m.Result
@@ -364,6 +366,28 @@ func (a *Agent) Handle(m wire.AgentMessage, onEvent func(string, wire.DockerEven
 		if onEvent != nil {
 			onEvent(a.HostID, *m.Event)
 		}
+	}
+}
+
+// HandleSnapshot stores a container snapshot whose list hashes to sum (a
+// hash of its raw JSON). Comparing hashes tells whether the list changed far
+// more cheaply than comparing up to 8 MiB of decoded containers field by
+// field. A zero sum falls back to that comparison.
+func (a *Agent) HandleSnapshot(s *wire.Snapshot, sum [32]byte) {
+	a.mu.Lock()
+	a.lastSeen = time.Now()
+	var changed bool
+	if sum != ([32]byte{}) && a.snapSum != ([32]byte{}) {
+		changed = sum != a.snapSum
+	} else {
+		changed = !reflect.DeepEqual(a.containers, s.Containers)
+	}
+	a.containers = s.Containers
+	a.snapshotAt = time.Unix(s.At, 0)
+	a.snapSum = sum
+	a.mu.Unlock()
+	if changed && a.notify != nil {
+		a.notify()
 	}
 }
 

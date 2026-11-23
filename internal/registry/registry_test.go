@@ -146,3 +146,33 @@ func TestStatsFromDockerTellsAgentNowAndAtAttach(t *testing.T) {
 		t.Fatal("switching back didn't stick")
 	}
 }
+
+// Snapshots with the same container-list hash don't wake the UI; a new hash
+// does, and so does the first snapshot (nothing to compare with yet).
+func TestHandleSnapshotComparesHashes(t *testing.T) {
+	r := New()
+	a := r.Attach("h1", "host-1", func() {})
+	woke := func(f func()) bool {
+		ch := r.Changed()
+		f()
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+	cs := []wire.Container{{ID: "c1", Name: "web"}}
+	if !woke(func() { a.HandleSnapshot(&wire.Snapshot{At: 1, Containers: cs}, [32]byte{1}) }) {
+		t.Fatal("first snapshot did not notify")
+	}
+	if woke(func() { a.HandleSnapshot(&wire.Snapshot{At: 2, Containers: cs}, [32]byte{1}) }) {
+		t.Fatal("unchanged snapshot notified")
+	}
+	if !woke(func() { a.HandleSnapshot(&wire.Snapshot{At: 3, Containers: nil}, [32]byte{2}) }) {
+		t.Fatal("changed snapshot did not notify")
+	}
+	if st := a.Status(); len(st.Containers) != 0 || st.SnapshotAt.Unix() != 3 {
+		t.Fatalf("status %+v", st)
+	}
+}

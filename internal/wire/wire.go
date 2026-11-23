@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 )
 
 const (
@@ -25,6 +26,15 @@ const (
 	// ProtocolVersion is sent in Hello; bump on incompatible changes.
 	ProtocolVersion = 1
 )
+
+// RenewGrace is how long after its certificate expired an agent may still
+// renew it (and only renew it: connecting needs an unexpired one), so a host
+// that was switched off for a few months comes back without re-enrolling.
+const RenewGrace = 180 * 24 * time.Hour
+
+// CertExpiredText is in the hub's reply when it refuses a connection because
+// the agent's certificate has expired, so the agent knows to renew it.
+const CertExpiredText = "client certificate expired"
 
 // EnrollRequest is sent once, with the one-time join token, to obtain a
 // client certificate. The TLS connection for this call has no client cert.
@@ -312,18 +322,27 @@ func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{s: s}
 }
 
-func (d *Decoder) Decode(v any) error {
+// Next returns the next message's raw JSON without decoding it, so a reader
+// can decide whether (and when) a message is worth decoding. The bytes are
+// only valid until the next call to Next or Decode.
+func (d *Decoder) Next() ([]byte, error) {
 	for d.s.Scan() {
-		line := d.s.Bytes()
-		if len(line) == 0 {
-			continue
+		if line := d.s.Bytes(); len(line) > 0 {
+			return line, nil
 		}
-		return json.Unmarshal(line, v)
 	}
 	if err := d.s.Err(); err != nil {
+		return nil, err
+	}
+	return nil, io.EOF
+}
+
+func (d *Decoder) Decode(v any) error {
+	line, err := d.Next()
+	if err != nil {
 		return err
 	}
-	return io.EOF
+	return json.Unmarshal(line, v)
 }
 
 func ValidAction(a string) bool {
