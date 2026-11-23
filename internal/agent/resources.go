@@ -76,6 +76,10 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return r, err
 	case wire.OpNetworksPrune:
 		return d.prune(ctx, "/networks/prune", nil, "NetworksDeleted")
+	case wire.OpContainerExport:
+		return d.ExportContainer(ctx, op.Target)
+	case wire.OpContainerCreate:
+		return d.CreateContainer(ctx, op.Create)
 	}
 	return nil, errors.New("unknown operation")
 }

@@ -647,6 +647,7 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	hello.Protocol = wire.ProtocolVersion
 	hello.AgentVersion = a.cfg.Version
 	_, hello.Transfer = a.cfg.Docker.(Transferer)
+	_, hello.ContainerMove = a.cfg.Docker.(ContainerMover)
 	if a.cfg.Stacks != nil {
 		sup := a.cfg.Stacks.Supported(ctx)
 		hello.Stacks = &sup
@@ -903,7 +904,7 @@ func (s *session) handle(c wire.Command) {
 		go func() {
 			timeout := time.Minute
 			switch c.Op.Kind {
-			case wire.OpImagePull, wire.OpImagesPrune, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade, wire.OpStackDirRemove:
+			case wire.OpImagePull, wire.OpImagesPrune, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade, wire.OpStackDirRemove, wire.OpContainerExport, wire.OpContainerCreate:
 				timeout = 15 * time.Minute // pulls and registry round trips
 			}
 			ctx, cancel := context.WithTimeout(s.ctx, timeout)

@@ -48,12 +48,39 @@ Each row has buttons for **Logs**, **Stop** or **Start** (or **Resume** for a pa
 | **Kill** | Sends `SIGKILL` at once, with no clean shutdown. |
 | **Pull & recreate** | For standalone containers: pulls the newest version of its image and replaces the container with an identical one. If the new one doesn't start, the old one is put back automatically. |
 | **Update via its stack** | For containers that belong to a compose project: opens the Stacks page for that project. |
+| **Move to another host…** | For standalone containers: recreates it, with its volumes, on another host. Admins only. See [Moving a container to another host](#moving-a-container-to-another-host). |
+| **Move with its stack…** | For containers that belong to a compose project: they move with their stack. Admins only. |
 
 Stop, Kill, Remove and Pull & recreate ask you to confirm first.
 
 **Removing a container** deletes it even if it's running. Its image is kept. For operators, its named volumes are kept too. Admins get an extra checkbox to remove the container's volumes at the same time. Volumes that other containers still use are kept, and TainerHub tells you which ones and why.
 
 If a container belongs to a stack, removing it doesn't stop it coming back: redeploying the stack recreates it.
+
+### Moving a container to another host
+
+Admins can move a **standalone container** (one started with `docker run` or another tool, not part of a compose project) to another host: **More actions → Move to another host…**, or **Move…** in its details panel. Containers that belong to a compose project, including those made with **New container**, move with their stack instead (see [Moving a stack to another host](#moving-a-stack-to-another-host)).
+
+Pick the host: each one shows its CPU and memory now and after the move (the container's current use added), and the one with the most room is suggested. TainerHub then checks both hosts and shows what will happen, or what's in the way. The move works like a stack's:
+
+1. Pulls the container's image on the new host while it still runs.
+2. Stops it on the old host (if it was running). **It's down from here** until it runs on the new one.
+3. Copies its volumes to the new host through the hub, with owners and permissions.
+4. Creates it on the new host with the same settings: command, environment, labels, ports, restart policy, resource limits, volumes, networks and so on, exactly as Pull & recreate does. Settings that came from the image are left to the image. A running container is started, and TainerHub waits until it runs and is healthy. A stopped one stays stopped.
+5. Removes the old container. **Its volumes stay on the old host** as a backup until you click **Delete old copy** in the container's details panel.
+
+If any step from 2 on fails, TainerHub removes what reached the new host (the container, copied volumes and networks it created) and starts the container on the old host again.
+
+Details:
+
+- **Unnamed volumes** (from the image's `VOLUME` lines, or `-v /path`) are copied too. On the new host they keep their name and the container mounts them by it, so the data comes along.
+- **Host folders** (`-v /srv/app:/app`) aren't copied. The dialog lists them; tick that the new host has its own copy at the same paths.
+- **Volumes that keep their data elsewhere** (NFS, CIFS, other drivers) aren't copied: the new host must already have a volume of that name.
+- **Volumes other containers also use** are copied, and the others keep using the old host's copy, which then isn't offered for deletion.
+- **Networks**: Docker's own (`bridge`, `host`, `none`) are used as they are. Other networks the new host already has are joined. A missing bridge network is created with the same settings (and the same address range only if the container has a fixed IP). Other missing networks (overlay, macvlan) block the move: create them on the new host first.
+- **The image tag** is pulled again on the new host. If the tag now points to a newer version, the moved container runs that one.
+
+A move can't start when the new host already has a container or volume of that name, a port the container publishes is taken there, or it lacks the disk space. Containers that use another container's network, volumes (`--volumes-from`) or legacy links, or an image without a name, can't be moved. Both hosts need an agent from this version or later. Moves are written to the audit log.
 
 ### Image updates
 
@@ -354,6 +381,7 @@ There are four roles. Each one can do everything the role below it can.
 | Pull and remove images; remove networks; prune images and networks | | ✓ | ✓ | ✓ |
 | See environment values, label values, command arguments and health-check output | | | ✓ | ✓ |
 | Read and edit compose files and `.env`; create and delete stacks; take over projects | | | ✓ | ✓ |
+| Move stacks and standalone containers to another host | | | ✓ | ✓ |
 | New container from Docker Hub | | | ✓ | ✓ |
 | Delete volumes; prune volumes; remove a container together with its volumes | | | ✓ | ✓ |
 | Open a terminal in a container | | | ✓ | ✓ |

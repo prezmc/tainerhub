@@ -11,10 +11,14 @@ import (
 )
 
 // realHelper uses a public image for helper containers, since the test
-// doesn't run inside the agent's container.
+// doesn't run inside the agent's container. Like the agent's image, it sets
+// a user: Docker's copyUIDGID would chown everything to it, so owners only
+// survive if the copy doesn't use it.
 type realHelper struct{ *SocketDocker }
 
-func (realHelper) HelperImage(context.Context) (string, error) { return "alpine:3.20", nil }
+func (realHelper) HelperImage(context.Context) (string, error) {
+	return "gcr.io/distroless/static-debian12:nonroot", nil
+}
 
 // renamed makes one Docker look like a second host by giving the receiver's
 // copy of a volume another name.

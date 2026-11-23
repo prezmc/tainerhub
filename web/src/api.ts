@@ -386,6 +386,8 @@ export interface StackDetail {
 
 export interface StackMove {
   id: string
+  /** A stack's move, or a single standalone container's (stackName is then the container's name). */
+  kind: 'stack' | 'container'
   stackId: string | null
   stackName: string
   fromHost: string
@@ -394,7 +396,7 @@ export interface StackMove {
   error?: string
   bytes: number
   /** Data the move left on a host: the old copy, or a partial one. */
-  leftovers?: { host_id: string; volumes?: string[]; dir?: string }
+  leftovers?: { host_id: string; volumes?: string[]; dir?: string; container?: string }
   leftoversRemovedAt?: string
   startedBy: string
   startedAt: string
@@ -416,6 +418,10 @@ export interface MoveReport {
   sizeUnknown?: boolean
   diskFree?: number
   images: string[]
+  /** Container moves only: its name, whether it runs, and networks created on the new host. */
+  container?: string
+  running?: boolean
+  networks?: string[]
 }
 
 export interface StackSaveResult {

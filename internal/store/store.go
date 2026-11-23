@@ -874,12 +874,17 @@ type MoveLeftovers struct {
 	HostID  string   `json:"host_id"`
 	Volumes []string `json:"volumes,omitempty"`
 	Dir     string   `json:"dir,omitempty"` // stack name whose folder is left, if any
+	// Container is a container left on the host (container moves only).
+	Container string `json:"container,omitempty"`
 }
 
-func (l *MoveLeftovers) Empty() bool { return l == nil || (len(l.Volumes) == 0 && l.Dir == "") }
+func (l *MoveLeftovers) Empty() bool {
+	return l == nil || (len(l.Volumes) == 0 && l.Dir == "" && l.Container == "")
+}
 
 type StackMove struct {
 	ID                 string         `json:"id"`
+	Kind               string         `json:"kind"` // "stack" or "container"
 	StackID            *string        `json:"stackId"`
 	StackName          string         `json:"stackName"`
 	FromHost           string         `json:"fromHost"`
@@ -894,12 +899,12 @@ type StackMove struct {
 	FinishedAt         *time.Time     `json:"finishedAt,omitempty"`
 }
 
-const moveCols = `id::text, stack_id::text, stack_name, from_host::text, to_host::text, state, error, bytes, leftovers, leftovers_removed_at, started_by, started_at, finished_at`
+const moveCols = `id::text, kind, stack_id::text, stack_name, from_host::text, to_host::text, state, error, bytes, leftovers, leftovers_removed_at, started_by, started_at, finished_at`
 
 func scanMove(row pgx.Row) (StackMove, error) {
 	var m StackMove
 	var left []byte
-	err := row.Scan(&m.ID, &m.StackID, &m.StackName, &m.FromHost, &m.ToHost, &m.State, &m.Error, &m.Bytes, &left, &m.LeftoversRemovedAt, &m.StartedBy, &m.StartedAt, &m.FinishedAt)
+	err := row.Scan(&m.ID, &m.Kind, &m.StackID, &m.StackName, &m.FromHost, &m.ToHost, &m.State, &m.Error, &m.Bytes, &left, &m.LeftoversRemovedAt, &m.StartedBy, &m.StartedAt, &m.FinishedAt)
 	if err == nil && len(left) > 0 {
 		m.Leftovers = &MoveLeftovers{}
 		err = json.Unmarshal(left, m.Leftovers)
@@ -998,6 +1003,45 @@ func (s *Store) StackMoves(ctx context.Context, stackID string, limit int) ([]St
 func (s *Store) LeftoversRemoved(ctx context.Context, id string) error {
 	_, err := s.db.Exec(ctx, `UPDATE stack_moves SET leftovers_removed_at = now() WHERE id = $1::uuid`, id)
 	return err
+}
+
+// StartContainerMove records a move of standalone container name as
+// running. ErrConflict if it is already being moved.
+func (s *Store) StartContainerMove(ctx context.Context, name, fromHost, toHost, by string) (StackMove, error) {
+	m, err := scanMove(s.db.QueryRow(ctx,
+		`INSERT INTO stack_moves (kind, stack_name, from_host, to_host, state, started_by)
+		 VALUES ('container', $1, $2::uuid, $3::uuid, 'running', $4) RETURNING `+moveCols,
+		name, fromHost, toHost, by))
+	if isUniqueViolation(err) {
+		return StackMove{}, ErrConflict
+	}
+	return m, err
+}
+
+// CommitContainerMove records a container move as done.
+func (s *Store) CommitContainerMove(ctx context.Context, moveID string, bytes int64, left *MoveLeftovers) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE stack_moves SET state = 'done', bytes = $2, leftovers = $3, finished_at = now() WHERE id = $1::uuid`,
+		moveID, bytes, leftoversJSON(left))
+	return err
+}
+
+// ContainerMoves lists the latest container moves, newest first.
+func (s *Store) ContainerMoves(ctx context.Context, limit int) ([]StackMove, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+moveCols+` FROM stack_moves WHERE kind = 'container' ORDER BY started_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []StackMove{}
+	for rows.Next() {
+		m, err := scanMove(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // SetMoveLeftovers records where a running move has put data so far, so an

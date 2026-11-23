@@ -71,6 +71,7 @@ const jobVerb: Record<string, string> = {
 }
 
 const jobTitle: Record<string, string> = {
+  move: 'Move',
   deploy: 'Deploy',
   pull: 'Pull & redeploy',
   start: 'Start',
@@ -170,6 +171,7 @@ export function JobPanel({ jobId, onClose }: { jobId: string; onClose: () => voi
       setState(d.ok ? 'ok' : 'failed')
       setError(d.error)
       qc.invalidateQueries({ queryKey: ['stacks'] })
+      qc.invalidateQueries({ queryKey: ['container-moves'] })
       if (m) {
         qc.invalidateQueries({ queryKey: ['stack', m.stackId] })
         const what = `${jobTitle[m.action] ?? m.action} ${m.stack}`

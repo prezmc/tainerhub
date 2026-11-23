@@ -256,6 +256,10 @@ func (s *Server) removeLeftovers(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusConflict, "nothing left to remove")
 		return
 	}
+	if mv.Kind == "container" {
+		s.removeContainerLeftovers(w, r, mv)
+		return
+	}
 	left := mv.Leftovers
 	// Never touch the host the stack runs on now (it may have moved back).
 	if mv.StackID != nil {

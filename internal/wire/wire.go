@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -113,6 +114,9 @@ type Hello struct {
 	// Transfer says the agent can send and receive volume and stack-folder
 	// data (TransferCommand). False from older agents.
 	Transfer bool `json:"transfer,omitempty"`
+	// ContainerMove says the agent can export a container's settings and
+	// create a container from them (OpContainerExport, OpContainerCreate).
+	ContainerMove bool `json:"container_move,omitempty"`
 }
 
 // StackSupport reports the agent's compose setup. Error is set (and stacks
@@ -550,6 +554,8 @@ type Operation struct {
 	Kind   string `json:"kind"`
 	Target string `json:"target,omitempty"` // container / image / volume / network ID or name
 	Arg    string `json:"arg,omitempty"`    // image reference for pulls, "all" for prunes
+	// Create is OpContainerCreate's container (and the networks it needs).
+	Create *ContainerCreate `json:"create,omitempty"`
 	// Files are a compose file and .env to check (OpStackPreview only).
 	Files *StackFiles `json:"files,omitempty"`
 }
@@ -612,7 +618,120 @@ const (
 	// folder, and what the running containers use now. Used before taking
 	// over a project started outside TainerHub. Result: StackPreview.
 	OpStackPreview = "stack.preview"
+	// OpContainerExport describes standalone container Target for moving it
+	// to another host: the body to create it again (what Pull & recreate
+	// uses), its volumes with sizes, host folders, networks and published
+	// ports. Result: ContainerExport.
+	OpContainerExport = "container.export"
+	// OpContainerCreate creates (and with Start, starts) the container in
+	// Create, first creating any of its bridge networks this host lacks.
+	// Refused for compose containers and TainerHub's own names. Result:
+	// ContainerCreateResult.
+	OpContainerCreate = "container.create"
 )
+
+// ContainerExport describes a standalone container on its host.
+type ContainerExport struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Image   string `json:"image"`    // reference it was created from
+	ImageID string `json:"image_id"` // image it runs
+	Running bool   `json:"running"`
+	Project string `json:"project,omitempty"` // compose project label, if any
+	// Spec is the body for Docker's POST /containers/create: the
+	// container's own settings, with every volume (anonymous ones too)
+	// mounted by name.
+	Spec        json.RawMessage `json:"spec"`
+	Volumes     []ExportVolume  `json:"volumes"`
+	Binds       []string        `json:"binds"` // host folders it mounts
+	Networks    []NetworkSpec   `json:"networks"`
+	NetworkMode string          `json:"network_mode,omitempty"`
+	Ports       []string        `json:"ports"` // published host ports, e.g. "8080/tcp"
+	Devices     bool            `json:"devices,omitempty"`
+	Privileged  bool            `json:"privileged,omitempty"`
+	// Problems are settings that tie it to this host (another container's
+	// network or volumes, say), so it can't move.
+	Problems []string `json:"problems,omitempty"`
+}
+
+type ExportVolume struct {
+	Name        string            `json:"name"`
+	Destination string            `json:"destination"`
+	Anonymous   bool              `json:"anonymous,omitempty"`
+	Driver      string            `json:"driver,omitempty"`
+	Options     bool              `json:"options,omitempty"` // mounts storage from elsewhere (NFS, CIFS)
+	Size        int64             `json:"size"`              // bytes; -1 if unknown
+	Labels      map[string]string `json:"labels,omitempty"`
+	UsedBy      []string          `json:"used_by,omitempty"` // other containers mounting it
+}
+
+// NetworkSpec is a network a container is attached to, as needed to create
+// it on another host.
+type NetworkSpec struct {
+	Name       string            `json:"name"`
+	Driver     string            `json:"driver"`
+	Builtin    bool              `json:"builtin,omitempty"` // bridge, host, none
+	Internal   bool              `json:"internal,omitempty"`
+	Attachable bool              `json:"attachable,omitempty"`
+	IPv6       bool              `json:"ipv6,omitempty"`
+	Options    map[string]string `json:"options,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	IPAM       json.RawMessage   `json:"ipam,omitempty"` // Docker's IPAM block, as is
+}
+
+// ContainerCreate is OpContainerCreate's request.
+type ContainerCreate struct {
+	Name     string          `json:"name"`
+	Spec     json.RawMessage `json:"spec"`
+	Networks []NetworkSpec   `json:"networks,omitempty"` // created first if missing
+	Start    bool            `json:"start,omitempty"`
+}
+
+type ContainerCreateResult struct {
+	ID       string   `json:"id"`
+	Networks []string `json:"networks,omitempty"` // networks it created
+}
+
+// MaxContainerSpec caps a container's create body.
+const MaxContainerSpec = 1 << 20
+
+// ValidContainerCreate checks what can be checked without Docker.
+func ValidContainerCreate(c *ContainerCreate) error {
+	if c == nil {
+		return errors.New("nothing to create")
+	}
+	if !ValidContainerRef(c.Name) || strings.HasPrefix(c.Name, "tainerhub") {
+		return errors.New("invalid container name")
+	}
+	if len(c.Spec) == 0 || len(c.Spec) > MaxContainerSpec {
+		return errors.New("invalid container settings")
+	}
+	var spec struct {
+		Image  string
+		Labels map[string]string
+	}
+	if err := json.Unmarshal(c.Spec, &spec); err != nil {
+		return errors.New("unreadable container settings")
+	}
+	if !ValidImageRef(spec.Image) {
+		return errors.New("invalid image reference")
+	}
+	if spec.Labels["com.docker.compose.project"] != "" {
+		return errors.New("compose containers are created by their stack")
+	}
+	if len(c.Networks) > 16 {
+		return errors.New("too many networks")
+	}
+	for _, n := range c.Networks {
+		if !ValidContainerRef(n.Name) || n.Builtin {
+			return errors.New("invalid network name")
+		}
+		if n.Driver != "bridge" {
+			return fmt.Errorf("network %s uses the %s driver; only bridge networks are created", n.Name, n.Driver)
+		}
+	}
+	return nil
+}
 
 // StackPreview is what OpStackPreview found.
 type StackPreview struct {
@@ -746,6 +865,7 @@ var OpKinds = map[string]bool{
 	OpImagesCheckUpdates: false, OpContainerRecreate: true,
 	OpDockerPlan: false, OpDockerUpgrade: true,
 	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false,
+	OpContainerExport: false, OpContainerCreate: true,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -754,7 +874,7 @@ func ValidOperation(op Operation) error {
 		return errors.New("unknown operation")
 	}
 	switch op.Kind {
-	case OpContainerInspect, OpVolumeRemove, OpNetworkRemove, OpContainerRecreate:
+	case OpContainerInspect, OpVolumeRemove, OpNetworkRemove, OpContainerRecreate, OpContainerExport:
 		if !ValidContainerRef(op.Target) {
 			return errors.New("invalid target")
 		}
@@ -799,6 +919,11 @@ func ValidOperation(op Operation) error {
 		if op.Arg != "" && op.Arg != "all" {
 			return errors.New("invalid prune mode")
 		}
+	case OpContainerCreate:
+		return ValidContainerCreate(op.Create)
+	}
+	if op.Create != nil {
+		return errors.New("only container.create takes a container")
 	}
 	return nil
 }

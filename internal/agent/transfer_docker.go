@@ -119,7 +119,10 @@ func (d *SocketDocker) ArchiveGet(ctx context.Context, id, path string) (io.Read
 }
 
 func (d *SocketDocker) ArchivePut(ctx context.Context, id, path string, tar io.Reader) error {
-	q := url.Values{"path": {path}, "copyUIDGID": {"true"}, "noOverwriteDirNonDir": {"true"}}
+	// No copyUIDGID: Docker then keeps each entry's owner from the archive.
+	// With it, Docker chowns everything to the helper container's user,
+	// which for the agent's image (USER 0) makes every file root's.
+	q := url.Values{"path": {path}, "noOverwriteDirNonDir": {"true"}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://docker/containers/"+url.PathEscape(id)+"/archive?"+q.Encode(), tar)
 	if err != nil {
 		return err
