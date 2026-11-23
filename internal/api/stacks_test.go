@@ -5,8 +5,34 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prezmc/tainerhub/internal/store"
 	"github.com/prezmc/tainerhub/internal/wire"
 )
+
+func TestUnmanagedProject(t *testing.T) {
+	cs := []wire.Container{
+		{Project: "tainerhub", State: "running"},
+		{Project: "site", State: "running"},
+		{Project: "", State: "running"},
+	}
+	stacks := []store.Stack{
+		{HostID: "h1", Name: "site"},
+		{HostID: "h2", Name: "tainerhub"}, // a stack on another host doesn't count
+	}
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"tainerhub", true}, // running, not managed here: must be taken over deliberately
+		{"site", false},     // already managed: CreateStack reports the duplicate
+		{"new-app", false},  // nothing running under that name
+		{"", false},
+	} {
+		if got := unmanagedProject(cs, stacks, "h1", tc.name); got != tc.want {
+			t.Errorf("%q: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
 
 func TestJobOutputReplayAndTrim(t *testing.T) {
 	var l jobList

@@ -57,6 +57,8 @@ type SocketDocker struct {
 
 	cg        *cgroupStats // reads stats from kernel files when the host's cgroups are mounted
 	useDocker atomic.Bool  // the hub asked for stats from Docker even so
+
+	selfc selfCache // the agent's own container, found on first use
 }
 
 // SetStatsFromDocker switches between cgroup files and the Docker API for
@@ -283,6 +285,11 @@ func (d *SocketDocker) Action(ctx context.Context, id, action string) error {
 	}
 	if !wire.ValidContainerRef(id) {
 		return errors.New("invalid container id")
+	}
+	if takesDown(action) {
+		if err := d.guardSelf(ctx, id); err != nil {
+			return err
+		}
 	}
 	id = url.PathEscape(id)
 	var resp *http.Response

@@ -68,7 +68,7 @@ export function NewStackPage() {
   const validName = /^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)
 
   const save = useMutation({
-    mutationFn: (deploy: boolean) => api<StackSaveResult>('/api/stacks', { method: 'POST', body: { hostId, name, compose, env, deploy } }),
+    mutationFn: (deploy: boolean) => api<StackSaveResult>('/api/stacks', { method: 'POST', body: { hostId, name, compose, env, deploy, adopt: adopting } }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['stacks'] })
       if (res.deployError) toast('bad', `Saved, but the deploy didn't start: ${res.deployError}`)
@@ -135,7 +135,12 @@ export function NewStackPage() {
               readOnly={adopting}
               hint={name && !validName ? 'Use lowercase letters, digits, - and _, starting with a letter or digit.' : NAME_HINT}
             />
-            {existing && !existing.managed && (
+            {existing && !existing.managed && !adopting && (
+              <p className="text-xs text-rose-300">
+                A compose project called {name} is already running on {existing.hostName}. Choose another name, or use Manage in TainerHub next to it on the Stacks page to take it over.
+              </p>
+            )}
+            {existing && !existing.managed && adopting && (
               <p className="rounded-[3px] bg-lime-500/10 px-3 py-2 text-xs leading-relaxed text-lime-100 ring-1 ring-inset ring-lime-500/20">
                 <strong>{name}</strong> is already running on {existing.hostName}, started outside TainerHub. Deploying takes it over: compose recreates its containers from
                 this file. Named volumes are reused; relative paths now point into the stack folder, so move bind-mounted data there first.
@@ -144,10 +149,10 @@ export function NewStackPage() {
             {existing?.managed && <p className="text-xs text-rose-300">This host already has a stack called {name}.</p>}
             <ErrorNote error={error} />
             <div className="flex flex-col gap-2">
-              <Button variant="primary" icon={RefreshCw} name="action" value="deploy" loading={save.isPending && save.variables} disabled={!validName || !!problem || !!existing?.managed || save.isPending}>
+              <Button variant="primary" icon={RefreshCw} name="action" value="deploy" loading={save.isPending && save.variables} disabled={!validName || !!problem || !!existing?.managed || (!!existing && !adopting) || save.isPending}>
                 Save & deploy
               </Button>
-              <Button icon={Save} name="action" value="save" loading={save.isPending && !save.variables} disabled={!validName || !hostId || !!existing?.managed || save.isPending}>
+              <Button icon={Save} name="action" value="save" loading={save.isPending && !save.variables} disabled={!validName || !hostId || !!existing?.managed || (!!existing && !adopting) || save.isPending}>
                 Save without deploying
               </Button>
             </div>
