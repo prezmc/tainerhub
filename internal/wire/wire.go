@@ -22,6 +22,9 @@ const (
 	PathEnroll  = "/v1/enroll"
 	PathConnect = "/v1/connect"
 	PathRenew   = "/v1/renew"
+	// PathTransfer + a transfer ID: the sending agent POSTs a tar stream and
+	// the receiving agent GETs it; the hub joins the two. See TransferCommand.
+	PathTransfer = "/v1/transfer/"
 
 	// ProtocolVersion is sent in Hello; bump on incompatible changes.
 	ProtocolVersion = 1
@@ -107,6 +110,9 @@ type Hello struct {
 	// OwnProject is the compose project the agent itself runs in (on the
 	// hub's server, the hub's). The agent refuses stack operations on it.
 	OwnProject string `json:"own_project,omitempty"`
+	// Transfer says the agent can send and receive volume and stack-folder
+	// data (TransferCommand). False from older agents.
+	Transfer bool `json:"transfer,omitempty"`
 }
 
 // StackSupport reports the agent's compose setup. Error is set (and stacks
@@ -184,7 +190,10 @@ type Command struct {
 	Exec       *ExecStart  `json:"exec,omitempty"`
 	ExecInput  *ExecInput  `json:"exec_input,omitempty"`
 	ExecResize *ExecResize `json:"exec_resize,omitempty"`
-	Cancel     string      `json:"cancel,omitempty"` // ID of a running command to stop
+	// Transfer sends or receives one volume or stack folder through the hub.
+	// Its CommandResult carries a TransferResult; Cancel stops it.
+	Transfer *TransferCommand `json:"transfer,omitempty"`
+	Cancel   string           `json:"cancel,omitempty"` // ID of a running command to stop
 }
 
 // ---------------- exec (terminal) ----------------
@@ -233,6 +242,109 @@ func validTermSize(cols, rows int) bool {
 }
 
 func ValidExecResize(r ExecResize) bool { return validTermSize(r.Cols, r.Rows) }
+
+// ---------------- data transfers ----------------
+
+// Transfer roles.
+const (
+	TransferSend    = "send"
+	TransferReceive = "receive"
+)
+
+// Transfer item kinds.
+const (
+	// TransferVolume is a named Docker volume using the local driver with no
+	// options. The receiver creates it with the same labels, so compose adopts
+	// it as its own. Volumes with options (NFS, CIFS, bind) keep their data
+	// elsewhere: copying one would write into that same share, so they are
+	// refused, and compose recreates them from the compose file instead.
+	TransferVolume = "volume"
+	// TransferStackDir is a stack's folder under the stacks directory (its
+	// relative bind mounts, such as ./data), named by the stack's name.
+	TransferStackDir = "stackdir"
+)
+
+// TransferRoot is where helper containers mount the data, and so the
+// top-level folder of every entry in a transfer's tar stream.
+const TransferRoot = "th-data"
+
+// MaxTransferBytes caps one transfer's tar stream (1 TiB).
+const MaxTransferBytes = 1 << 40
+
+// TransferCommand asks an agent to send or receive one item. The data is a
+// tar stream (every entry under TransferRoot/) that goes from the sender's
+// POST to the receiver's GET of PathTransfer+ID on the hub, which ties the
+// ID to the two hosts. Both report the stream's size and SHA-256, and the
+// hub compares them.
+type TransferCommand struct {
+	ID       string       `json:"id"`   // transfer ID: 32 lowercase hex characters
+	Role     string       `json:"role"` // TransferSend or TransferReceive
+	Item     TransferItem `json:"item"`
+	MaxBytes int64        `json:"max_bytes"` // abort past this many bytes of tar stream
+}
+
+type TransferItem struct {
+	Kind string `json:"kind"` // TransferVolume or TransferStackDir
+	Name string `json:"name"` // volume name, or stack name for TransferStackDir
+	// Labels for the receiver to create the volume with (volumes only).
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// TransferResult is what each side saw of the tar stream.
+type TransferResult struct {
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256"`
+	Files  int    `json:"files"` // entries in the archive
+}
+
+// ValidTransferID accepts the hub's transfer IDs: 32 lowercase hex characters.
+func ValidTransferID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !(s[i] >= '0' && s[i] <= '9' || s[i] >= 'a' && s[i] <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidTransferCommand(c TransferCommand) error {
+	if !ValidTransferID(c.ID) {
+		return errors.New("invalid transfer id")
+	}
+	if c.Role != TransferSend && c.Role != TransferReceive {
+		return errors.New("invalid transfer role")
+	}
+	if c.MaxBytes <= 0 || c.MaxBytes > MaxTransferBytes {
+		return errors.New("invalid transfer size limit")
+	}
+	switch c.Item.Kind {
+	case TransferVolume:
+		if !ValidContainerRef(c.Item.Name) {
+			return errors.New("invalid volume name")
+		}
+		if len(c.Item.Labels) > 64 {
+			return errors.New("too many volume labels")
+		}
+		for k, v := range c.Item.Labels {
+			if len(k) > 256 || len(v) > 4096 {
+				return errors.New("volume label too long")
+			}
+		}
+	case TransferStackDir:
+		if !ValidStackName(c.Item.Name) {
+			return errors.New("invalid stack name")
+		}
+		if len(c.Item.Labels) > 0 {
+			return errors.New("a stack folder has no labels")
+		}
+	default:
+		return errors.New("unknown transfer item")
+	}
+	return nil
+}
 
 // ---------------- compose stacks ----------------
 

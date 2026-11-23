@@ -107,6 +107,8 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("POST "+wire.PathEnroll, g.handleEnroll)
 	mux.HandleFunc("POST "+wire.PathConnect, g.handleConnect)
 	mux.HandleFunc("POST "+wire.PathRenew, g.handleRenew)
+	mux.HandleFunc("POST "+wire.PathTransfer+"{id}", g.handleTransferUpload)
+	mux.HandleFunc("GET "+wire.PathTransfer+"{id}", g.handleTransferDownload)
 	return mux
 }
 
@@ -502,4 +504,71 @@ func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	cancel()
 	wg.Wait()
 	_ = g.Store.TouchHost(context.Background(), hostID, nil, time.Now())
+}
+
+// transferFor authenticates an agent and finds the transfer it names. Only
+// the two hosts the hub tied the transfer to may use it; for any other the
+// transfer doesn't exist.
+func (g *Gateway) transferFor(w http.ResponseWriter, r *http.Request, what string) (*registry.Transfer, string, bool) {
+	leaf, _, _, ok := g.authAgent(w, r, what, false)
+	if !ok {
+		return nil, "", false
+	}
+	id := r.PathValue("id")
+	var t *registry.Transfer
+	if wire.ValidTransferID(id) && g.Reg != nil {
+		t = g.Reg.Transfer(id)
+	}
+	if t == nil {
+		http.Error(w, "no such transfer", http.StatusNotFound)
+		return nil, "", false
+	}
+	return t, leaf.Subject.CommonName, true
+}
+
+// handleTransferUpload receives the sending agent's tar stream and passes it
+// on to the receiving agent as it arrives. It answers once all of it has
+// been read by the receiver, or the transfer failed.
+func (g *Gateway) handleTransferUpload(w http.ResponseWriter, r *http.Request) {
+	t, hostID, ok := g.transferFor(w, r, "transfer upload")
+	if !ok {
+		return
+	}
+	n, err := t.Upload(hostID, r.Body)
+	switch {
+	case errors.Is(err, registry.ErrNoTransfer):
+		http.Error(w, "no such transfer", http.StatusNotFound)
+	case errors.Is(err, registry.ErrTransferClaimed):
+		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, registry.ErrTransferTooBig):
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+	case err != nil:
+		g.log().Warn("transfer upload failed", "transfer", t.ID, "host_id", hostID, "bytes", n, "err", err)
+		http.Error(w, "transfer failed", http.StatusBadGateway)
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]int64{"bytes": n})
+	}
+}
+
+// handleTransferDownload streams a transfer to the receiving agent.
+func (g *Gateway) handleTransferDownload(w http.ResponseWriter, r *http.Request) {
+	t, hostID, ok := g.transferFor(w, r, "transfer download")
+	if !ok {
+		return
+	}
+	if hostID != t.Dst {
+		http.Error(w, "no such transfer", http.StatusNotFound)
+		return
+	}
+	rc := http.NewResponseController(w)
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.WriteHeader(http.StatusOK)
+	_ = rc.Flush()
+	// A failure after the headers went out can only be signalled by cutting
+	// the stream short; the receiver then sees a truncated archive.
+	if n, err := t.Download(hostID, w, func() { _ = rc.Flush() }); err != nil {
+		g.log().Warn("transfer download failed", "transfer", t.ID, "host_id", hostID, "bytes", n, "err", err)
+		panic(http.ErrAbortHandler)
+	}
 }

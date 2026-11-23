@@ -45,6 +45,9 @@ type Registry struct {
 
 	loadMu sync.Mutex
 	load   map[string]*loadHistory // host ID -> recent host load; kept across reconnects
+
+	xferMu sync.Mutex
+	xfers  map[string]*Transfer // active data transfers, by ID
 }
 
 // SetStatsFromDocker records a host's stats source and tells its agent now

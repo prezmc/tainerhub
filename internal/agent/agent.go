@@ -646,6 +646,7 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	}
 	hello.Protocol = wire.ProtocolVersion
 	hello.AgentVersion = a.cfg.Version
+	_, hello.Transfer = a.cfg.Docker.(Transferer)
 	if a.cfg.Stacks != nil {
 		sup := a.cfg.Stacks.Supported(ctx)
 		hello.Stacks = &sup
@@ -948,6 +949,8 @@ func (s *session) handle(c wire.Command) {
 		}()
 	case c.Stack != nil:
 		go s.runStack(c.ID, *c.Stack)
+	case c.Transfer != nil:
+		s.startTransfer(c.ID, *c.Transfer)
 	case c.Exec != nil:
 		s.startExec(c.ID, *c.Exec)
 	case c.ExecInput != nil:
@@ -978,6 +981,48 @@ func (s *session) handle(c wire.Command) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+// startTransfer sends or receives one volume or stack folder through the
+// hub. It runs on the session's context: if the hub connection drops, the
+// hub has already given up on the transfer. Cancel stops it.
+func (s *session) startTransfer(id string, c wire.TransferCommand) {
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.mu.Lock()
+	s.logs[id] = cancel
+	s.mu.Unlock()
+	go func() {
+		defer func() {
+			cancel()
+			s.mu.Lock()
+			delete(s.logs, id)
+			s.mu.Unlock()
+		}()
+		res := wire.CommandResult{CommandID: id}
+		td, ok := s.a.cfg.Docker.(Transferer)
+		if !ok {
+			res.Error = "this agent can't copy data"
+		} else {
+			r := &transferRunner{docker: td, hub: hubClient{a: s.a}, log: s.a.log}
+			if s.a.cfg.Stacks != nil && s.a.cfg.Stacks.Supported(ctx).Error == "" {
+				r.stacksDir = s.a.cfg.Stacks.Dir
+			}
+			start := time.Now()
+			out, err := r.run(ctx, c)
+			if err != nil {
+				res.Error = err.Error()
+			} else {
+				res.OK = true
+				res.Data, _ = json.Marshal(out)
+			}
+			s.a.log.Info("transfer", "role", c.Role, "kind", c.Item.Kind, "name", c.Item.Name,
+				"bytes", out.Bytes, "files", out.Files, "took", time.Since(start).Round(time.Second), "ok", res.OK, "err", res.Error)
+		}
+		s.send(wire.AgentMessage{Result: &res})
+		if c.Role == wire.TransferReceive {
+			s.requestSnapshot()
+		}
+	}()
 }
 
 // runStack runs a compose operation and streams its output back. It runs on
