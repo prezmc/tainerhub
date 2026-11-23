@@ -204,6 +204,10 @@ func run(log *slog.Logger) error {
 		MaxHeaderBytes:    64 << 10,
 	}
 	gwSrv := gw.Server(cfg.AgentListen, srvCert)
+	// The hub issues itself a 1-year server certificate at start; reissue it
+	// before it runs out on a hub that stays up that long.
+	gwSrv.TLSConfig.Certificates = nil
+	gwSrv.TLSConfig.GetCertificate = ca.RenewingServerCert(srvCert, cfg.AgentSANs, 30*24*time.Hour)
 
 	errc := make(chan error, 2)
 	go func() {
