@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
@@ -81,6 +83,52 @@ func CheckPassword(encoded, p string) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
+// argonSlots caps how many argon2 hashes run at once. Each needs ~19 MiB, so
+// an unbounded flood of sign-in requests could run the hub out of memory.
+var argonSlots = make(chan struct{}, max(2, runtime.GOMAXPROCS(0)))
+
+// argonWait is how long a request waits for a free slot before giving up.
+var argonWait = 2 * time.Second
+
+// ErrBusy is returned when too many passwords are being checked at once. It
+// counts as ErrRateLimited, so handlers answer 429.
+var ErrBusy error = busyError{}
+
+type busyError struct{}
+
+func (busyError) Error() string        { return "too many sign-ins at once; try again in a moment" }
+func (busyError) Is(target error) bool { return target == ErrRateLimited }
+
+// withArgon runs fn once an argon2 slot is free, or returns ErrBusy.
+func withArgon(ctx context.Context, fn func()) error {
+	t := time.NewTimer(argonWait)
+	defer t.Stop()
+	select {
+	case argonSlots <- struct{}{}:
+	case <-t.C:
+		return ErrBusy
+	case <-ctx.Done():
+		return ErrBusy
+	}
+	defer func() { <-argonSlots }()
+	fn()
+	return nil
+}
+
+// hashPassword is HashPassword within the argon2 cap.
+func hashPassword(ctx context.Context, p string) (string, error) {
+	var h string
+	err := withArgon(ctx, func() { h = HashPassword(p) })
+	return h, err
+}
+
+// checkPassword is CheckPassword within the argon2 cap.
+func checkPassword(ctx context.Context, encoded, p string) (bool, error) {
+	var ok bool
+	err := withArgon(ctx, func() { ok = CheckPassword(encoded, p) })
+	return ok, err
+}
+
 // dummyHash is checked against when the username doesn't exist, so a
 // failed sign-in takes the same time either way.
 var dummyHash = HashPassword("tainerhub-timing-equaliser")
@@ -113,9 +161,13 @@ func (s *Service) SetupWithPassword(w http.ResponseWriter, r *http.Request, in S
 	if strings.TrimSpace(in.DisplayName) == "" {
 		in.DisplayName = in.Username
 	}
+	hash, err := hashPassword(r.Context(), in.Password)
+	if err != nil {
+		return store.User{}, nil, err
+	}
 	codes, hashes := newRecoveryCodes()
-	u := store.User{Username: in.Username, DisplayName: strings.TrimSpace(in.DisplayName), Role: "owner", WebAuthnID: []byte(randToken(32)), PasswordHash: HashPassword(in.Password)}
-	u, err := s.Store.CreateFirstOwner(r.Context(), u, nil, hashes)
+	u := store.User{Username: in.Username, DisplayName: strings.TrimSpace(in.DisplayName), Role: "owner", WebAuthnID: []byte(randToken(32)), PasswordHash: hash}
+	u, err = s.Store.CreateFirstOwner(r.Context(), u, nil, hashes)
 	if errors.Is(err, store.ErrConflict) {
 		return store.User{}, nil, ErrSetupDone
 	}
@@ -130,14 +182,22 @@ func (s *Service) SetupWithPassword(w http.ResponseWriter, r *http.Request, in S
 // client IP like the other sign-in methods.
 func (s *Service) LoginWithPassword(w http.ResponseWriter, r *http.Request, username, password string) (store.User, error) {
 	ip := s.ClientIP(r)
-	if !s.Limiter.Allow(ip) {
+	// Reserve the attempt before the costly hash check, so a parallel burst
+	// can't all get past the limit; a successful sign-in hands it back.
+	if !s.Limiter.Reserve(ip) {
 		return store.User{}, ErrRateLimited
 	}
+	failed := false
+	defer func() {
+		if !failed {
+			s.Limiter.Release(ip)
+		}
+	}()
 	if len(password) > maxPassword {
-		s.Limiter.Fail(ip)
+		failed = true
 		return store.User{}, ErrBadPassword
 	}
-	u, err := s.Store.UserByUsername(r.Context(), strings.TrimSpace(username))
+	u, err := s.st().UserByUsername(r.Context(), strings.TrimSpace(username))
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return store.User{}, err
 	}
@@ -145,23 +205,54 @@ func (s *Service) LoginWithPassword(w http.ResponseWriter, r *http.Request, user
 	if hash == "" {
 		hash = dummyHash
 	}
-	if !CheckPassword(hash, password) || u.PasswordHash == "" {
-		s.Limiter.Fail(ip)
+	ok, err := checkPassword(r.Context(), hash, password)
+	if err != nil {
+		return store.User{}, err
+	}
+	if !ok || u.PasswordHash == "" {
+		failed = true
 		return store.User{}, ErrBadPassword
 	}
 	return u, s.startSession(w, r, u)
 }
 
-// ChangePassword sets a new password. A user who already has one must give
-// it; a user without one (passkey-only) is already signed in, which is enough.
-func (s *Service) ChangePassword(ctx context.Context, u store.User, current, next string) error {
-	if u.PasswordHash != "" && !CheckPassword(u.PasswordHash, current) {
-		return errors.New("current password is wrong")
+// ChangePassword sets a new password and signs the user out of every other
+// session. A user who already has a password must give it (that counts as
+// signing in again); a user without one (passkey-only) needs a recent
+// sign-in instead, so a stolen session can't add a password.
+func (s *Service) ChangePassword(r *http.Request, u store.User, current, next string) error {
+	ctx := r.Context()
+	if u.PasswordHash != "" {
+		// Guessing the current password is a sign-in attempt like any other.
+		ip := s.ClientIP(r)
+		if !s.Limiter.Reserve(ip) {
+			return ErrRateLimited
+		}
+		ok, err := checkPassword(ctx, u.PasswordHash, current)
+		if err != nil || ok {
+			s.Limiter.Release(ip)
+		}
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("current password is wrong")
+		}
+	} else if err := s.RequireFreshSignIn(r); err != nil {
+		return err
 	}
 	if err := checkPasswordPolicy(next); err != nil {
 		return errors.New("new password: " + err.Error())
 	}
-	return s.Store.SetPasswordHash(ctx, u.ID, HashPassword(next))
+	keep := s.sessionHash(r)
+	if keep == nil {
+		return ErrUnauthorized
+	}
+	hash, err := hashPassword(ctx, next)
+	if err != nil {
+		return err
+	}
+	return s.st().SetPasswordAndRevoke(ctx, u.ID, hash, keep)
 }
 
 // ---------------- invites ----------------
@@ -194,9 +285,15 @@ type AcceptInvite struct {
 // recovery codes. Failed attempts count toward the sign-in rate limit.
 func (s *Service) AcceptInvite(w http.ResponseWriter, r *http.Request, in AcceptInvite) (store.User, []string, error) {
 	ip := s.ClientIP(r)
-	if !s.Limiter.Allow(ip) {
+	if !s.Limiter.Reserve(ip) {
 		return store.User{}, nil, ErrRateLimited
 	}
+	failed := false
+	defer func() {
+		if !failed {
+			s.Limiter.Release(ip)
+		}
+	}()
 	in.Username = strings.TrimSpace(in.Username)
 	if !validUsername(in.Username) {
 		return store.User{}, nil, errors.New("username must be 2-32 letters, digits, dots, dashes or underscores")
@@ -207,12 +304,24 @@ func (s *Service) AcceptInvite(w http.ResponseWriter, r *http.Request, in Accept
 	if strings.TrimSpace(in.DisplayName) == "" {
 		in.DisplayName = in.Username
 	}
+	// Check the link before hashing, so bad tokens cost only a lookup.
+	tokenHash := Hash(strings.TrimSpace(in.Token))
+	if _, err := s.st().InviteRole(r.Context(), tokenHash); errors.Is(err, store.ErrNotFound) {
+		failed = true
+		return store.User{}, nil, ErrBadInvite
+	} else if err != nil {
+		return store.User{}, nil, err
+	}
+	hash, err := hashPassword(r.Context(), in.Password)
+	if err != nil {
+		return store.User{}, nil, err
+	}
 	codes, hashes := newRecoveryCodes()
-	u := store.User{Username: in.Username, DisplayName: strings.TrimSpace(in.DisplayName), WebAuthnID: []byte(randToken(32)), PasswordHash: HashPassword(in.Password)}
-	created, err := s.Store.AcceptInvite(r.Context(), Hash(strings.TrimSpace(in.Token)), u, hashes)
+	u := store.User{Username: in.Username, DisplayName: strings.TrimSpace(in.DisplayName), WebAuthnID: []byte(randToken(32)), PasswordHash: hash}
+	created, err := s.st().AcceptInvite(r.Context(), tokenHash, u, hashes)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		s.Limiter.Fail(ip)
+		failed = true
 		return store.User{}, nil, ErrBadInvite
 	case errors.Is(err, store.ErrConflict):
 		return store.User{}, nil, errors.New("that username is taken; pick another")

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"math/big"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -75,7 +76,11 @@ func normalizeCode(s string) string {
 	return b.String()
 }
 
-// Limiter counts failed sign-in attempts per client IP in a sliding window.
+// Limiter counts sign-in attempts per client in a sliding window. An attempt
+// is reserved before the expensive work starts, so a burst of parallel
+// requests can't all slip past the check; a successful one gives its slot
+// back. IPv6 clients are counted per /64, since one host usually controls a
+// whole /64 and could otherwise rotate addresses freely.
 type Limiter struct {
 	mu     sync.Mutex
 	max    int
@@ -85,6 +90,23 @@ type Limiter struct {
 
 func NewLimiter(max int, window time.Duration) *Limiter {
 	return &Limiter{max: max, window: window, fails: map[string][]time.Time{}}
+}
+
+// limitKey groups IPv6 addresses by their /64; anything else is used as is.
+func limitKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	if a.Is4() {
+		return a.String()
+	}
+	p, err := a.WithZone("").Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return p.String()
 }
 
 func (l *Limiter) prune(key string, now time.Time) []time.Time {
@@ -102,20 +124,44 @@ func (l *Limiter) prune(key string, now time.Time) []time.Time {
 	return ts
 }
 
-func (l *Limiter) Allow(key string) bool {
+// Allow reports whether ip has attempts left, without using one.
+func (l *Limiter) Allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.prune(key, time.Now())) < l.max
+	return len(l.prune(limitKey(ip), time.Now())) < l.max
 }
 
-func (l *Limiter) Fail(key string) {
+// Reserve uses one attempt for ip if any are left, in one step, and reports
+// whether it did. Call Release if the attempt turns out not to be a failure.
+func (l *Limiter) Reserve(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
+	key, now := limitKey(ip), time.Now()
 	if len(l.fails) > 50000 { // bound memory under a distributed flood
 		for k := range l.fails {
 			l.prune(k, now)
 		}
 	}
-	l.fails[key] = append(l.prune(key, now), now)
+	ts := l.prune(key, now)
+	if len(ts) >= l.max {
+		return false
+	}
+	l.fails[key] = append(ts, now)
+	return true
+}
+
+// Release gives back an attempt taken by Reserve.
+func (l *Limiter) Release(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	key := limitKey(ip)
+	ts := l.prune(key, time.Now())
+	if len(ts) == 0 {
+		return
+	}
+	if len(ts) == 1 {
+		delete(l.fails, key)
+		return
+	}
+	l.fails[key] = ts[:len(ts)-1]
 }
