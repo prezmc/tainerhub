@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prezmc/tainerhub/internal/auth"
@@ -49,6 +50,7 @@ type Server struct {
 	dockerLatest dockerLatestCache // newest Docker Engine release
 	execs        execList          // open terminals
 	https        httpsState        // HTTPS setup tests
+	statsMu      sync.Mutex        // serializes stats source changes (one settings row)
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -149,6 +151,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/exec/{sid}", s.need("admin", s.execClose))
 	mux.Handle("POST /api/hosts/{id}/update", s.need("admin", s.updateHost))
 	mux.Handle("POST /api/hosts/{id}/lighter-stats", s.need("admin", s.lighterStats))
+	mux.Handle("PUT /api/hosts/{id}/stats-source", s.need("admin", s.statsSource))
 	// Docker Engine upgrades restart every container: admins, with explicit confirmation
 	mux.Handle("POST /api/hosts/{id}/docker/plan", s.need("admin", s.dockerPlan))
 	mux.Handle("POST /api/hosts/{id}/docker/upgrade", s.need("admin", s.dockerUpgrade))

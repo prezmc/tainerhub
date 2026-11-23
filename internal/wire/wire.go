@@ -57,6 +57,10 @@ type HubMessage struct {
 	// memory often while someone is watching and rarely otherwise, because
 	// every sample costs the Docker Engine work for each container.
 	Watching *bool `json:"watching,omitempty"`
+	// StatsFromDocker makes the agent ask Docker for container stats even
+	// when it can read cgroup files (an admin's choice, e.g. to compare).
+	// Sent at connect and when it changes.
+	StatsFromDocker *bool `json:"stats_from_docker,omitempty"`
 }
 
 type Hello struct {

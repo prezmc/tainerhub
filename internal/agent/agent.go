@@ -464,6 +464,11 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 			}
 			s.requestSnapshot() // and refresh texts like "Up 5 minutes"
 		}
+		if m.StatsFromDocker != nil {
+			if d, ok := s.a.cfg.Docker.(interface{ SetStatsFromDocker(bool) bool }); ok && d.SetStatsFromDocker(*m.StatsFromDocker) {
+				s.a.log.Info("container stats source changed by the hub", "from_docker", *m.StatsFromDocker)
+			}
+		}
 		if time.Since(healthWritten) > 30*time.Second {
 			healthWritten = time.Now()
 			_ = os.WriteFile(a.path(HealthFile), []byte(healthWritten.UTC().Format(time.RFC3339)), 0o600)

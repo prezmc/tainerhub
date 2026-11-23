@@ -39,6 +39,46 @@ type Registry struct {
 
 	watchMu  sync.Mutex
 	watchers int // open fleet streams (browser tabs)
+
+	dockerStatsMu sync.Mutex
+	dockerStats   map[string]bool // host ID -> stats from Docker instead of cgroup files
+}
+
+// SetStatsFromDocker records a host's stats source and tells its agent now
+// if it's connected (or when it next connects).
+func (r *Registry) SetStatsFromDocker(hostID string, on bool) {
+	r.dockerStatsMu.Lock()
+	if r.dockerStats == nil {
+		r.dockerStats = map[string]bool{}
+	}
+	if on {
+		r.dockerStats[hostID] = true
+	} else {
+		delete(r.dockerStats, hostID)
+	}
+	r.dockerStatsMu.Unlock()
+	if a := r.Get(hostID); a != nil {
+		a.tell(wire.HubMessage{StatsFromDocker: &on})
+	}
+}
+
+// StatsFromDockerHosts lists the hosts told to ask Docker for stats, sorted.
+func (r *Registry) StatsFromDockerHosts() []string {
+	r.dockerStatsMu.Lock()
+	defer r.dockerStatsMu.Unlock()
+	ids := make([]string, 0, len(r.dockerStats))
+	for id := range r.dockerStats {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// StatsFromDocker reports whether the host's agent was told to ask Docker for stats.
+func (r *Registry) StatsFromDocker(hostID string) bool {
+	r.dockerStatsMu.Lock()
+	defer r.dockerStatsMu.Unlock()
+	return r.dockerStats[hostID]
 }
 
 // Watch records an open fleet stream until release is called. Agents are told
@@ -80,9 +120,11 @@ func (r *Registry) broadcastWatching(on bool) {
 
 // tellWatching queues the watching state without blocking: a full queue
 // means the agent is busy, and the next change or reconnect corrects it.
-func (a *Agent) tellWatching(on bool) {
+func (a *Agent) tellWatching(on bool) { a.tell(wire.HubMessage{Watching: &on}) }
+
+func (a *Agent) tell(m wire.HubMessage) {
 	select {
-	case a.out <- wire.HubMessage{Watching: &on}:
+	case a.out <- m:
 	default:
 	}
 }
@@ -201,6 +243,8 @@ func (r *Registry) AttachFrom(hostID, name, remoteIP string, cancel context.Canc
 	r.agents[hostID] = a
 	r.mu.Unlock()
 	a.tellWatching(r.watching())
+	fromDocker := r.StatsFromDocker(hostID)
+	a.tell(wire.HubMessage{StatsFromDocker: &fromDocker})
 	if old != nil {
 		old.cancel()
 	} else {

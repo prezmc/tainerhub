@@ -15,6 +15,7 @@ type HostUpdate = {
   hubHost: boolean
   canUpdate: boolean
   cgroupStats?: boolean
+  statsFromDocker: boolean
   note?: string
 }
 type Updates = {
@@ -125,8 +126,20 @@ export function UpdatesCard() {
     )
   }
 
-  // Hosts whose agent still asks Docker for every container's stats.
-  const heavy = d.hosts.filter((h) => h.online && h.cgroupStats === false)
+  // Hosts whose agent says where its stats come from (agents before this don't).
+  const statHosts = d.hosts.filter((h) => h.online && h.cgroupStats !== undefined)
+  const setSource = async (h: HostUpdate, source: 'docker' | 'cgroup') => {
+    setLightening(h.id)
+    try {
+      await api(`/api/hosts/${h.id}/stats-source`, { method: 'PUT', body: { source } })
+      toast('good', source === 'docker' ? `${h.name} now asks Docker for stats` : `${h.name} now uses lighter stats`)
+      await qc.invalidateQueries({ queryKey: ['updates'] })
+    } catch (e) {
+      toast('bad', errorText(e))
+    } finally {
+      setLightening(null)
+    }
+  }
   const lighten = async (h: HostUpdate) => {
     const ok = await confirm({
       title: `Turn on lighter stats on ${h.name}?`,
@@ -235,21 +248,43 @@ export function UpdatesCard() {
             ))}
         </ul>
       </div>
-      {heavy.length > 0 && (
+      {statHosts.length > 0 && (
         <div className="mt-5 border-t border-line pt-4">
           <div className="mb-2 flex flex-wrap items-baseline gap-2">
-            <h3 className="font-semibold text-white">Lighter stats</h3>
-            <span className="text-xs text-ink-100/50">these agents ask Docker for every container's CPU and memory, which costs the server more</span>
+            <h3 className="font-semibold text-white">Container stats</h3>
+            <span className="text-xs text-ink-100/50">lighter stats read CPU and memory from the kernel; asking Docker costs the server more CPU</span>
           </div>
           <ul className="divide-y divide-line rounded-[3px] ring-1 ring-line">
-            {heavy.map((h) => (
+            {statHosts.map((h) => (
               <li key={h.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
                 <span className="font-semibold text-white">{h.name}</span>
-                <span className="text-xs text-ink-100/60">stats from Docker</span>
+                {!h.cgroupStats ? (
+                  <Badge tone="warn">from Docker</Badge>
+                ) : h.statsFromDocker ? (
+                  <Badge tone="info">from Docker (your choice)</Badge>
+                ) : (
+                  <Badge tone="good">lighter stats</Badge>
+                )}
                 <span className="ml-auto" />
-                <Button icon={Feather} loading={lightening === h.id} disabled={!!lightening} onClick={() => lighten(h)}>
-                  Turn on lighter stats
-                </Button>
+                {!h.cgroupStats ? (
+                  <Button icon={Feather} loading={lightening === h.id} disabled={!!lightening} onClick={() => lighten(h)}>
+                    Turn on lighter stats
+                  </Button>
+                ) : h.statsFromDocker ? (
+                  <Button icon={Feather} loading={lightening === h.id} disabled={!!lightening} onClick={() => setSource(h, 'cgroup')}>
+                    Use lighter stats
+                  </Button>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    loading={lightening === h.id}
+                    disabled={!!lightening}
+                    title="If the numbers look wrong, compare them with Docker's own. You can switch back any time."
+                    onClick={() => setSource(h, 'docker')}
+                  >
+                    Use Docker instead
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
