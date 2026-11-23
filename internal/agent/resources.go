@@ -32,11 +32,10 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 	case wire.OpImageRemove:
 		return nil, d.remove(ctx, "/images/"+url.PathEscape(op.Target))
 	case wire.OpImagesPrune:
-		dangling := "true"
 		if op.Arg == "all" {
-			dangling = "false" // every image not used by a container
+			return d.pruneAllImages(ctx)
 		}
-		return d.prune(ctx, "/images/prune", map[string][]string{"dangling": {dangling}}, "ImagesDeleted")
+		return d.prune(ctx, "/images/prune", map[string][]string{"dangling": {"true"}}, "ImagesDeleted")
 	case wire.OpVolumesList:
 		return d.volumes(ctx)
 	case wire.OpVolumeRemove:
@@ -564,4 +563,73 @@ func (d *SocketDocker) selfUpdate(ctx context.Context, addMount bool) (wire.Self
 	}
 	resp.Body.Close()
 	return res, nil
+}
+
+// pruneAllImages removes every image no container uses. Docker's own prune
+// goes first; then each image that's still there and unused (by the same
+// rule the Images list shows "unused" by) is removed one tag at a time,
+// without forcing. Some Docker setups prune nothing for reasons they don't
+// report; this way the result matches the list, and an image Docker refuses
+// to remove is reported with Docker's reason.
+func (d *SocketDocker) pruneAllImages(ctx context.Context) (wire.PruneResult, error) {
+	before := d.imageLayersSize(ctx)
+	res, err := d.prune(ctx, "/images/prune", map[string][]string{"dangling": {"false"}}, "ImagesDeleted")
+	if err != nil {
+		return res, err
+	}
+	pruned := res.Deleted
+	imgs, err := d.images(ctx)
+	if err != nil {
+		return res, err
+	}
+	swept := 0
+	for _, im := range imgs {
+		if len(im.UsedBy) > 0 || ctx.Err() != nil {
+			continue
+		}
+		name := shortImageID(im.ID)
+		refs := im.Tags
+		if len(refs) == 0 {
+			refs = []string{im.ID}
+		} else {
+			name = im.Tags[0]
+		}
+		var failed error
+		for _, ref := range refs {
+			// Removing the last tag removes the image; Docker refuses if a
+			// container uses it, so nothing in use can go.
+			if err := d.remove(ctx, "/images/"+url.PathEscape(ref)); err != nil {
+				failed = err
+				break
+			}
+		}
+		if failed != nil {
+			res.Kept = append(res.Kept, wire.KeptItem{Name: name, Reason: strings.TrimPrefix(failed.Error(), "docker: ")})
+			continue
+		}
+		swept++
+	}
+	res.Deleted = pruned + swept
+	if after := d.imageLayersSize(ctx); before > 0 && after >= 0 && before > after {
+		res.Reclaimed = max(res.Reclaimed, before-after)
+	}
+	return res, nil
+}
+
+// imageLayersSize is the disk space all images take (shared layers counted
+// once), or -1 if Docker doesn't say.
+func (d *SocketDocker) imageLayersSize(ctx context.Context) int64 {
+	var df struct{ LayersSize int64 }
+	if err := d.getJSON(ctx, "/system/df", url.Values{"type": {"image"}}, &df); err != nil {
+		return -1
+	}
+	return df.LayersSize
+}
+
+func shortImageID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	return id
 }

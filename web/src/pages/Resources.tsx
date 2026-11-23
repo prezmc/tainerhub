@@ -400,7 +400,8 @@ function PruneMenu({ tab, hosts }: { tab: Tab; hosts: Host[] }) {
       method: 'POST',
       done: (r) => {
         const p = r as PruneResult
-        return `${h.name}: removed ${p.deleted} ${tab}${p.reclaimed ? `, freed ${size(p.reclaimed)}` : ''}`
+        const kept = p.kept?.length ? `. Kept ${p.kept.length}: ${p.kept[0].name} (${p.kept[0].reason})${p.kept.length > 1 ? ` and ${p.kept.length - 1} more` : ''}` : ''
+        return `${h.name}: removed ${p.deleted} ${tab}${p.reclaimed ? `, freed ${size(p.reclaimed)}` : ''}${kept}`
       },
     })
   }

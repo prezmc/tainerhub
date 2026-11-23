@@ -903,6 +903,14 @@ type KeptVolume struct {
 type PruneResult struct {
 	Deleted   int   `json:"deleted"`
 	Reclaimed int64 `json:"reclaimed"`
+	// Kept lists unused items Docker refused to remove, with its reason
+	// (pruning every unused image only).
+	Kept []KeptItem `json:"kept,omitempty"`
+}
+
+type KeptItem struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 type PullResult struct {

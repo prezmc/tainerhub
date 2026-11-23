@@ -261,6 +261,8 @@ The **Prune** menu cleans up one host at a time. You confirm each prune first.
 
 The result tells you how many items were removed and how much space was freed.
 
+**All unused** images means the images marked **unused** in the list. Docker's own prune runs first. Some Docker setups prune nothing without saying why, so TainerHub then removes each unused image that's still there one by one, never forcing. If Docker refuses one, the result names it and gives Docker's reason.
+
 ## Hosts
 
 <img src="images/hosts.png" width="900" alt="The Hosts page with the update card and host cards">
