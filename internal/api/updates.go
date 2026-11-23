@@ -94,6 +94,41 @@ func (c *flightCache[T]) get(ctx context.Context, ttl, retry time.Duration, fetc
 	}
 }
 
+// fresh fetches now and waits for the answer, unless the last fetch is
+// younger than minAge (so repeated clicks can't run into GitHub's rate
+// limit). A fetch already running is joined rather than started again.
+func (c *flightCache[T]) fresh(ctx context.Context, minAge time.Duration, fetch func(context.Context) (T, error)) (T, error) {
+	c.mu.Lock()
+	if !c.at.IsZero() && time.Since(c.at) < minAge {
+		v, err := c.val, c.err
+		c.mu.Unlock()
+		return v, err
+	}
+	if c.inflight == nil {
+		done := make(chan struct{})
+		c.inflight = done
+		go c.refresh(done, fetch)
+	}
+	done := c.inflight
+	c.mu.Unlock()
+	select {
+	case <-done:
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.val, c.err
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	}
+}
+
+// checkedAt is when the last fetch finished (zero: never).
+func (c *flightCache[T]) checkedAt() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
 func (c *flightCache[T]) refresh(done chan struct{}, fetch func(context.Context) (T, error)) {
 	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
 	defer cancel()
@@ -112,6 +147,11 @@ type latestCache struct{ flightCache[*latestRelease] }
 
 func (c *latestCache) get(ctx context.Context) (*latestRelease, error) {
 	return c.flightCache.get(ctx, 15*time.Minute, 2*time.Minute, fetchLatest)
+}
+
+// check asks GitHub now (at most every 30 seconds).
+func (c *latestCache) check(ctx context.Context) (*latestRelease, error) {
+	return c.flightCache.fresh(ctx, 30*time.Second, fetchLatest)
 }
 
 func fetchLatest(ctx context.Context) (*latestRelease, error) {
@@ -182,7 +222,25 @@ type hostUpdate struct {
 
 func (s *Server) updates(w http.ResponseWriter, r *http.Request) {
 	latest, err := s.latest.get(r.Context())
+	s.writeUpdates(w, r, latest, err)
+}
+
+// checkUpdates answers POST /api/updates/check: it asks GitHub for the
+// newest TainerHub and Docker Engine releases now, instead of waiting for
+// the cached answers to expire, then returns the same as GET /api/updates.
+func (s *Server) checkUpdates(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), fetchTimeout+5*time.Second)
+	defer cancel()
+	latest, err := s.latest.check(ctx)
+	_, _ = s.dockerLatest.fresh(ctx, time.Minute, fetchDockerLatest)
+	s.writeUpdates(w, r, latest, err)
+}
+
+func (s *Server) writeUpdates(w http.ResponseWriter, r *http.Request, latest *latestRelease, err error) {
 	out := map[string]any{"hubVersion": version.Version, "latest": latest, "hubCurrent": isCurrent(version.Version, latest)}
+	if at := s.latest.checkedAt(); !at.IsZero() {
+		out["checkedAt"] = at
+	}
 	if err != nil {
 		out["error"] = err.Error()
 	}

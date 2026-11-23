@@ -23,6 +23,8 @@ type Updates = {
   hubCurrent: boolean
   hubManaged: boolean
   latest: { version: string; commit: string; title: string; at: string } | null
+  /** When the hub last asked GitHub for the latest version. */
+  checkedAt?: string
   error?: string
   dockerLatest?: string
   hosts: HostUpdate[]
@@ -68,6 +70,7 @@ export function UpdatesCard() {
   const [restarting, setRestarting] = useState(false)
   const [dockerFor, setDockerFor] = useState<HostUpdate | null>(null)
   const [lightening, setLightening] = useState<string | null>(null) // host id
+  const [checking, setChecking] = useState(false)
 
   if (!u.data) return null
   const d = u.data
@@ -177,6 +180,19 @@ export function UpdatesCard() {
     }
   }
 
+  const checkNow = async () => {
+    setChecking(true)
+    try {
+      const fresh = await api<Updates>('/api/updates/check', { method: 'POST' })
+      qc.setQueryData(['updates'], fresh)
+      toast(fresh.error ? 'bad' : 'good', fresh.error ?? (fresh.latest ? `Latest is ${fresh.latest.version}` : 'Checked'))
+    } catch (e) {
+      toast('bad', errorText(e))
+    } finally {
+      setChecking(false)
+    }
+  }
+
   const upToDate = stale.length === 0 && d.hubCurrent
   return (
     <Card className={cx('mb-6 p-5', !upToDate && d.latest && 'ring-lime-400/40')}>
@@ -196,8 +212,12 @@ export function UpdatesCard() {
               </>
             )}
             {d.error && <span className="text-amber-200"> · {d.error}</span>}
+            {d.checkedAt && <span className="text-ink-100/40"> · checked {timeAgo(d.checkedAt)}</span>}
           </div>
         </div>
+        <Button variant="ghost" icon={RefreshCw} loading={checking} disabled={checking} onClick={checkNow} title="Ask GitHub for the newest version now">
+          Check now
+        </Button>
         {!upToDate && d.latest && stale.some((h) => h.canUpdate) && (
           <Button variant="primary" icon={RefreshCw} loading={busy === 'all'} disabled={!!busy} onClick={() => run('all')}>
             Update everything

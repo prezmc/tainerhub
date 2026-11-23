@@ -146,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/users/{uid}/role", s.need("admin", s.setRole))
 	mux.Handle("DELETE /api/users/{uid}", s.need("admin", s.deleteUser))
 	mux.Handle("GET /api/updates", s.need("admin", s.updates))
+	mux.Handle("POST /api/updates/check", s.need("admin", s.checkUpdates))
 	mux.Handle("GET /api/settings/https", s.need("admin", s.httpsSettings))
 	mux.Handle("POST /api/settings/https/test", s.need("admin", s.httpsTest))
 	mux.Handle("PUT /api/settings/https", s.need("admin", s.httpsEnable))

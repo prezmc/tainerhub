@@ -87,3 +87,32 @@ func TestFlightCacheServesStaleWhileRefreshing(t *testing.T) {
 		t.Fatalf("after a failed refresh: %q, %v; want the old value and the error", v, err)
 	}
 }
+
+// fresh fetches now even when the cached value hasn't expired, but not more
+// than once per minAge, and waits for the new answer.
+func TestFlightCacheFresh(t *testing.T) {
+	var c flightCache[int]
+	var calls atomic.Int32
+	fetch := func(context.Context) (int, error) { return int(calls.Add(1)), nil }
+	ctx := context.Background()
+	if v, _ := c.get(ctx, time.Hour, time.Minute, fetch); v != 1 {
+		t.Fatalf("first get = %d", v)
+	}
+	if v, _ := c.get(ctx, time.Hour, time.Minute, fetch); v != 1 {
+		t.Fatalf("cached get = %d", v)
+	}
+	if v, _ := c.fresh(ctx, time.Hour, fetch); v != 1 || calls.Load() != 1 {
+		t.Fatalf("fresh within minAge fetched again: %d (calls %d)", v, calls.Load())
+	}
+	if v, _ := c.fresh(ctx, 0, fetch); v != 2 {
+		t.Fatalf("fresh = %d, want a new fetch", v)
+	}
+	if at := c.checkedAt(); at.IsZero() || time.Since(at) > time.Second {
+		t.Errorf("checkedAt = %v", at)
+	}
+	// A failed check keeps the last good value.
+	failing := func(context.Context) (int, error) { return 0, errors.New("rate limited") }
+	if v, err := c.fresh(ctx, 0, failing); v != 2 || err == nil {
+		t.Errorf("after a failed check: %d, %v", v, err)
+	}
+}
