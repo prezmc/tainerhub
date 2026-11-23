@@ -619,6 +619,9 @@ func agentCompose(hub, token string) string {
       - tainerhub-agent:/data
       # Compose stacks. Keep the same path on both sides (relative bind mounts).
       - /opt/tainerhub/stacks:/opt/tainerhub/stacks
+      # Read-only: lets the agent read container CPU and memory from the kernel,
+      # which costs the server far less than asking Docker. Optional.
+      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
     environment:
       TAINERHUB_HUB: %s
       # One-time token, valid for 1 hour. It can be removed after the first start.

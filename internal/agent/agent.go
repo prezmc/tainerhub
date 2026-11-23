@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,11 +39,15 @@ type Config struct {
 	Stacks        *StackRunner // nil: compose stacks are not available on this agent
 	Log           *slog.Logger
 
-	SnapshotEvery  time.Duration // default 30s
-	StatsEvery     time.Duration // default 10s while someone has TainerHub open; negative disables stats
-	IdleStatsEvery time.Duration // default 60s while nobody does
-	PingEvery      time.Duration // default 20s
-	DeadAfter      time.Duration // default 90s
+	// Listing containers is costly for Docker with the containerd image store
+	// (it looks up every container's image), so the agent re-lists only on
+	// Docker events and on this timer, which refreshes texts like "Up 5 minutes".
+	SnapshotEvery     time.Duration // default 30s while someone has TainerHub open
+	IdleSnapshotEvery time.Duration // default 5m while nobody does
+	StatsEvery        time.Duration // default 10s while someone has TainerHub open; negative disables stats
+	IdleStatsEvery    time.Duration // default 60s while nobody does
+	PingEvery         time.Duration // default 20s
+	DeadAfter         time.Duration // default 90s
 }
 
 // HealthFile (in DataDir) is refreshed while the agent is connected to the hub.
@@ -69,6 +74,9 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.SnapshotEvery == 0 {
 		cfg.SnapshotEvery = 30 * time.Second
+	}
+	if cfg.IdleSnapshotEvery == 0 {
+		cfg.IdleSnapshotEvery = 5 * time.Minute
 	}
 	if cfg.StatsEvery == 0 {
 		cfg.StatsEvery = 10 * time.Second
@@ -301,6 +309,7 @@ type session struct {
 	mu    sync.Mutex
 	logs  map[string]context.CancelFunc // log streams, stack ops and terminals, by command ID
 	usage map[string]Usage              // container ID -> latest sample
+	list  []wire.Container              // last container list from Docker; nil until the first
 	execs map[string]*execState         // open terminals, by command ID
 }
 
@@ -453,6 +462,7 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 			case s.watchCh <- struct{}{}:
 			default:
 			}
+			s.requestSnapshot() // and refresh texts like "Up 5 minutes"
 		}
 		if time.Since(healthWritten) > 30*time.Second {
 			healthWritten = time.Now()
@@ -465,7 +475,7 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 }
 
 func (s *session) snapshotLoop() {
-	t := time.NewTicker(s.a.cfg.SnapshotEvery)
+	t := time.NewTimer(s.a.cfg.SnapshotEvery)
 	defer t.Stop()
 	for {
 		select {
@@ -480,10 +490,17 @@ func (s *session) snapshotLoop() {
 				return
 			}
 		}
+		t.Stop()
+		if s.watching.Load() {
+			t.Reset(s.a.cfg.SnapshotEvery)
+		} else {
+			t.Reset(s.a.cfg.IdleSnapshotEvery)
+		}
 		s.sendSnapshot()
 	}
 }
 
+// sendSnapshot lists containers from Docker and sends them with the latest stats.
 func (s *session) sendSnapshot() {
 	cs, err := s.a.cfg.Docker.List(s.ctx)
 	if err != nil {
@@ -491,6 +508,16 @@ func (s *session) sendSnapshot() {
 		return
 	}
 	s.mu.Lock()
+	s.list = cs
+	s.mu.Unlock()
+	s.publish()
+}
+
+// publish sends the last container list with the latest stats, without
+// asking Docker again.
+func (s *session) publish() {
+	s.mu.Lock()
+	cs := slices.Clone(s.list)
 	for i := range cs {
 		if u, ok := s.usage[cs[i].ID]; ok && cs[i].State == "running" {
 			cs[i].CPU = math.Round(u.CPU*10) / 10
@@ -523,9 +550,17 @@ func (s *session) statsLoop() {
 		} else {
 			t.Reset(s.a.cfg.IdleStatsEvery)
 		}
-		cs, err := s.a.cfg.Docker.List(s.ctx)
-		if err != nil {
-			continue
+		s.mu.Lock()
+		cs := s.list
+		s.mu.Unlock()
+		if cs == nil { // no list yet: get one
+			var err error
+			if cs, err = s.a.cfg.Docker.List(s.ctx); err != nil {
+				continue
+			}
+			s.mu.Lock()
+			s.list = cs
+			s.mu.Unlock()
 		}
 		next := map[string]Usage{}
 		var mu sync.Mutex
@@ -553,7 +588,7 @@ func (s *session) statsLoop() {
 		s.mu.Lock()
 		s.usage = next
 		s.mu.Unlock()
-		s.sendSnapshot()
+		s.publish()
 	}
 }
 
@@ -572,6 +607,7 @@ func (s *session) eventLoop() {
 			return
 		case <-time.After(5 * time.Second):
 		}
+		s.requestSnapshot() // catch up on changes missed while the stream was down
 	}
 }
 

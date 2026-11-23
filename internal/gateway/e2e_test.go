@@ -68,6 +68,7 @@ type fakeDocker struct {
 	mu      sync.Mutex
 	running map[string]bool
 	events  chan wire.DockerEvent
+	lists   int // container list calls, which are costly for a real Docker
 }
 
 func (f *fakeDocker) Info(context.Context) (wire.Hello, error) {
@@ -77,6 +78,7 @@ func (f *fakeDocker) Info(context.Context) (wire.Hello, error) {
 func (f *fakeDocker) List(context.Context) ([]wire.Container, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lists++
 	state := "exited"
 	if f.running["abc123"] {
 		state = "running"
@@ -321,6 +323,18 @@ func TestEnrollConnectActLogsRevoke(t *testing.T) {
 		cs := reg.Get(hostID).Status().Containers
 		return len(cs) == 1 && cs[0].CPU == 12.3 && cs[0].Mem == 64<<20
 	})
+	// Stats rounds reuse the last container list rather than asking Docker
+	// again. (Let the refresh that watching starts settle first.)
+	time.Sleep(600 * time.Millisecond)
+	docker.mu.Lock()
+	lists := docker.lists
+	docker.mu.Unlock()
+	time.Sleep(1200 * time.Millisecond) // about 4 stats rounds
+	docker.mu.Lock()
+	if docker.lists != lists {
+		t.Errorf("stats rounds listed containers %d times; want 0", docker.lists-lists)
+	}
+	docker.mu.Unlock()
 
 	// 6. the connection survives idle time thanks to pings
 	time.Sleep(2500 * time.Millisecond)

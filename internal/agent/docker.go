@@ -53,6 +53,16 @@ type SocketDocker struct {
 
 	cpuMu   sync.Mutex
 	lastCPU map[string]cpuSample // container ID -> previous stats sample
+
+	cg *cgroupStats // reads stats from kernel files when the host's cgroups are mounted
+}
+
+// UseCgroups reads container stats from the host's cgroup v2 tree mounted at
+// dir instead of asking Docker, which is much cheaper for the server. It
+// reports false (and changes nothing) when dir isn't a cgroup v2 tree.
+func (d *SocketDocker) UseCgroups(dir string) bool {
+	d.cg = newCgroupStats(dir)
+	return d.cg != nil
 }
 
 // cpuSample is a container's CPU counters at one stats sample, so the next
@@ -304,6 +314,11 @@ func (d *SocketDocker) Logs(ctx context.Context, id string, tail int, follow boo
 func (d *SocketDocker) Stats(ctx context.Context, id string) (Usage, error) {
 	if !wire.ValidContainerRef(id) {
 		return Usage{}, errors.New("invalid container id")
+	}
+	if d.cg != nil {
+		if u, ok := d.cg.Stats(id); ok {
+			return u, nil
+		}
 	}
 	var s struct {
 		CPUStats struct {
