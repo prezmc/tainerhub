@@ -8,11 +8,11 @@ import { usePlacement } from '../placement'
 import { useOpenJob } from '../stacks'
 
 /** Rough speed of a copy through the hub on a gigabit LAN, for the downtime estimate. */
-const COPY_BYTES_PER_SEC = 80 * 1024 * 1024
+export const COPY_BYTES_PER_SEC = 80 * 1024 * 1024
 
 const pct = (n?: number) => (n === undefined ? '–' : `${Math.round(n)}%`)
 
-function duration(sec: number) {
+export function duration(sec: number) {
   if (sec < 60) return 'under a minute'
   const m = Math.round(sec / 60)
   return m < 60 ? `about ${m} min` : `about ${(m / 60).toFixed(1)} h`
@@ -42,7 +42,7 @@ export function MoveSection({ d, s }: { d: StackDetail; s: StackSummary }) {
       {shown.length > 0 && (
         <div className="mt-4 space-y-2">
           {shown.map((m) => (
-            <MoveNote key={m.id} m={m} hosts={hosts} stackId={d.stack.id} />
+            <MoveNote key={m.id} m={m} hosts={hosts} refresh={['stack', d.stack.id]} />
           ))}
         </div>
       )}
@@ -51,18 +51,22 @@ export function MoveSection({ d, s }: { d: StackDetail; s: StackSummary }) {
   )
 }
 
-function MoveNote({ m, hosts, stackId }: { m: StackMove; hosts: Host[]; stackId: string }) {
+/** One earlier move: what it left behind, with a button to delete it. Shared with container moves. */
+export function MoveNote({ m, hosts, refresh }: { m: StackMove; hosts: Host[]; refresh: unknown[] }) {
   const qc = useQueryClient()
   const toast = useToast()
   const confirm = useConfirm()
   const name = (id: string) => hosts.find((h) => h.id === id)?.name ?? 'a removed host'
   const left = m.leftovers && !m.leftoversRemovedAt ? m.leftovers : undefined
-  const what = left ? [...(left.volumes ?? []).map((v) => `volume ${v}`), ...(left.dir ? ['the stack folder'] : [])].join(', ') : ''
+  const what = left
+    ? [...(left.container ? [`container ${left.container}`] : []), ...(left.volumes ?? []).map((v) => `volume ${v}`), ...(left.dir ? ['the stack folder'] : [])].join(', ')
+    : ''
+  const it = m.kind === 'container' ? 'The container' : 'The stack'
   const remove = useMutation({
     mutationFn: () => api(`/api/moves/${m.id}/leftovers`, { method: 'DELETE' }),
     onSuccess: () => {
       toast('good', `Deleted from ${name(left!.host_id)}`)
-      qc.invalidateQueries({ queryKey: ['stack', stackId] })
+      qc.invalidateQueries({ queryKey: refresh })
     },
     onError: (e) => toast('bad', errorText(e)),
   })
@@ -85,7 +89,7 @@ function MoveNote({ m, hosts, stackId }: { m: StackMove; hosts: Host[]; stackId:
         )}
         {m.state === 'interrupted' && (
           <p>
-            The move to {name(m.toHost)} was interrupted when the hub restarted. The stack may be stopped on {name(m.fromHost)}: start it from the buttons above.
+            The move to {name(m.toHost)} was interrupted when the hub restarted. {it} may be stopped on {name(m.fromHost)}: start it {m.kind === 'container' ? 'from the Containers page' : 'from the buttons above'}.
             {left && ` Part of the copy may be on ${name(left.host_id)}: ${what}.`}
           </p>
         )}
@@ -194,7 +198,7 @@ function MoveDialog({ s, onClose }: { s: StackSummary; onClose: () => void }) {
   )
 }
 
-function HostChoice({ p, selected, onSelect }: { p: PlacementHost; selected: boolean; onSelect: () => void }) {
+export function HostChoice({ p, selected, onSelect }: { p: PlacementHost; selected: boolean; onSelect: () => void }) {
   const figures = p.cpu !== undefined || p.mem !== undefined
   return (
     <button
@@ -219,7 +223,9 @@ function HostChoice({ p, selected, onSelect }: { p: PlacementHost; selected: boo
   )
 }
 
-function Report({ rep, ack, setAck, est }: { rep: MoveReport; ack: boolean; setAck: (v: boolean) => void; est: string | null }) {
+/** The check's result: what blocks the move, the steps it takes, and what to confirm. */
+export function Report({ rep, ack, setAck, est }: { rep: MoveReport; ack: boolean; setAck: (v: boolean) => void; est: string | null }) {
+  const ctr = rep.container !== undefined
   return (
     <div className="space-y-3">
       {rep.blockers.length > 0 && (
@@ -239,25 +245,41 @@ function Report({ rep, ack, setAck, est }: { rep: MoveReport; ack: boolean; setA
               Pull {rep.images.length === 1 ? 'its image' : `its ${rep.images.length} images`} on {rep.toName}, while it still runs on {rep.fromName}.
             </li>
           )}
-          <li>
-            Stop it on {rep.fromName}. <strong className="text-white">It's down from here</strong>
-            {est ? ` for ${est}.` : ' until it runs on ' + rep.toName + '.'}
-          </li>
+          {(!ctr || rep.running) && (
+            <li>
+              Stop it on {rep.fromName}. <strong className="text-white">It's down from here</strong>
+              {est ? ` for ${est}.` : ' until it runs on ' + rep.toName + '.'}
+            </li>
+          )}
           <li>
             {rep.copy.length === 0 ? (
-              'Nothing to copy: it keeps no data in volumes or its folder.'
+              ctr ? 'Nothing to copy: it keeps no data in volumes.' : 'Nothing to copy: it keeps no data in volumes or its folder.'
             ) : (
               <>
-                Copy {rep.copy.map((c) => (c.kind === 'volume' ? `volume ${c.name}` : 'its folder')).join(', ')}
+                Copy {rep.copy.map((c) => (c.kind === 'volume' ? (/^[0-9a-f]{64}$/.test(c.name) ? `its unnamed volume ${c.name.slice(0, 12)}` : `volume ${c.name}`) : 'its folder')).join(', ')}
                 {rep.totalBytes > 0 && ` (${rep.sizeUnknown ? 'at least ' : ''}${size(rep.totalBytes)}${rep.diskFree ? `; ${size(rep.diskFree)} free on ${rep.toName}` : ''})`}.
               </>
             )}
           </li>
-          <li>Deploy on {rep.toName} and wait until everything that ran before runs and is healthy.</li>
-          <li>Remove the old containers on {rep.fromName}. Its data stays there until you delete it here.</li>
+          {ctr ? (
+            <li>
+              {rep.networks && rep.networks.length > 0 && `Create network ${rep.networks.join(', ')} on ${rep.toName}. `}
+              Create it on {rep.toName} with the same settings{rep.running ? ', start it and wait until it runs and is healthy.' : ' (stopped, as it is now).'}
+            </li>
+          ) : (
+            <li>Deploy on {rep.toName} and wait until everything that ran before runs and is healthy.</li>
+          )}
+          <li>
+            Remove the old {ctr ? 'container' : 'containers'} on {rep.fromName}. {ctr ? 'Its volumes stay' : 'Its data stays'} there until you delete {ctr ? 'them' : 'it'} here.
+          </li>
         </ol>
       )}
-      {rep.blockers.length === 0 && <p className="flex items-center gap-1.5 text-xs text-ink-100/50"><Check className="size-3.5 text-lime-400" />If anything fails, the copy is removed and it starts again on {rep.fromName}.</p>}
+      {rep.blockers.length === 0 && (
+        <p className="flex items-center gap-1.5 text-xs text-ink-100/50">
+          <Check className="size-3.5 text-lime-400" />
+          If anything fails, the copy is removed and it {ctr && !rep.running ? 'stays as it was' : 'starts again'} on {rep.fromName}.
+        </p>
+      )}
       {rep.recreated.length > 0 && (
         <p className="text-xs text-ink-100/60">
           Not copied, recreated from the compose file (their data lives elsewhere, such as NFS): {rep.recreated.join(', ')}.
@@ -277,7 +299,7 @@ function Report({ rep, ack, setAck, est }: { rep: MoveReport; ack: boolean; setA
         <label className="flex items-start gap-2.5 rounded-[3px] bg-white/[0.03] p-3 text-xs ring-1 ring-inset ring-white/[0.08]">
           <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="mt-0.5 accent-lime-400" />
           <span>
-            I understand these folders aren't copied, and {rep.toName} needs them at the same paths:
+            I understand these {ctr ? 'host folders' : 'folders'} aren't copied, and {rep.toName} needs them at the same paths:
             <span className="mono mt-1 block text-ink-100/70">{rep.confirm.join(', ')}</span>
           </span>
         </label>

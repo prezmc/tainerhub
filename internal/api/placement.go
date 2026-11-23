@@ -67,12 +67,20 @@ type hostInfo struct {
 // of unknown size) and orders them best first. current is the host the work
 // already runs on, if any: it is listed but never suggested.
 func rankHosts(hosts []hostInfo, fp footprint, current string) []placementHost {
+	return rankHostsFor(hosts, fp, current, true)
+}
+
+// rankHostsFor is rankHosts; without needStacks, hosts that can't run
+// stacks still qualify (a standalone container doesn't need compose).
+func rankHostsFor(hosts []hostInfo, fp footprint, current string, needStacks bool) []placementHost {
 	out := make([]placementHost, 0, len(hosts))
 	for _, h := range hosts {
 		p := placementHost{HostID: h.ID, HostName: h.Name, Current: h.ID == current}
 		switch {
 		case !h.Online || h.Hello == nil:
 			p.Reason = "offline"
+		case !needStacks:
+			p.Eligible = true
 		case h.Hello.Stacks == nil:
 			p.Reason = "agent too old for stacks"
 		case h.Hello.Stacks.Error != "":
@@ -166,7 +174,8 @@ func stackFootprint(cs []wire.Container, name string) footprint {
 }
 
 // placement ranks hosts for new work, or with ?stack=<id> for moving that
-// stack (its current footprint is added to each other host).
+// stack (its current footprint is added to each other host), or with
+// ?host=<id>&container=<id> for moving that container.
 func (s *Server) placement(w http.ResponseWriter, r *http.Request) {
 	hs, err := s.Store.ListHosts(r.Context())
 	if err != nil {
@@ -194,7 +203,22 @@ func (s *Server) placement(w http.ResponseWriter, r *http.Request) {
 		}
 		res.Footprint = &fp
 	}
-	res.Hosts = rankHosts(s.hostInfos(hs), fp, current)
+	needStacks := true
+	if cid := r.URL.Query().Get("container"); cid != "" {
+		hid := r.URL.Query().Get("host")
+		if !validUUID(hid) || !wire.ValidContainerRef(cid) {
+			jsonErr(w, http.StatusNotFound, "container not found")
+			return
+		}
+		current, needStacks = hid, false
+		if a := s.Reg.Get(hid); a != nil {
+			if c, ok := findContainer(a.Status().Containers, cid); ok && c.State == "running" {
+				fp = footprint{CPU: round1(c.CPU), Mem: c.Mem}
+			}
+		}
+		res.Footprint = &fp
+	}
+	res.Hosts = rankHostsFor(s.hostInfos(hs), fp, current, needStacks)
 	writeJSON(w, http.StatusOK, res)
 }
 

@@ -56,12 +56,16 @@ Renewals are written to the audit log.
 
 ### Copying data between hosts
 
-Moving a stack copies its volumes and folder from one agent to another. Agents still only connect out: the sending agent uploads the data to the hub's port 7443 and the receiving agent downloads it, both over the same mutual TLS. The hub passes it through without storing it.
+Moving a stack copies its volumes and folder from one agent to another; moving a standalone container copies its volumes. Agents still only connect out: the sending agent uploads the data to the hub's port 7443 and the receiving agent downloads it, both over the same mutual TLS. The hub passes it through without storing it.
 
 - Each copy has a random ID that only the two hosts it was set up for can use, once each.
 - Both agents report the size and SHA-256 of what they sent and received; the copy fails if they differ. It also stops after 2 minutes without data, or if it grows past what was measured.
 - The receiving agent never overwrites an existing volume or a stack folder with files in it, and refuses archives with paths outside the data, hard links out of it, or device files.
 - The agent itself has no capabilities, so Docker reads and writes the data through short-lived helper containers made from the agent's own image (never started for copying, and without network). Deleting an old copy starts one that keeps Docker's default capabilities, so it can delete files of other users.
+
+### Moving a container
+
+Moving a standalone container adds two agent operations. **Export** reads the container's settings (what `docker inspect` shows, including environment values) and sends them to the hub, which passes them to the new host and doesn't store them. **Create** makes a container from those settings and, if needed, the bridge networks it uses. It refuses compose containers, TainerHub's own container names and networks of other drivers. Admins can already run any container through a stack, so this doesn't give the hub or admins more power over a host than they had, but a hub that's been taken over could use it the same way. Moving is admin-only and audit-logged (`container.move_started`, `container.moved`, `container.move_failed`, `container.move_leftovers_removed`).
 
 ### Limits on agents
 
