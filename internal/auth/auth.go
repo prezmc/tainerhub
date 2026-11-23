@@ -62,6 +62,29 @@ type Service struct {
 	setupExp   time.Time
 
 	Limiter *Limiter
+
+	// db, when set, stands in for Store on the sign-in and session paths
+	// below (tests use it to run them without Postgres).
+	db authStore
+}
+
+// authStore is the part of the store the password, invite and session code
+// uses.
+type authStore interface {
+	UserByUsername(ctx context.Context, username string) (store.User, error)
+	InviteRole(ctx context.Context, tokenHash []byte) (string, error)
+	AcceptInvite(ctx context.Context, tokenHash []byte, u store.User, recoveryHashes [][]byte) (store.User, error)
+	CreateSession(ctx context.Context, tokenHash []byte, userID string, expires time.Time, ip, ua string) error
+	GetSession(ctx context.Context, tokenHash []byte) (store.Session, error)
+	DeleteOtherSessions(ctx context.Context, userID string, keep []byte) (int64, error)
+	SetPasswordAndRevoke(ctx context.Context, userID, hash string, keep []byte) error
+}
+
+func (s *Service) st() authStore {
+	if s.db != nil {
+		return s.db
+	}
+	return s.Store
 }
 
 type ceremony struct {
@@ -450,9 +473,15 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) (store.Use
 		return store.User{}, ErrNoPasskeys
 	}
 	ip := s.ClientIP(r)
-	if !s.Limiter.Allow(ip) {
+	if !s.Limiter.Reserve(ip) {
 		return store.User{}, ErrRateLimited
 	}
+	failed := false
+	defer func() {
+		if !failed {
+			s.Limiter.Release(ip)
+		}
+	}()
 	c, err := s.takeCeremony(w, r, "login")
 	if err != nil {
 		return store.User{}, err
@@ -472,12 +501,12 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) (store.Use
 	}
 	cred, err := wa.FinishDiscoverableLogin(handler, c.data, r)
 	if err != nil || found == nil {
-		s.Limiter.Fail(ip)
+		failed = true
 		return store.User{}, errors.New("passkey not recognised")
 	}
 	if cred.Authenticator.CloneWarning {
 		s.Log.Warn("passkey sign count went backwards; possible cloned authenticator", "user", found.u.Username)
-		s.Limiter.Fail(ip)
+		failed = true
 		return store.User{}, errors.New("passkey rejected")
 	}
 	credJSON, _ := json.Marshal(cred)
@@ -492,13 +521,19 @@ var ErrRateLimited = errors.New("too many failed attempts; wait 15 minutes")
 // LoginWithRecoveryCode signs in with a single-use code. Each code works once.
 func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, username, code string) (store.User, error) {
 	ip := s.ClientIP(r)
-	if !s.Limiter.Allow(ip) {
+	if !s.Limiter.Reserve(ip) {
 		return store.User{}, ErrRateLimited
 	}
+	failed := false
+	defer func() {
+		if !failed {
+			s.Limiter.Release(ip)
+		}
+	}()
 	fail := errors.New("username or recovery code is wrong")
 	u, err := s.Store.UserByUsername(r.Context(), strings.TrimSpace(username))
 	if err != nil {
-		s.Limiter.Fail(ip)
+		failed = true
 		return store.User{}, fail
 	}
 	ok, err := s.Store.UseRecoveryCode(r.Context(), u.ID, Hash(normalizeCode(code)))
@@ -506,7 +541,7 @@ func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, 
 		return store.User{}, err
 	}
 	if !ok {
-		s.Limiter.Fail(ip)
+		failed = true
 		return store.User{}, fail
 	}
 	return u, s.startSession(w, r, u)
@@ -564,7 +599,7 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, u store.User) ([]
 
 func (s *Service) startSession(w http.ResponseWriter, r *http.Request, u store.User) error {
 	tok := randToken(32)
-	if err := s.Store.CreateSession(r.Context(), Hash(tok), u.ID, time.Now().Add(SessionMax), s.ClientIP(r), truncate(r.UserAgent(), 200)); err != nil {
+	if err := s.st().CreateSession(r.Context(), Hash(tok), u.ID, time.Now().Add(SessionMax), s.ClientIP(r), truncate(r.UserAgent(), 200)); err != nil {
 		return err
 	}
 	s.setCookie(w, r, s.sessionCookie(r), tok, SessionMax)
@@ -595,6 +630,56 @@ func (s *Service) UserFromRequest(r *http.Request) (store.User, error) {
 		return store.User{}, ErrUnauthorized
 	}
 	return u, nil
+}
+
+// ReauthWindow is how recent a sign-in must be for sensitive account
+// changes, so a stolen session cookie can't be turned into lasting access.
+const ReauthWindow = 10 * time.Minute
+
+var ErrReauth = errors.New("for your safety, sign in again to do this (it needs a sign-in from the last 10 minutes)")
+
+// freshSignIn reports whether a session created at created still counts as
+// a recent sign-in.
+func freshSignIn(created, now time.Time) bool {
+	return now.Sub(created) < ReauthWindow
+}
+
+// sessionHash is the stored hash of this request's session token, or nil.
+func (s *Service) sessionHash(r *http.Request) []byte {
+	ck, err := r.Cookie(s.sessionCookie(r))
+	if err != nil || ck.Value == "" {
+		return nil
+	}
+	return Hash(ck.Value)
+}
+
+// RequireFreshSignIn returns ErrReauth unless this request's session was
+// created by a sign-in within ReauthWindow.
+func (s *Service) RequireFreshSignIn(r *http.Request) error {
+	h := s.sessionHash(r)
+	if h == nil {
+		return ErrUnauthorized
+	}
+	ss, err := s.st().GetSession(r.Context(), h)
+	if errors.Is(err, store.ErrNotFound) {
+		return ErrUnauthorized
+	}
+	if err != nil {
+		return err
+	}
+	if !freshSignIn(ss.CreatedAt, time.Now()) {
+		return ErrReauth
+	}
+	return nil
+}
+
+// SignOutOtherSessions ends every session of u except this request's one.
+func (s *Service) SignOutOtherSessions(r *http.Request, u store.User) (int64, error) {
+	h := s.sessionHash(r)
+	if h == nil {
+		return 0, ErrUnauthorized
+	}
+	return s.st().DeleteOtherSessions(r.Context(), u.ID, h)
 }
 
 func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {

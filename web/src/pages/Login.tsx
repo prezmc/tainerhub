@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useRouter } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Fingerprint, KeyRound, LockKeyhole, LogIn, UserRound } from 'lucide-react'
-import { api, errorText, passkeyLogin, passkeysUsable, type HubState } from '../api'
+import { api, errorText, passkeyLogin, passkeysUsable, safeNext, type HubState } from '../api'
 import { Button, ErrorNote, Input } from '../ui'
 import { AuthShell } from './AuthShell'
 
@@ -16,15 +16,17 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const qc = useQueryClient()
-  const navigate = useNavigate()
+  const router = useRouter()
+  // Where to go after signing in, e.g. back to Account after a re-sign-in.
+  const next = safeNext(new URLSearchParams(window.location.search).get('next')) ?? '/'
 
-  const run = async (fn: () => Promise<unknown>, then: '/' | '/account') => {
+  const run = async (fn: () => Promise<unknown>, then: string) => {
     setBusy(true)
     setError(null)
     try {
       await fn()
       await qc.invalidateQueries()
-      navigate({ to: then })
+      router.history.push(then)
     } catch (err) {
       setError(errorText(err))
     } finally {
@@ -71,7 +73,7 @@ export function LoginPage() {
       <div className="space-y-4">
         {passkeys && (
           <>
-            <Button variant="primary" icon={Fingerprint} className="w-full" onClick={() => run(passkeyLogin, '/')} loading={busy}>
+            <Button variant="primary" icon={Fingerprint} className="w-full" onClick={() => run(passkeyLogin, next)} loading={busy}>
               Sign in with passkey
             </Button>
             <div className="flex items-center gap-3 text-xs text-ink-100/40">
@@ -84,7 +86,7 @@ export function LoginPage() {
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            run(() => api('/api/login/password', { method: 'POST', body: { username, password } }), '/')
+            run(() => api('/api/login/password', { method: 'POST', body: { username, password } }), next)
           }}
           className="space-y-4"
         >

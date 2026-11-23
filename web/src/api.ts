@@ -166,6 +166,19 @@ export async function passkeyAdd(name: string) {
   await api('/api/me/passkeys/finish', { method: 'POST', body: cred })
 }
 
+/** True when the hub refused a change because it needs a recent sign-in. */
+export const needsReauth = (e: unknown) => e instanceof ApiError && e.status === 403 && e.data.reauth === true
+
+/**
+ * A same-origin path to return to after signing in, or null. Only plain
+ * paths like "/account" pass: not "//host", backslashes or control
+ * characters, which browsers can read as another site.
+ */
+export function safeNext(raw: string | null | undefined): string | null {
+  if (!raw || !/^\/(?![/\\])[^\\\u0000-\u001f\u007f]*$/.test(raw)) return null
+  return raw
+}
+
 /** Turns WebAuthn/browser errors into something readable. */
 export function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.message
