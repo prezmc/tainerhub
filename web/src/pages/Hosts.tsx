@@ -6,6 +6,7 @@ import { api, bytes, can, errorText, hostAddress, stackProblem, timeAgo, type Ho
 import { Badge, Button, Card, CopyButton, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, PageHeader, StatusDot, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { UpdatesCard } from './Updates'
+import { LoadBars } from '../placement'
 
 export function HostsPage() {
   const me = useMe()
@@ -232,6 +233,7 @@ function HostCard({ h, admin, onToken, onRemove, onRename }: { h: Host; admin: b
             <Fact icon={MemoryStick} tint="text-cyan-400" label="Memory" value={bytes(h.hello.mem_total)} />
             <Fact icon={ShieldCheck} tint="text-emerald-400" label="Docker" value={h.hello.docker_version} />
           </dl>
+          {h.load && <LoadBars load={h.load} memTotal={h.hello.mem_total} />}
           {stackProblem(h) && (
             <p className="mt-4 flex items-start gap-2 rounded-[3px] bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100 ring-1 ring-inset ring-amber-500/20">
               <Layers className="mt-0.5 size-3.5 shrink-0" />

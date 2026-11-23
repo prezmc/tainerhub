@@ -142,6 +142,22 @@ type Container struct {
 type Snapshot struct {
 	At         int64       `json:"at"` // unix seconds
 	Containers []Container `json:"containers"`
+	// Host is the whole host's load, measured with the container stats. Nil
+	// from older agents and before the first sample.
+	Host *HostStats `json:"host,omitempty"`
+}
+
+// HostStats is a host's overall load, read from /proc and the stacks
+// folder's filesystem.
+type HostStats struct {
+	At int64 `json:"at"` // unix seconds the sample was taken
+	// CPU is the share of all cores busy since the previous sample, 0-100.
+	// Nil on the first sample after the agent starts.
+	CPU          *float64 `json:"cpu,omitempty"`
+	MemAvailable int64    `json:"mem_available,omitempty"` // bytes, MemAvailable from /proc/meminfo
+	Load1        float64  `json:"load1,omitempty"`         // 1-minute load average
+	DiskFree     int64    `json:"disk_free,omitempty"`     // bytes free on the stacks folder's filesystem
+	DiskTotal    int64    `json:"disk_total,omitempty"`
 }
 
 type DockerEvent struct {

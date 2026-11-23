@@ -7,6 +7,7 @@ import { Badge, Button, Card, ErrorNote, IconButton, Input, Modal, PageHeader, S
 import { useFleet, useOpenDetails, useOpenLogs } from '../fleet'
 import { CodeEditor, StackStatusBadge, useOpenJob, useStackAction, useStacks, withLive } from '../stacks'
 import { useMe } from './AppLayout'
+import { HostSelect, useDefaultHost } from '../placement'
 
 const STARTER = `services:
   app:
@@ -58,9 +59,7 @@ export function NewStackPage() {
   const [error, setError] = useState<string | null>(null)
   useUnsavedWarning(compose !== STARTER && compose !== '')
 
-  useEffect(() => {
-    if (!hostId && hosts.length > 0) setHostId((hosts.find((h) => !stackProblem(h)) ?? hosts[0]).id)
-  }, [hostId, hosts])
+  useDefaultHost(hostId, setHostId)
 
   const host = hosts.find((h) => h.id === hostId)
   const problem = stackProblem(host)
@@ -111,18 +110,7 @@ export function NewStackPage() {
           <Card className="space-y-4 p-5">
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Host</span>
-              <select
-                value={hostId}
-                onChange={(e) => setHostId(e.target.value)}
-                className="w-full rounded-[3px] bg-white/[0.05] px-3 py-2.5 text-sm text-white ring-1 ring-inset ring-white/10 outline-none focus:ring-lime-500/60"
-              >
-                {hosts.map((h) => (
-                  <option key={h.id} value={h.id} className="bg-panel">
-                    {h.name}
-                    {!h.online ? ' (offline)' : stackProblem(h) ? ' (stacks not set up)' : ''}
-                  </option>
-                ))}
-              </select>
+              <HostSelect value={hostId} onChange={setHostId} className="w-full rounded-[3px] bg-white/[0.05] px-3 py-2.5 text-sm text-white ring-1 ring-inset ring-white/10 outline-none focus:ring-lime-500/60" />
             </label>
             {problem && host?.online && <p className="rounded-[3px] bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100 ring-1 ring-inset ring-amber-500/20">{problem}</p>}
             <Input

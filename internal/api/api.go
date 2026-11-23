@@ -91,6 +91,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/containers", s.need("viewer", s.containers))
 	mux.Handle("GET /api/events", s.need("viewer", s.events))
 	mux.Handle("GET /api/hosts", s.need("viewer", s.hosts))
+	mux.Handle("GET /api/placement", s.need("viewer", s.placement))
 	mux.Handle("GET /api/hosts/{id}/containers/{cid}/logs", s.need("viewer", s.logs))
 
 	mux.Handle("GET /api/hosts/{id}/containers/{cid}", s.need("viewer", s.inspect))
@@ -553,6 +554,9 @@ type hostView struct {
 	Running    int         `json:"running"`
 	Unhealthy  int         `json:"unhealthy"`
 	SnapshotAt *time.Time  `json:"snapshotAt,omitempty"`
+	// Load is the host's recent CPU, memory and disk use (nil from older
+	// agents, and while the host is offline).
+	Load *registry.HostLoad `json:"load,omitempty"`
 }
 
 func (s *Server) hosts(w http.ResponseWriter, r *http.Request) {
@@ -584,6 +588,7 @@ func (s *Server) hostViewsFrom(hs []store.Host) []hostView {
 			v.Address = a.RemoteIP
 			v.Hello = st.Hello
 			v.Containers = len(st.Containers)
+			v.Load = s.Reg.Load(h.ID)
 			if !st.SnapshotAt.IsZero() {
 				t := st.SnapshotAt
 				v.SnapshotAt = &t
