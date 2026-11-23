@@ -533,6 +533,23 @@ func (s *Store) RecordCertRenewal(ctx context.Context, hostID, hostName, remoteI
 	return s.Audit(ctx, AuditEntry{Actor: "agent", Action: "host.cert_renewed", Target: hostName, IP: remoteIP})
 }
 
+var (
+	_ gateway.EnrollmentRecorder  = (*Store)(nil)
+	_ gateway.CertRenewalRecorder = (*Store)(nil)
+)
+
+// RecordEnrollment puts an agent enrollment in the audit log. Re-enrolling a
+// host that already had a certificate gets its own action, since it also
+// cuts off whatever held the previous certificate.
+func (s *Store) RecordEnrollment(ctx context.Context, hostID, hostName, remoteIP string, reenrolled bool) error {
+	e := AuditEntry{Actor: "agent", Action: "host.enrolled", Target: hostName, IP: remoteIP}
+	if reenrolled {
+		e.Action = "host.reenrolled"
+		e.Detail, _ = json.Marshal(map[string]string{"note": "host re-enrolled — the previous agent certificate stopped working"})
+	}
+	return s.Audit(ctx, e)
+}
+
 func (s *Store) TouchHost(ctx context.Context, hostID string, hello *wire.Hello, at time.Time) error {
 	if hello == nil {
 		_, err := s.db.Exec(ctx, `UPDATE hosts SET last_seen_at = $2 WHERE id = $1::uuid`, hostID, at)

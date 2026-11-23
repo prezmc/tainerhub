@@ -27,7 +27,9 @@ type memStore struct {
 	tokens map[string]*gateway.JoinTokenRecord
 	hosts  map[string]*gateway.HostCert
 
-	renewals int
+	renewals    int
+	hellos      int      // TouchHost calls with a Hello
+	enrollments []string // "hostName ip reenrolled", from RecordEnrollment
 }
 
 func (m *memStore) GetJoinToken(_ context.Context, id string) (gateway.JoinTokenRecord, error) {
@@ -80,7 +82,14 @@ func (m *memStore) serial(hostID string) string {
 	return m.hosts[hostID].CertSerial
 }
 
-func (m *memStore) TouchHost(context.Context, string, *wire.Hello, time.Time) error { return nil }
+func (m *memStore) TouchHost(_ context.Context, _ string, hello *wire.Hello, _ time.Time) error {
+	if hello != nil {
+		m.mu.Lock()
+		m.hellos++
+		m.mu.Unlock()
+	}
+	return nil
+}
 
 // ---- fake docker ----
 

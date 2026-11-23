@@ -32,11 +32,16 @@ type renewHarness struct {
 	store *memStore
 	reg   *registry.Registry
 	srv   *httptest.Server
+	gw    *gateway.Gateway
 }
 
 func newRenewHarness(t *testing.T) *renewHarness {
 	t.Helper()
-	ca, err := pki.LoadOrCreateCA(t.TempDir())
+	// The CA is backdated so certificates that expired long ago can be
+	// issued from it, as on a hub that has been running for years.
+	caDir := t.TempDir()
+	writeBackdatedCA(t, caDir)
+	ca, err := pki.LoadOrCreateCA(caDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +56,7 @@ func newRenewHarness(t *testing.T) *renewHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.gw = gw
 	h.srv = httptest.NewUnstartedServer(gw.Handler())
 	h.srv.TLS = gw.TLSConfig(srvCert)
 	h.srv.EnableHTTP2 = true
@@ -235,6 +241,13 @@ func TestConcurrentRenewalsOnlyOneWins(t *testing.T) {
 // it had enrolled long ago.
 func (h *renewHarness) startEnrolledAgent(t *testing.T, cert tls.Certificate) string {
 	t.Helper()
+	return h.startEnrolledAgentWith(t, cert, 0)
+}
+
+// startEnrolledAgentWith is startEnrolledAgent with a RenewBefore setting
+// (0 for the default).
+func (h *renewHarness) startEnrolledAgentWith(t *testing.T, cert tls.Certificate, renewBefore time.Duration) string {
+	t.Helper()
 	dir := t.TempDir()
 	if err := pki.WriteKeyFile(filepath.Join(dir, "agent.key"), cert.PrivateKey.(*ecdsa.PrivateKey)); err != nil {
 		t.Fatal(err)
@@ -250,7 +263,7 @@ func (h *renewHarness) startEnrolledAgent(t *testing.T, cert tls.Certificate) st
 		HubAddr: h.srv.Listener.Addr().String(), DataDir: dir, Version: "test", Log: log,
 		Docker:    &fakeDocker{running: map[string]bool{}, events: make(chan wire.DockerEvent)},
 		PingEvery: 200 * time.Millisecond, DeadAfter: 2 * time.Second, SnapshotEvery: time.Hour, StatsEvery: -1,
-		RenewCheckEvery: 200 * time.Millisecond, // RenewBefore stays at the 30-day default
+		RenewCheckEvery: 200 * time.Millisecond, RenewBefore: renewBefore,
 	})
 	if err != nil {
 		t.Fatal(err)
