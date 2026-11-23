@@ -6,42 +6,36 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only by default. Only the images job, which never runs for pull
+# requests, gets to write packages.
 permissions:
-  contents: write   # lets the first run commit go.sum
-  packages: write   # push images to ghcr.io
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           # Latest patched Go, matching golang:1-alpine in the Dockerfiles.
           # go.mod's "go 1.26.0" is the minimum, not the version to build with:
           # pinning CI to it fails govulncheck on standard-library fixes.
           go-version: stable
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Resolve Go modules
-        run: go mod tidy
-
-      - name: Commit go.mod / go.sum if they changed
-        if: github.event_name == 'push'
-        run: |
-          if [ -n "$(git status --porcelain go.mod go.sum)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add go.mod go.sum
-            git commit -m "chore: update go.mod and go.sum [skip ci]"
-            git push
-          fi
+      - name: Check go.mod / go.sum are tidy
+        # Fails (and prints the diff) instead of fixing them: run `go mod tidy`
+        # locally and commit the result.
+        run: go mod tidy -diff
 
       - name: Build web UI
         run: cd web && npm ci && npm run build
@@ -50,7 +44,7 @@ jobs:
         run: cd web && npm audit --omit=dev --audit-level=moderate
 
       - name: Scan Go code and dependencies for known vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
 
       - name: Vet
         run: go vet ./...
@@ -65,6 +59,9 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push images to ghcr.io
     strategy:
       matrix:
         include:
@@ -72,15 +69,17 @@ jobs:
             dockerfile: Dockerfile.hub
           - image: tainerhub-agent
             dockerfile: Dockerfile.agent
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main   # includes the go.sum commit from the test job
+          persist-credentials: false
 
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -90,26 +89,31 @@ jobs:
         id: v
         run: echo "version=0.1.0-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v7
+      # Push only the immutable version tag; :latest follows once the scan passes.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: VERSION=${{ steps.v.outputs.version }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.v.outputs.version }}
+          tags: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           provenance: true
           sbom: true
 
       - name: Scan image for vulnerabilities
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.v.outputs.version }}
+          image-ref: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           trivyignores: .trivyignore  # accepted CVEs, each with a reason and expiry
           exit-code: "1"
+
+      - name: Tag the scanned image as latest
+        # Points :latest at the same multi-arch index (attestations included).
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE:$VERSION"

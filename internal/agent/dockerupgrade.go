@@ -23,7 +23,11 @@ import (
 // systemd (systemd-run) and exits; the upgrade runs outside Docker, logging to
 // /var/log/tainerhub-docker-upgrade.log, and the agent reconnects afterwards.
 
-const helperImage = "alpine:3" // has busybox nsenter and sh
+// helperImage has busybox nsenter and sh. It runs privileged in the host's
+// PID namespace (root on the host), so it is pinned to one multi-arch index
+// digest: alpine:3.24 as published on Docker Hub. Bump the tag and digest
+// together (docker buildx imagetools inspect alpine:3.24).
+const helperImage = "alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
 
 // Packages upgraded together (only those already installed are touched).
 const dockerPkgs = "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras"
@@ -116,12 +120,13 @@ func parsePlan(out string) wire.DockerPlan {
 // runOnHost runs a shell script on the host itself (not in a container)
 // through a privileged helper, and returns its output.
 func (d *SocketDocker) runOnHost(ctx context.Context, script string) (string, error) {
-	if err := d.ensureImage(ctx, helperImage); err != nil {
+	image, err := d.ensureImage(ctx, helperImage)
+	if err != nil {
 		return "", err
 	}
 	name := fmt.Sprintf("tainerhub-host-helper-%d", time.Now().UnixNano())
 	resp, err := d.doBody(ctx, http.MethodPost, "/containers/create", url.Values{"name": {name}}, map[string]any{
-		"Image":  helperImage,
+		"Image":  image,
 		"Cmd":    []string{"nsenter", "-t", "1", "-m", "-u", "-n", "-i", "--", "/bin/sh", "-c", script},
 		"Labels": map[string]string{"tainerhub.helper": "host"},
 		"HostConfig": map[string]any{
@@ -165,15 +170,66 @@ func (d *SocketDocker) runOnHost(ctx context.Context, script string) (string, er
 	return out.String(), nil
 }
 
-func (d *SocketDocker) ensureImage(ctx context.Context, ref string) error {
-	var img struct {
-		ID string `json:"Id"`
+// digestRef turns a pinned "name[:tag]@sha256:..." reference into the
+// tag-free "name@sha256:..." form the engine looks images up by, so a local
+// image that merely carries the tag never counts.
+func digestRef(ref string) (string, error) {
+	name, digest, ok := strings.Cut(ref, "@")
+	if !ok || !strings.HasPrefix(digest, "sha256:") || len(digest) != len("sha256:")+64 {
+		return "", fmt.Errorf("image %q is not pinned by a sha256 digest", ref)
 	}
-	if err := d.getJSON(ctx, "/images/"+url.PathEscape(ref)+"/json", nil, &img); err == nil {
-		return nil
+	if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {
+		name = name[:i] // drop the tag, keeping any registry port
 	}
-	_, err := d.pull(ctx, ref)
-	return err
+	if name == "" {
+		return "", fmt.Errorf("image %q has no name", ref)
+	}
+	return name + "@" + digest, nil
+}
+
+// hasRepoDigest reports whether an image's RepoDigests include want
+// ("name@sha256:..."). The engine records these for content pulled from a
+// registry by that digest; unlike tags, they can't be set with docker tag.
+func hasRepoDigest(repoDigests []string, want string) bool {
+	name, digest, _ := strings.Cut(want, "@")
+	for _, rd := range repoDigests {
+		n, dg, ok := strings.Cut(rd, "@")
+		if !ok || dg != digest {
+			continue
+		}
+		if n == name || n == "docker.io/"+name || n == "docker.io/library/"+name {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureImage makes a digest-pinned image available and returns the
+// tag-free digest reference to create containers from. It pulls by digest
+// unless an image with exactly that repo digest is already present; a local
+// image that only has a matching tag is ignored.
+func (d *SocketDocker) ensureImage(ctx context.Context, ref string) (string, error) {
+	pinned, err := digestRef(ref)
+	if err != nil {
+		return "", err
+	}
+	present := func() bool {
+		var img struct {
+			RepoDigests []string
+		}
+		return d.getJSON(ctx, "/images/"+url.PathEscape(pinned)+"/json", nil, &img) == nil &&
+			hasRepoDigest(img.RepoDigests, pinned)
+	}
+	if present() {
+		return pinned, nil
+	}
+	if _, err := d.pull(ctx, pinned); err != nil {
+		return "", fmt.Errorf("pull the host helper image: %w", err)
+	}
+	if !present() {
+		return "", fmt.Errorf("pulled %s but the engine doesn't list that digest", pinned)
+	}
+	return pinned, nil
 }
 
 func lastLine(s string) string {

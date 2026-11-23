@@ -1,12 +1,104 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+func TestHelperImagePinned(t *testing.T) {
+	ref, err := digestRef(helperImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(ref, "alpine@sha256:") {
+		t.Fatalf("helper image ref %q", ref)
+	}
+}
+
+func TestDigestRef(t *testing.T) {
+	dg := "sha256:" + strings.Repeat("a", 64)
+	for in, want := range map[string]string{
+		"alpine:3.24@" + dg:               "alpine@" + dg,
+		"alpine@" + dg:                    "alpine@" + dg,
+		"reg.local:5000/x/alpine:1@" + dg: "reg.local:5000/x/alpine@" + dg,
+		"reg.local:5000/x/alpine@" + dg:   "reg.local:5000/x/alpine@" + dg,
+	} {
+		if got, err := digestRef(in); err != nil || got != want {
+			t.Errorf("digestRef(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"alpine:3", "alpine:3.24", "alpine@sha256:short", "alpine@md5:" + strings.Repeat("a", 64), "@" + dg} {
+		if _, err := digestRef(in); err == nil {
+			t.Errorf("digestRef(%q) must fail", in)
+		}
+	}
+}
+
+// A local image that only carries the tag must not be used: ensureImage
+// pulls by digest and creates containers from the digest reference.
+func TestEnsureImagePullsByDigest(t *testing.T) {
+	pinned, _ := digestRef(helperImage)
+	var mu sync.Mutex
+	pulled := ""
+	sock := filepath.Join(t.TempDir(), "d.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /images/{ref}/json", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.PathValue("ref") == pinned && pulled != "":
+			_ = json.NewEncoder(w).Encode(map[string]any{"RepoDigests": []string{pinned}})
+		case r.PathValue("ref") == pinned:
+			// The engine resolves the digest to a same-content image that was
+			// only tagged locally: no matching repo digest.
+			_ = json.NewEncoder(w).Encode(map[string]any{"RepoTags": []string{"alpine:3.24"}, "RepoDigests": []string{}})
+		default:
+			http.Error(w, `{"message":"no such image"}`, 404)
+		}
+	})
+	mux.HandleFunc("POST /images/create", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		pulled = r.URL.Query().Get("fromImage")
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"status":"Status: Downloaded newer image"}` + "\n"))
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(l) }()
+	defer srv.Close()
+
+	got, err := NewSocketDocker(sock).ensureImage(context.Background(), helperImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != pinned || pulled != pinned {
+		t.Fatalf("ensureImage = %q, pulled %q; want both %q", got, pulled, pinned)
+	}
+	if _, err := NewSocketDocker(sock).ensureImage(context.Background(), "alpine:3"); err == nil {
+		t.Fatal("an unpinned reference must be refused")
+	}
+}
+
+func TestHasRepoDigest(t *testing.T) {
+	dg := "sha256:" + strings.Repeat("b", 64)
+	if !hasRepoDigest([]string{"docker.io/library/alpine@" + dg}, "alpine@"+dg) || !hasRepoDigest([]string{"alpine@" + dg}, "alpine@"+dg) {
+		t.Fatal("matching repo digest not recognised")
+	}
+	if hasRepoDigest([]string{"evil/alpine@" + dg, "alpine@sha256:" + strings.Repeat("c", 64)}, "alpine@"+dg) {
+		t.Fatal("non-matching repo digest accepted")
+	}
+}
 
 func TestParsePlan(t *testing.T) {
 	p := parsePlan("systemd=yes\nmanager=apt\ninstalled=5:29.8.2-1~ubuntu.24.04~noble\ncandidate=5:29.10.0-1~ubuntu.24.04~noble\n")
