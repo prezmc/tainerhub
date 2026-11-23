@@ -148,7 +148,7 @@ Admins: **Stacks → New stack**.
 
 1. Paste your compose file into **compose.yaml**.
 2. Add variables to **.env** if your compose file uses them.
-3. Pick the **Host**. Hosts that can't run stacks are marked "(stacks not set up)" or "(offline)".
+3. Pick the **Host**. Hosts are listed with the most room first, with their recent CPU and memory use, and the best one is marked **★ suggested** and chosen for you. Hosts that can't run stacks are marked "(stacks not set up)" or "(offline)".
 4. Enter a **Name**: lowercase letters, digits, `-` and `_`, starting with a letter or digit, up to 63 characters.
 5. Click **Save & deploy**, or **Save without deploying**.
 
@@ -189,6 +189,30 @@ Admins: open the stack and click **Delete…** at the bottom. Type the stack's n
 
 - **Delete stack**: runs `docker compose down` on the host and removes `compose.yaml` and `.env`. Tick **Also delete its named volumes** to delete those too; their data is gone for good. Anything else in the stack's folder, such as bind-mounted data, is left in place.
 - **Remove from TainerHub only**: forgets the stack without touching the host. Use this for a host that no longer exists.
+
+### Moving a stack to another host
+
+Admins: open the stack and click **Move…** under **Move to another host**. Pick the host: each one shows its CPU and memory now and after the move (the stack's current use added), and the one with the most room is suggested. TainerHub then checks both hosts and shows what will happen, or what's in the way.
+
+The move:
+
+1. Pulls the stack's images on the new host while the stack still runs. An image that doesn't exist for that host's CPU type stops the move here, before anything changes.
+2. Stops the stack on the old host. **It's down from here** until it runs on the new one; the dialog estimates for how long.
+3. Copies its named volumes and its folder (`/opt/tainerhub/stacks/<name>/`, which holds relative bind mounts such as `./data`) to the new host. The data goes through the hub; owners and permissions are kept.
+4. Deploys it on the new host and waits until every container that ran before runs and is healthy.
+5. Makes the new host the stack's host and removes the old containers. **The old copy of the data stays on the old host** as a backup: the stack's page shows it, with **Delete old copy**.
+
+If any step from 2 on fails, TainerHub removes what reached the new host and starts the stack on the old one again. The job's output shows each step.
+
+What isn't copied:
+
+- **Folders outside the stack's folder** (such as `/srv/media:/media`). The dialog lists them; tick that the new host has its own copy at the same paths.
+- **External volumes**: the new host must already have a volume of that name.
+- **Volumes on NFS, CIFS or a bind** (`driver_opts` in the compose file): their data lives elsewhere, so compose just creates them again on the new host.
+
+A move can't start when the new host already has a stack, project, folder or volume of that name, a port the stack publishes is taken there, or it lacks the disk space. Deploy saved changes before moving, so what moves is what runs. Moves are written to the audit log.
+
+If the hub restarts during a move, the move stops. The stack's page says so: the stack may be stopped on the old host (start it from its buttons) and part of the copy may be on the new one (**Delete partial copy**).
 
 ### Taking over projects started elsewhere
 
@@ -247,6 +271,7 @@ One card per server. A card shows:
 - its address, operating system and CPU architecture,
 - a ring with the share of running containers, plus running, stopped and unhealthy counts (click them to jump to the Containers list),
 - CPU cores, memory and Docker version,
+- bars for CPU and memory use (averaged over the last 15 minutes) and free disk where stacks are kept,
 - a **Stacks unavailable** note if the agent can't run stacks, with the reason.
 
 An offline host says **Agent offline. Check docker logs tainerhub-agent on this host.**

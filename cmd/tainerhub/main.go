@@ -160,6 +160,13 @@ func run(log *slog.Logger) error {
 	if err := st.Migrate(ctx); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	// A move can't continue after a restart: say so on the stack's page,
+	// where its state and what to do next are shown.
+	if n, err := st.InterruptMoves(ctx); err != nil {
+		return fmt.Errorf("check for interrupted stack moves: %w", err)
+	} else if n > 0 {
+		log.Warn("stack moves were interrupted by the restart; see the stack's page", "count", n)
+	}
 
 	ca, err := pki.LoadOrCreateCA(filepath.Join(cfg.DataDir, "pki"))
 	if err != nil {

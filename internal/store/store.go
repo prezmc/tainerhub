@@ -865,3 +865,144 @@ func (s *Store) DeleteSetting(ctx context.Context, key string) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM settings WHERE key = $1`, key)
 	return err
 }
+
+// ---------------- stack moves ----------------
+
+// MoveLeftovers is data a move left on a host: the old copy after a
+// successful move, or a partial copy a failed one couldn't remove.
+type MoveLeftovers struct {
+	HostID  string   `json:"host_id"`
+	Volumes []string `json:"volumes,omitempty"`
+	Dir     string   `json:"dir,omitempty"` // stack name whose folder is left, if any
+}
+
+func (l *MoveLeftovers) Empty() bool { return l == nil || (len(l.Volumes) == 0 && l.Dir == "") }
+
+type StackMove struct {
+	ID                 string         `json:"id"`
+	StackID            *string        `json:"stackId"`
+	StackName          string         `json:"stackName"`
+	FromHost           string         `json:"fromHost"`
+	ToHost             string         `json:"toHost"`
+	State              string         `json:"state"` // running, done, failed, interrupted
+	Error              string         `json:"error,omitempty"`
+	Bytes              int64          `json:"bytes"`
+	Leftovers          *MoveLeftovers `json:"leftovers,omitempty"`
+	LeftoversRemovedAt *time.Time     `json:"leftoversRemovedAt,omitempty"`
+	StartedBy          string         `json:"startedBy"`
+	StartedAt          time.Time      `json:"startedAt"`
+	FinishedAt         *time.Time     `json:"finishedAt,omitempty"`
+}
+
+const moveCols = `id::text, stack_id::text, stack_name, from_host::text, to_host::text, state, error, bytes, leftovers, leftovers_removed_at, started_by, started_at, finished_at`
+
+func scanMove(row pgx.Row) (StackMove, error) {
+	var m StackMove
+	var left []byte
+	err := row.Scan(&m.ID, &m.StackID, &m.StackName, &m.FromHost, &m.ToHost, &m.State, &m.Error, &m.Bytes, &left, &m.LeftoversRemovedAt, &m.StartedBy, &m.StartedAt, &m.FinishedAt)
+	if err == nil && len(left) > 0 {
+		m.Leftovers = &MoveLeftovers{}
+		err = json.Unmarshal(left, m.Leftovers)
+	}
+	return m, notFound(err)
+}
+
+// StartMove records a move as running. ErrConflict if the stack is already
+// being moved.
+func (s *Store) StartMove(ctx context.Context, st Stack, toHost, by string) (StackMove, error) {
+	m, err := scanMove(s.db.QueryRow(ctx,
+		`INSERT INTO stack_moves (stack_id, stack_name, from_host, to_host, state, started_by)
+		 VALUES ($1::uuid, $2, $3::uuid, $4::uuid, 'running', $5) RETURNING `+moveCols,
+		st.ID, st.Name, st.HostID, toHost, by))
+	if isUniqueViolation(err) {
+		return StackMove{}, ErrConflict
+	}
+	return m, err
+}
+
+func leftoversJSON(l *MoveLeftovers) []byte {
+	if l.Empty() {
+		return nil
+	}
+	b, _ := json.Marshal(l)
+	return b
+}
+
+// CommitMove makes the stack belong to its new host (deployed with the
+// contents of hash) and records the move as done, in one transaction.
+// ErrConflict if the new host already has a stack with this name.
+func (s *Store) CommitMove(ctx context.Context, moveID, stackID, toHost, hash string, bytes int64, left *MoveLeftovers) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
+	tag, err := tx.Exec(ctx, `UPDATE stacks SET host_id = $2::uuid, deployed_at = now(), deployed_hash = $3 WHERE id = $1::uuid`, stackID, toHost, hash)
+	if isUniqueViolation(err) {
+		return ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE stack_moves SET state = 'done', bytes = $2, leftovers = $3, finished_at = now() WHERE id = $1::uuid`,
+		moveID, bytes, leftoversJSON(left)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// FailMove records a move that didn't happen; left is anything it couldn't
+// clean up.
+func (s *Store) FailMove(ctx context.Context, moveID, errText string, bytes int64, left *MoveLeftovers) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE stack_moves SET state = 'failed', error = $2, bytes = $3, leftovers = $4, finished_at = now() WHERE id = $1::uuid`,
+		moveID, errText, bytes, leftoversJSON(left))
+	return err
+}
+
+// InterruptMoves marks moves still running when the hub stopped. Their stack
+// may be stopped on its host and part-copied to the other.
+func (s *Store) InterruptMoves(ctx context.Context) (int64, error) {
+	tag, err := s.db.Exec(ctx,
+		`UPDATE stack_moves SET state = 'interrupted', error = 'the hub restarted during the move', finished_at = now() WHERE state = 'running'`)
+	return tag.RowsAffected(), err
+}
+
+func (s *Store) GetMove(ctx context.Context, id string) (StackMove, error) {
+	return scanMove(s.db.QueryRow(ctx, `SELECT `+moveCols+` FROM stack_moves WHERE id = $1::uuid`, id))
+}
+
+// StackMoves lists a stack's moves, newest first.
+func (s *Store) StackMoves(ctx context.Context, stackID string, limit int) ([]StackMove, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+moveCols+` FROM stack_moves WHERE stack_id = $1::uuid ORDER BY started_at DESC LIMIT $2`, stackID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StackMove
+	for rows.Next() {
+		m, err := scanMove(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// LeftoversRemoved records that a move's leftover data was deleted.
+func (s *Store) LeftoversRemoved(ctx context.Context, id string) error {
+	_, err := s.db.Exec(ctx, `UPDATE stack_moves SET leftovers_removed_at = now() WHERE id = $1::uuid`, id)
+	return err
+}
+
+// SetMoveLeftovers records where a running move has put data so far, so an
+// interrupted move still says what to clean up.
+func (s *Store) SetMoveLeftovers(ctx context.Context, id string, left *MoveLeftovers) error {
+	_, err := s.db.Exec(ctx, `UPDATE stack_moves SET leftovers = $2 WHERE id = $1::uuid`, id, leftoversJSON(left))
+	return err
+}

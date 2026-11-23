@@ -378,6 +378,42 @@ export interface StackDetail {
   summary: StackSummary
   /** Only admins can read compose files and .env (they often hold passwords). */
   filesVisible: boolean
+  /** Recent moves to other hosts, newest first. */
+  moves: StackMove[]
+}
+
+export interface StackMove {
+  id: string
+  stackId: string | null
+  stackName: string
+  fromHost: string
+  toHost: string
+  state: 'running' | 'done' | 'failed' | 'interrupted'
+  error?: string
+  bytes: number
+  /** Data the move left on a host: the old copy, or a partial one. */
+  leftovers?: { host_id: string; volumes?: string[]; dir?: string }
+  leftoversRemovedAt?: string
+  startedBy: string
+  startedAt: string
+  finishedAt?: string
+}
+
+/** What moving a stack to a host would do, from GET /api/stacks/{id}/move. */
+export interface MoveReport {
+  fromName: string
+  toName: string
+  blockers: string[]
+  warnings: string[]
+  /** Folders outside the stack's folder that aren't copied: the admin confirms them. */
+  confirm: string[]
+  copy: { kind: 'volume' | 'stackdir'; name: string; size: number; partial?: boolean }[]
+  /** Volumes compose recreates on the new host; their data stays where it is (NFS and the like). */
+  recreated: string[]
+  totalBytes: number
+  sizeUnknown?: boolean
+  diskFree?: number
+  images: string[]
 }
 
 export interface StackSaveResult {

@@ -8,6 +8,7 @@ import { useFleet, useOpenDetails, useOpenLogs } from '../fleet'
 import { CodeEditor, StackStatusBadge, useOpenJob, useStackAction, useStacks, withLive } from '../stacks'
 import { useMe } from './AppLayout'
 import { HostSelect, useDefaultHost } from '../placement'
+import { MoveSection } from './MoveStack'
 
 const STARTER = `services:
   app:
@@ -206,6 +207,7 @@ export function StackPage() {
       <div className="space-y-6">
         <StackContainers s={s} />
         {admin ? <FilesEditor d={d} /> : <FilesLocked />}
+        {admin && s.managed && <MoveSection d={d} s={s} />}
         {admin && <DangerZone s={s} />}
       </div>
     </div>

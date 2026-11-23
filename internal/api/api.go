@@ -123,6 +123,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/remove-with-volumes", s.need("admin", s.removeWithVolumes))
 	// stack lifecycle on definitions an admin has saved
 	mux.Handle("POST /api/stacks/{sid}/{action}", s.need("operator", s.stackAction))
+	mux.Handle("GET /api/stacks/{sid}/move", s.need("admin", s.moveCheck))
+	mux.Handle("POST /api/stacks/{sid}/move", s.need("admin", s.startMove))
+	mux.Handle("DELETE /api/moves/{mid}/leftovers", s.need("admin", s.removeLeftovers))
 	// writing a compose file is root on the host: admins only (see stacks.go)
 	mux.Handle("POST /api/stacks", s.need("admin", s.createStack))
 	// Docker Hub lookups for the "New container" page (which creates a stack)

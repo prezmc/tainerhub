@@ -54,6 +54,15 @@ Agents renew their certificate automatically:
 
 Renewals are written to the audit log.
 
+### Copying data between hosts
+
+Moving a stack copies its volumes and folder from one agent to another. Agents still only connect out: the sending agent uploads the data to the hub's port 7443 and the receiving agent downloads it, both over the same mutual TLS. The hub passes it through without storing it.
+
+- Each copy has a random ID that only the two hosts it was set up for can use, once each.
+- Both agents report the size and SHA-256 of what they sent and received; the copy fails if they differ. It also stops after 2 minutes without data, or if it grows past what was measured.
+- The receiving agent never overwrites an existing volume or a stack folder with files in it, and refuses archives with paths outside the data, hard links out of it, or device files.
+- The agent itself has no capabilities, so Docker reads and writes the data through short-lived helper containers made from the agent's own image (never started for copying, and without network). Deleting an old copy starts one that keeps Docker's default capabilities, so it can delete files of other users.
+
 ### Limits on agents
 
 An enrolled agent is trusted with its own server, not with the hub. What an agent sends is rate-limited, so a buggy or compromised one can't overload the database or flood every open browser. Single messages are capped at 8 MiB. Each IP address can hold at most 32 connections open before presenting a certificate, and slow enrollment requests are dropped after 10 seconds.
