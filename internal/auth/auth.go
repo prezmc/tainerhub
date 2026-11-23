@@ -180,7 +180,7 @@ func (s *Service) isTrusted(a netip.Addr) bool {
 
 // Cookie names use the __Host- prefix over HTTPS: the browser then refuses
 // them unless Secure, Path=/ and host-only, which blocks cookie injection
-// from sibling subdomains of example.com.
+// from sibling subdomains (other apps on the same parent domain).
 // The choice is per request: a browser on the https:// address (through the
 // proxy) gets Secure __Host- cookies, one on http://<ip>:8585 plain ones.
 func (s *Service) cookieName(r *http.Request, base string) string {

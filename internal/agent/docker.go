@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prezmc/tainerhub/internal/wire"
@@ -54,7 +55,27 @@ type SocketDocker struct {
 	cpuMu   sync.Mutex
 	lastCPU map[string]cpuSample // container ID -> previous stats sample
 
-	cg *cgroupStats // reads stats from kernel files when the host's cgroups are mounted
+	cg        *cgroupStats // reads stats from kernel files when the host's cgroups are mounted
+	useDocker atomic.Bool  // the hub asked for stats from Docker even so
+}
+
+// SetStatsFromDocker switches between cgroup files and the Docker API for
+// stats, and reports whether that changed anything. Each source's previous
+// samples are dropped so the first reading after a switch isn't averaged
+// over the time the other source was in use.
+func (d *SocketDocker) SetStatsFromDocker(on bool) bool {
+	if d.useDocker.Swap(on) == on {
+		return false
+	}
+	d.cpuMu.Lock()
+	d.lastCPU = nil
+	d.cpuMu.Unlock()
+	if d.cg != nil {
+		d.cg.mu.Lock()
+		d.cg.last = map[string]cgroupCPU{}
+		d.cg.mu.Unlock()
+	}
+	return true
 }
 
 // UseCgroups reads container stats from the host's cgroup v2 tree mounted at
@@ -317,7 +338,7 @@ func (d *SocketDocker) Stats(ctx context.Context, id string) (Usage, error) {
 	if !wire.ValidContainerRef(id) {
 		return Usage{}, errors.New("invalid container id")
 	}
-	if d.cg != nil {
+	if d.cg != nil && !d.useDocker.Load() {
 		if u, ok := d.cg.Stats(id); ok {
 			return u, nil
 		}

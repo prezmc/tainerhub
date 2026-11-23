@@ -72,11 +72,16 @@ func TestWatchTellsAgentsFirstAndLast(t *testing.T) {
 	r := New()
 	a := r.Attach("h1", "one", func() {})
 	next := func() *bool {
-		select {
-		case m := <-a.Out():
-			return m.Watching
-		default:
-			return nil
+		for {
+			select {
+			case m := <-a.Out():
+				if m.StatsFromDocker != nil {
+					continue // sent at attach too
+				}
+				return m.Watching
+			default:
+				return nil
+			}
 		}
 	}
 	if w := next(); w == nil || *w {
@@ -103,5 +108,41 @@ func TestWatchTellsAgentsFirstAndLast(t *testing.T) {
 	r.Watch()
 	if m := <-b.Out(); m.Watching == nil || *m.Watching {
 		t.Fatal("new agent should first hear the state at attach")
+	}
+}
+
+func TestStatsFromDockerTellsAgentNowAndAtAttach(t *testing.T) {
+	r := New()
+	a := r.Attach("h1", "one", func() {})
+	statsMsg := func(a *Agent) *bool {
+		for {
+			select {
+			case m := <-a.Out():
+				if m.StatsFromDocker != nil {
+					return m.StatsFromDocker
+				}
+			default:
+				return nil
+			}
+		}
+	}
+	if v := statsMsg(a); v == nil || *v {
+		t.Fatalf("attach: want stats_from_docker=false, got %v", v)
+	}
+	r.SetStatsFromDocker("h1", true)
+	if v := statsMsg(a); v == nil || !*v {
+		t.Fatalf("switch: want true, got %v", v)
+	}
+	r.SetStatsFromDocker("h2", true) // offline host: remembered
+	if got := r.StatsFromDockerHosts(); len(got) != 2 || got[0] != "h1" || got[1] != "h2" {
+		t.Fatalf("hosts = %v", got)
+	}
+	b := r.Attach("h2", "two", func() {})
+	if v := statsMsg(b); v == nil || !*v {
+		t.Fatalf("reconnect: want true, got %v", v)
+	}
+	r.SetStatsFromDocker("h1", false)
+	if r.StatsFromDocker("h1") || len(r.StatsFromDockerHosts()) != 1 {
+		t.Fatal("switching back didn't stick")
 	}
 }

@@ -187,6 +187,9 @@ func run(log *slog.Logger) error {
 
 	apiSrv := &api.Server{Store: st, Auth: authSvc, Reg: reg, CA: ca, Log: log.With("component", "api"), AgentAddr: cfg.AgentAddr, Web: web.Dist(), DataDir: cfg.DataDir,
 		HTTPS: api.HTTPSConfig{EnvPublicURL: cfg.PublicURL, EnvTrusted: cfg.Trusted, HTTPPort: httpPort(cfg.HTTPAddr)}}
+	if err := apiSrv.LoadStatsSettings(ctx); err != nil {
+		log.Warn("load stats settings", "err", err)
+	}
 	if err := apiSrv.LoadHTTPSSettings(ctx); err != nil {
 		log.Warn("couldn't load the HTTPS settings saved in the UI", "err", err)
 	} else if u := authSvc.PublicURL(); cfg.PublicURL == nil && u != nil {

@@ -123,8 +123,10 @@ type hostUpdate struct {
 	CanTry       bool `json:"canUpdate"`
 	// CgroupStats: the agent reads stats from cgroup files. False offers
 	// "Lighter stats"; nil means an agent too old to say.
-	CgroupStats *bool  `json:"cgroupStats,omitempty"`
-	Note        string `json:"note,omitempty"`
+	CgroupStats *bool `json:"cgroupStats,omitempty"`
+	// StatsFromDocker: an admin chose Docker as this host's stats source.
+	StatsFromDocker bool   `json:"statsFromDocker"`
+	Note            string `json:"note,omitempty"`
 }
 
 func (s *Server) updates(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +152,7 @@ func (s *Server) updates(w http.ResponseWriter, r *http.Request) {
 				u.Version = hello.AgentVersion
 				u.Docker = hello.DockerVersion
 				u.CgroupStats = hello.CgroupStats
+				u.StatsFromDocker = s.Reg.StatsFromDocker(h.ID)
 				u.DockerBehind = dockerLatest != "" && u.Docker != "" && versionLess(u.Docker, dockerLatest)
 			}
 		}
@@ -237,6 +240,58 @@ func (s *Server) lighterStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"result": res})
+}
+
+const settingStatsFromDocker = "stats_from_docker" // comma-separated host IDs
+
+// LoadStatsSettings restores which hosts were switched to stats from Docker.
+func (s *Server) LoadStatsSettings(ctx context.Context) error {
+	raw, err := s.Store.Setting(ctx, settingStatsFromDocker)
+	if err != nil {
+		return err
+	}
+	for _, id := range strings.Split(raw, ",") {
+		if validUUID(id) {
+			s.Reg.SetStatsFromDocker(id, true)
+		}
+	}
+	return nil
+}
+
+// statsSource switches a host between reading stats from cgroup files
+// (lighter) and asking Docker, in case the lighter numbers look wrong. The
+// agent switches live; the choice is kept across restarts.
+func (s *Server) statsSource(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validUUID(id) {
+		jsonErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	var in struct{ Source string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if in.Source != "docker" && in.Source != "cgroup" {
+		jsonErr(w, http.StatusBadRequest, `source must be "docker" or "cgroup"`)
+		return
+	}
+	h, err := s.Store.GetHost(r.Context(), id)
+	if err != nil {
+		s.notFoundOr(w, err)
+		return
+	}
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+	prev := s.Reg.StatsFromDocker(id)
+	s.Reg.SetStatsFromDocker(id, in.Source == "docker")
+	if err := s.Store.SetSetting(r.Context(), settingStatsFromDocker, strings.Join(s.Reg.StatsFromDockerHosts(), ",")); err != nil {
+		s.Reg.SetStatsFromDocker(id, prev)
+		s.fail(w, err)
+		return
+	}
+	u := userFrom(r)
+	s.record(r, &u, "host.stats_source", h.Name, map[string]string{"source": in.Source})
+	writeJSON(w, http.StatusOK, map[string]any{"source": in.Source})
 }
 
 // ---------------- Docker Engine ----------------
