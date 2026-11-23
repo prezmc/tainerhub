@@ -590,7 +590,65 @@ const (
 	// restarts, and with it every container. Arg must be "restart-all" (the
 	// admin's explicit OK). Result: DockerPlan of what was started.
 	OpDockerUpgrade = "docker.upgrade"
+	// OpStackInspect describes stack Target on this host for moving it: its
+	// volumes (with sizes), bind mounts, published ports and images, read from
+	// `compose config`. Works for a stack not deployed here too (Deployed is
+	// then false), to check the folder is free. Result: StackInspect.
+	OpStackInspect = "stack.inspect"
+	// OpStackDirRemove deletes the data in stack Target's folder (whatever
+	// its owners) and the folder itself. Refused while the stack is deployed
+	// on this host (its compose file is there). Used to clean up after a move.
+	OpStackDirRemove = "stack.remove_dir"
 )
+
+// StackInspect describes a stack's data and needs on one host.
+type StackInspect struct {
+	Deployed bool `json:"deployed"` // the stack's compose file is in its folder
+	// Dir is the stack's folder; DirFiles counts what's in it besides the
+	// compose file, .env and TainerHub's own temporary folders.
+	Dir      string `json:"dir"`
+	DirFiles int    `json:"dir_files"`
+	// DirSize is the folder's size in bytes; DirSizePartial means some of
+	// it couldn't be read (files of other users), so it's a lower bound.
+	DirSize        int64 `json:"dir_size"`
+	DirSizePartial bool  `json:"dir_size_partial,omitempty"`
+
+	Services []StackService `json:"services,omitempty"`
+	Volumes  []StackVolume  `json:"volumes,omitempty"`
+	Binds    []StackBind    `json:"binds,omitempty"`
+	// Ports are the host ports the stack publishes, e.g. "8080/tcp".
+	Ports []string `json:"ports,omitempty"`
+}
+
+type StackService struct {
+	Name        string `json:"name"`
+	Image       string `json:"image,omitempty"`
+	Build       bool   `json:"build,omitempty"`        // has a build: section
+	HostNetwork bool   `json:"host_network,omitempty"` // network_mode: host
+	Devices     bool   `json:"devices,omitempty"`      // maps host devices (USB sticks, GPUs)
+}
+
+type StackVolume struct {
+	Key  string `json:"key"`  // name in the compose file
+	Name string `json:"name"` // Docker volume name
+	// External volumes are made outside the stack; Options means it mounts
+	// storage from elsewhere (NFS, CIFS, a bind): neither is copied.
+	External bool   `json:"external,omitempty"`
+	Driver   string `json:"driver,omitempty"`
+	Options  bool   `json:"options,omitempty"`
+	Exists   bool   `json:"exists"`
+	Size     int64  `json:"size"` // bytes; -1 if Docker didn't say
+	// Labels as Docker has them, to recreate the volume elsewhere.
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+type StackBind struct {
+	Service string `json:"service"`
+	Source  string `json:"source"` // host path
+	Target  string `json:"target"`
+	// InStackDir: inside the stack's folder, so it moves with it.
+	InStackDir bool `json:"in_stack_dir"`
+}
 
 // DockerPlan describes a host's Docker install and whether TainerHub can
 // upgrade it.
@@ -637,6 +695,7 @@ var OpKinds = map[string]bool{
 	OpContainerRemoveVolumes: true, OpSelfUpdate: true,
 	OpImagesCheckUpdates: false, OpContainerRecreate: true,
 	OpDockerPlan: false, OpDockerUpgrade: true,
+	OpStackInspect: false, OpStackDirRemove: true,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -671,6 +730,10 @@ func ValidOperation(op Operation) error {
 	case OpDockerUpgrade:
 		if op.Arg != "restart-all" {
 			return errors.New("upgrading Docker restarts every container: it needs an explicit OK")
+		}
+	case OpStackInspect, OpStackDirRemove:
+		if !ValidStackName(op.Target) {
+			return errors.New("invalid stack name")
 		}
 	case OpImagesPrune, OpVolumesPrune, OpNetworksPrune:
 		if op.Arg != "" && op.Arg != "all" {

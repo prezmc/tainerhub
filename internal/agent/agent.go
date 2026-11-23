@@ -903,7 +903,7 @@ func (s *session) handle(c wire.Command) {
 		go func() {
 			timeout := time.Minute
 			switch c.Op.Kind {
-			case wire.OpImagePull, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade:
+			case wire.OpImagePull, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade, wire.OpStackDirRemove:
 				timeout = 15 * time.Minute // pulls and registry round trips
 			}
 			ctx, cancel := context.WithTimeout(s.ctx, timeout)
@@ -911,7 +911,7 @@ func (s *session) handle(c wire.Command) {
 			res := wire.CommandResult{CommandID: c.ID}
 			if err := wire.ValidOperation(*c.Op); err != nil {
 				res.Error = err.Error()
-			} else if data, err := s.a.cfg.Docker.Operate(ctx, *c.Op); err != nil {
+			} else if data, err := s.operate(ctx, *c.Op); err != nil {
 				res.Error = err.Error()
 			} else {
 				res.OK = true
@@ -981,6 +981,17 @@ func (s *session) handle(c wire.Command) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+// operate runs a resource operation: the stack ones here, the rest in Docker.
+func (s *session) operate(ctx context.Context, op wire.Operation) (any, error) {
+	switch op.Kind {
+	case wire.OpStackInspect:
+		return s.inspectStack(ctx, op.Target)
+	case wire.OpStackDirRemove:
+		return nil, s.removeStackDir(ctx, op.Target)
+	}
+	return s.a.cfg.Docker.Operate(ctx, op)
 }
 
 // startTransfer sends or receives one volume or stack folder through the

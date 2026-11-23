@@ -190,7 +190,15 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 	if !canView {
 		st.Compose, st.Env = "", ""
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"stack": st, "summary": sum, "filesVisible": canView})
+	moves, err := s.Store.StackMoves(r.Context(), st.ID, 5)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if moves == nil {
+		moves = []store.StackMove{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stack": st, "summary": sum, "filesVisible": canView, "moves": moves})
 }
 
 type stackInput struct {
