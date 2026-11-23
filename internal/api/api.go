@@ -148,6 +148,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/exec/{sid}/resize", s.need("admin", s.execResize))
 	mux.Handle("DELETE /api/exec/{sid}", s.need("admin", s.execClose))
 	mux.Handle("POST /api/hosts/{id}/update", s.need("admin", s.updateHost))
+	mux.Handle("POST /api/hosts/{id}/lighter-stats", s.need("admin", s.lighterStats))
 	// Docker Engine upgrades restart every container: admins, with explicit confirmation
 	mux.Handle("POST /api/hosts/{id}/docker/plan", s.need("admin", s.dockerPlan))
 	mux.Handle("POST /api/hosts/{id}/docker/upgrade", s.need("admin", s.dockerUpgrade))

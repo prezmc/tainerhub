@@ -117,11 +117,14 @@ type hostUpdate struct {
 	Docker  string `json:"docker"`  // Docker Engine version
 	// DockerBehind: Docker has released a newer engine. Whether this host's
 	// package repository offers it yet is checked when upgrading.
-	DockerBehind bool   `json:"dockerBehind"`
-	Current      bool   `json:"current"`
-	HubHost      bool   `json:"hubHost"` // this server also runs the hub: updating it updates the hub
-	CanTry       bool   `json:"canUpdate"`
-	Note         string `json:"note,omitempty"`
+	DockerBehind bool `json:"dockerBehind"`
+	Current      bool `json:"current"`
+	HubHost      bool `json:"hubHost"` // this server also runs the hub: updating it updates the hub
+	CanTry       bool `json:"canUpdate"`
+	// CgroupStats: the agent reads stats from cgroup files. False offers
+	// "Lighter stats"; nil means an agent too old to say.
+	CgroupStats *bool  `json:"cgroupStats,omitempty"`
+	Note        string `json:"note,omitempty"`
 }
 
 func (s *Server) updates(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +149,7 @@ func (s *Server) updates(w http.ResponseWriter, r *http.Request) {
 			if hello := a.Status().Hello; hello != nil {
 				u.Version = hello.AgentVersion
 				u.Docker = hello.DockerVersion
+				u.CgroupStats = hello.CgroupStats
 				u.DockerBehind = dockerLatest != "" && u.Docker != "" && versionLess(u.Docker, dockerLatest)
 			}
 		}
@@ -202,6 +206,37 @@ func (s *Server) updateHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"result": res, "hubHost": a.HostID == s.localHostID()})
+}
+
+// lighterStats asks a host's agent to add the read-only cgroup mount to its
+// own compose service (in compose.override.yml) and recreate itself, so it
+// reads container stats from the kernel instead of asking Docker.
+func (s *Server) lighterStats(w http.ResponseWriter, r *http.Request) {
+	a := s.Reg.Get(r.PathValue("id"))
+	if a == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host is offline")
+		return
+	}
+	if h := a.Status().Hello; h == nil || h.CgroupStats == nil {
+		jsonErr(w, http.StatusConflict, "update this host's agent first")
+		return
+	}
+	data, err := a.Operate(r.Context(), wire.Operation{Kind: wire.OpSelfUpdate, Arg: wire.SelfUpdateAddCgroupMount})
+	u := userFrom(r)
+	detail := map[string]any{"host": a.Name}
+	var res wire.SelfUpdateResult
+	if err == nil {
+		_ = json.Unmarshal(data, &res)
+		detail["file"] = res.Dir + "/compose.override.yml"
+	} else {
+		detail["error"] = err.Error()
+	}
+	s.record(r, &u, "host.lighter_stats", a.Name, detail)
+	if err != nil {
+		jsonErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"result": res})
 }
 
 // ---------------- Docker Engine ----------------

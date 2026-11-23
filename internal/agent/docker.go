@@ -151,7 +151,9 @@ func (d *SocketDocker) Info(ctx context.Context) (wire.Hello, error) {
 	if err := d.getJSON(ctx, "/info", nil, &info); err != nil {
 		return wire.Hello{}, err
 	}
+	cg := d.cg != nil
 	return wire.Hello{
+		CgroupStats:   &cg,
 		Hostname:      info.Name,
 		DockerVersion: info.ServerVersion,
 		OS:            info.OperatingSystem,
