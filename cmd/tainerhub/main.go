@@ -100,6 +100,11 @@ func loadConfig() (config, error) {
 			p = netip.PrefixFrom(a, a.BitLen())
 		}
 		c.Trusted = append(c.Trusted, p.Masked())
+		if api.TrustedRangeTooBroad(p) {
+			// Still applied, so an existing install keeps starting, but a range
+			// this wide lets almost anything claim any client IP.
+			slog.Warn("TAINERHUB_TRUSTED_PROXIES: range is very broad; list your reverse proxy's own IP instead", "range", p.Masked().String())
+		}
 	}
 	return c, nil
 }

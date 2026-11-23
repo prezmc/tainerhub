@@ -162,7 +162,10 @@ func (s *Store) UserByWebAuthnID(ctx context.Context, waID []byte) (User, error)
 }
 
 func (s *Store) UserByUsername(ctx context.Context, username string) (User, error) {
-	return scanUser(s.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE lower(username) = lower($1)`, username))
+	// Case-insensitive. On an old install holding two names that differ only
+	// in case, the exact spelling wins so each account stays reachable.
+	return scanUser(s.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE lower(username) = lower($1)
+		ORDER BY username = $1 DESC, created_at LIMIT 1`, username))
 }
 
 // CreateFirstOwner creates the initial owner with recovery codes and either
@@ -774,6 +777,20 @@ func (s *Store) AcceptInvite(ctx context.Context, tokenHash []byte, u User, reco
 	err = tx.QueryRow(ctx, `SELECT id::text, role FROM invites WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, tokenHash).Scan(&inviteID, &role)
 	if err != nil {
 		return User{}, notFound(err)
+	}
+	// Names must differ in more than case. The unique index on lower(username)
+	// normally enforces this; the lock and check cover installs where the
+	// index couldn't be built (see migration 0006). Invites are rare, so
+	// briefly serialising user creation costs nothing.
+	if _, err := tx.Exec(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return User{}, err
+	}
+	var taken bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE lower(username) = lower($1))`, u.Username).Scan(&taken); err != nil {
+		return User{}, err
+	}
+	if taken {
+		return User{}, ErrConflict
 	}
 	created, err := scanUser(tx.QueryRow(ctx,
 		`INSERT INTO users (username, display_name, role, webauthn_id, password_hash) VALUES ($1, $2, $3, $4, $5) RETURNING `+userCols,

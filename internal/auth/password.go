@@ -153,7 +153,7 @@ func (s *Service) SetupWithPassword(w http.ResponseWriter, r *http.Request, in S
 	}
 	in.Username = strings.TrimSpace(in.Username)
 	if !validUsername(in.Username) {
-		return store.User{}, nil, errors.New("username must be 2-32 letters, digits, dots, dashes or underscores")
+		return store.User{}, nil, errBadUsername
 	}
 	if err := checkPasswordPolicy(in.Password); err != nil {
 		return store.User{}, nil, errors.New("password: " + err.Error())
@@ -296,7 +296,7 @@ func (s *Service) AcceptInvite(w http.ResponseWriter, r *http.Request, in Accept
 	}()
 	in.Username = strings.TrimSpace(in.Username)
 	if !validUsername(in.Username) {
-		return store.User{}, nil, errors.New("username must be 2-32 letters, digits, dots, dashes or underscores")
+		return store.User{}, nil, errBadUsername
 	}
 	if err := checkPasswordPolicy(in.Password); err != nil {
 		return store.User{}, nil, errors.New("password: " + err.Error())
