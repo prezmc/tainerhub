@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -210,4 +211,26 @@ func ReadKeyFile(path string) (*ecdsa.PrivateKey, error) {
 		return nil, errors.New(path + ": not a PEM key")
 	}
 	return x509.ParseECPrivateKey(blk.Bytes)
+}
+
+// RenewingServerCert serves first and reissues the gateway's server
+// certificate (from the same CA, for the same names) once it has less than
+// renewBefore left, so a hub that runs for over a year without a restart
+// keeps accepting agents. Use it as tls.Config.GetCertificate.
+func (ca *CA) RenewingServerCert(first tls.Certificate, hosts []string, renewBefore time.Duration) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	var mu sync.Mutex
+	cur := first
+	return func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if leaf, err := x509.ParseCertificate(cur.Certificate[0]); err == nil && time.Until(leaf.NotAfter) > renewBefore {
+			return &cur, nil
+		}
+		next, err := ca.ServerCert(hosts)
+		if err != nil {
+			return &cur, nil // keep serving the old one; try again on the next handshake
+		}
+		cur = next
+		return &cur, nil
+	}
 }
