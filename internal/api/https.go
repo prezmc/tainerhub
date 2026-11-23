@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -87,7 +88,15 @@ func (s *Server) LoadHTTPSSettings(ctx context.Context) error {
 		return nil // ignore a bad stored value rather than refusing to start
 	}
 	tr, _ := s.Store.Setting(ctx, settingTrusted)
-	return s.Auth.Reconfigure(u, append(append([]netip.Prefix{}, s.HTTPS.EnvTrusted...), parsePrefixes(tr)...))
+	saved := parsePrefixes(tr)
+	for _, p := range saved {
+		// Saved before ranges were checked: keep it (dropping it could break
+		// sign-in through the proxy) but say so.
+		if TrustedRangeTooBroad(p) {
+			s.Log.Warn("a saved trusted proxy range is very broad; set your proxy's own IP under Settings, HTTPS", "range", p.String())
+		}
+	}
+	return s.Auth.Reconfigure(u, append(append([]netip.Prefix{}, s.HTTPS.EnvTrusted...), saved...))
 }
 
 func parseHTTPSURL(raw string) (*url.URL, error) {
@@ -113,6 +122,45 @@ func parsePrefixes(s string) []netip.Prefix {
 		}
 	}
 	return out
+}
+
+// TrustedRangeTooBroad reports whether a trusted-proxy range covers so many
+// addresses that trusting it is almost certainly a mistake: anything in it
+// could claim any client IP (dodging the sign-in rate limit) and say the
+// browser used HTTPS. /16 still covers a Docker bridge network, whose
+// addresses can change between restarts.
+func TrustedRangeTooBroad(p netip.Prefix) bool {
+	switch {
+	case p.Addr().Is4():
+		return p.Bits() < 16
+	case p.Addr().Is4In6(): // ::ffff:a.b.c.d/n: the IPv4 part starts at bit 96
+		return p.Bits() < 96+16
+	}
+	return p.Bits() < 48
+}
+
+// parseTrustedStrict parses the trusted proxies an admin typed. Unlike
+// parsePrefixes (used for values already saved) it refuses anything it
+// can't read and ranges that are too broad, with a message for the UI.
+func parseTrustedStrict(s string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }) {
+		var p netip.Prefix
+		if pp, err := netip.ParsePrefix(f); err == nil {
+			// Store ::ffff:a.b.c.d/n as the plain IPv4 range, as client
+			// addresses are compared unmapped.
+			p = netip.PrefixFrom(pp.Addr().Unmap(), pp.Bits()-(pp.Addr().BitLen()-pp.Addr().Unmap().BitLen())).Masked()
+		} else if a, err := netip.ParseAddr(f); err == nil {
+			p = netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen())
+		} else {
+			return nil, fmt.Errorf("trusted proxy: %q isn't an IP address or range; enter addresses like 192.168.1.20, separated by commas", f)
+		}
+		if !p.IsValid() || TrustedRangeTooBroad(p) {
+			return nil, fmt.Errorf("trusted proxy: %s is too broad. Anything in it could pretend to be any visitor; enter your proxy's own IP (ranges no wider than /16 for IPv4 or /48 for IPv6)", f)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func (s *Server) httpsSettings(w http.ResponseWriter, r *http.Request) {
@@ -214,8 +262,42 @@ func (s *Server) httpsTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// errBlockedTarget: the test address resolves somewhere a reverse proxy
+// can't be, such as the hub itself or a cloud metadata service.
+var errBlockedTarget = errors.New("blocked address")
+
+// blockedProbeAddr reports whether the HTTPS test may not connect to a.
+// The test is for a reverse proxy, which lives on the LAN or the internet,
+// so private ranges stay allowed; loopback, link-local (169.254.169.254
+// cloud metadata), unspecified and multicast addresses are refused, so the
+// test can't be used to probe the hub's own host.
+func blockedProbeAddr(a netip.Addr) bool {
+	a = a.Unmap()
+	return !a.IsValid() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() ||
+		a.IsInterfaceLocalMulticast() || a.IsMulticast() || a.IsUnspecified()
+}
+
+// probeDialControl runs after DNS resolution, on the exact address being
+// dialled, so a name that resolves differently the second time (DNS
+// rebinding) can't slip past.
+func probeDialControl(network, address string, _ syscall.RawConn) error {
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return errBlockedTarget
+	}
+	if blockedProbeAddr(ap.Addr()) {
+		return fmt.Errorf("%w %s", errBlockedTarget, ap.Addr())
+	}
+	return nil
+}
+
 func fetch(ctx context.Context, target string, insecure bool) ([]byte, error) {
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}} // #nosec G402 -- only to report what else works
+	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: probeDialControl}
+	tr := &http.Transport{
+		DialContext:     dialer.DialContext,
+		Proxy:           nil,                                                                     // connect directly, so the address check applies
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: insecure}, // #nosec G402 -- only to report what else works
+	}
 	c := &http.Client{Transport: tr, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -241,6 +323,8 @@ func isTLSError(err error) bool {
 func describeFetchError(host, port string, err error) string {
 	s := err.Error()
 	switch {
+	case errors.Is(err, errBlockedTarget):
+		return fmt.Sprintf("%s points at this server itself or a reserved address, which can't be a reverse proxy. Point its DNS record at your proxy's LAN or public IP.", host)
 	case strings.Contains(s, "no such host"):
 		return fmt.Sprintf("%s doesn't resolve from the hub. Add a DNS record pointing it at your proxy (in your router, Pi-hole or DNS provider).", host)
 	case strings.Contains(s, "connection refused"):
@@ -283,9 +367,9 @@ func (s *Server) httpsEnable(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "test the address first (or turn it on anyway)")
 		return
 	}
-	trusted := parsePrefixes(in.Trusted)
-	if strings.TrimSpace(in.Trusted) != "" && len(trusted) == 0 {
-		jsonErr(w, http.StatusBadRequest, "trusted proxy: enter IP addresses (or ranges like 172.16.0.0/12), separated by commas")
+	trusted, err := parseTrustedStrict(in.Trusted)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var parts []string

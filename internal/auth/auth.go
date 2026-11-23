@@ -29,6 +29,7 @@ import (
 
 const (
 	maxCeremonies   = 10000 // bounds memory if someone floods /api/login/begin
+	beginPerMinute  = 30    // passkey ceremonies one client may start per minute
 	SessionIdle     = 12 * time.Hour
 	SessionMax      = 7 * 24 * time.Hour
 	ceremonyTimeout = 5 * time.Minute
@@ -39,9 +40,12 @@ const (
 var (
 	ErrUnauthorized = errors.New("not signed in")
 	ErrSetupDone    = errors.New("setup already completed")
-	ErrBadSetup     = errors.New("setup link invalid or expired; check the hub logs for a new one")
+	ErrBadSetup     = errors.New("setup link invalid or expired; get a new one with: docker exec tainerhub /tainerhub setup-link")
 	ErrCeremony     = errors.New("sign-in attempt expired; try again")
-	ErrNoPasskeys   = errors.New("passkeys need HTTPS: put TainerHub behind your reverse proxy and set TAINERHUB_PUBLIC_URL to its https:// address")
+	// ErrTooManyCeremonies: the ceremony table is full. Counts as ErrRateLimited (429).
+	ErrTooManyCeremonies error = rateLimitedError{"too many sign-ins in progress; try again in a few minutes"}
+	errBadUsername             = errors.New("username must be 2-32 characters: letters a-z, digits, dots, dashes or underscores")
+	ErrNoPasskeys              = errors.New("passkeys need HTTPS: put TainerHub behind your reverse proxy and set TAINERHUB_PUBLIC_URL to its https:// address")
 )
 
 type Service struct {
@@ -58,10 +62,16 @@ type Service struct {
 
 	mu         sync.Mutex
 	ceremonies map[string]*ceremony
+	// order lists ceremonies oldest first. Every ceremony lives equally long,
+	// so expired ones are always at the front and cleanup never scans the map.
+	order      []ceremonyRef
 	setupToken string
 	setupExp   time.Time
 
 	Limiter *Limiter
+	// beginLimiter caps how fast one client can start passkey ceremonies, so
+	// a single source can't fill the ceremony table and lock others out.
+	beginLimiter *Limiter
 
 	// db, when set, stands in for Store on the sign-in and session paths
 	// below (tests use it to run them without Postgres).
@@ -95,6 +105,11 @@ type ceremony struct {
 	expires time.Time
 }
 
+type ceremonyRef struct {
+	id      string
+	expires time.Time
+}
+
 type webConfig struct {
 	publicURL *url.URL           // nil: plain-HTTP install, passwords only
 	wa        *webauthn.WebAuthn // nil when passkeys are unavailable
@@ -104,7 +119,7 @@ type webConfig struct {
 // New builds the auth service. publicURL may be nil: then only passwords and
 // recovery codes work.
 func New(st *store.Store, publicURL *url.URL, trusted []netip.Prefix, log *slog.Logger) (*Service, error) {
-	s := &Service{Store: st, Log: log, ceremonies: map[string]*ceremony{}, Limiter: NewLimiter(10, 15*time.Minute)}
+	s := &Service{Store: st, Log: log, ceremonies: map[string]*ceremony{}, Limiter: NewLimiter(10, 15*time.Minute), beginLimiter: NewLimiter(beginPerMinute, time.Minute)}
 	if err := s.Reconfigure(publicURL, trusted); err != nil {
 		return nil, err
 	}
@@ -232,24 +247,54 @@ func (s *Service) clearCookie(w http.ResponseWriter, r *http.Request, name strin
 	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", HttpOnly: true, Secure: s.IsHTTPS(r), SameSite: http.SameSiteStrictMode, MaxAge: -1})
 }
 
-func (s *Service) putCeremony(w http.ResponseWriter, r *http.Request, c *ceremony) {
-	id := randToken(24)
-	c.expires = time.Now().Add(ceremonyTimeout)
-	s.mu.Lock()
-	for k, v := range s.ceremonies { // opportunistic cleanup
-		if time.Now().After(v.expires) {
-			delete(s.ceremonies, k)
-		}
+// putCeremony stores a new ceremony and sets its cookie. When the table is
+// full it refuses (ErrTooManyCeremonies) rather than evicting someone else's
+// sign-in in progress; it also limits how many one client may start.
+func (s *Service) putCeremony(w http.ResponseWriter, r *http.Request, c *ceremony) error {
+	if s.beginLimiter != nil && !s.beginLimiter.Reserve(s.ClientIP(r)) {
+		return errTooManyBegins
 	}
+	id := randToken(24)
+	now := time.Now()
+	c.expires = now.Add(ceremonyTimeout)
+	s.mu.Lock()
+	s.expireCeremonies(now)
 	if len(s.ceremonies) >= maxCeremonies {
-		for k := range s.ceremonies { // evict an arbitrary entry
-			delete(s.ceremonies, k)
-			break
-		}
+		s.mu.Unlock()
+		return ErrTooManyCeremonies
+	}
+	if s.ceremonies == nil {
+		s.ceremonies = map[string]*ceremony{}
 	}
 	s.ceremonies[id] = c
+	s.order = append(s.order, ceremonyRef{id: id, expires: c.expires})
 	s.mu.Unlock()
 	s.setCookie(w, r, s.ceremonyCookie(r), id, ceremonyTimeout)
+	return nil
+}
+
+// expireCeremonies drops expired ceremonies from the front of the queue
+// (ones already taken are just skipped). Call with s.mu held.
+func (s *Service) expireCeremonies(now time.Time) {
+	i := 0
+	for i < len(s.order) && now.After(s.order[i].expires) {
+		delete(s.ceremonies, s.order[i].id)
+		i++
+	}
+	// Reslicing is enough: append moves the live tail to a new array when
+	// this one fills, so the dropped head doesn't stay allocated.
+	s.order = s.order[i:]
+	// Finished ceremonies leave their entry behind until it expires; drop
+	// them if they pile up, so the queue stays proportional to the map.
+	if len(s.order) > 2*maxCeremonies {
+		live := s.order[:0]
+		for _, e := range s.order {
+			if _, ok := s.ceremonies[e.id]; ok {
+				live = append(live, e)
+			}
+		}
+		s.order = live
+	}
 }
 
 func (s *Service) takeCeremony(w http.ResponseWriter, r *http.Request, kind string) (*ceremony, error) {
@@ -323,7 +368,8 @@ func (s *Service) SetupRequired(ctx context.Context) (bool, error) {
 	return n == 0, err
 }
 
-// RotateSetupToken creates a new one-time setup token and logs the setup URL.
+// RotateSetupToken creates a new one-time setup token and saves it for
+// `tainerhub setup-link`.
 func (s *Service) RotateSetupToken() string {
 	tok := randToken(24)
 	s.mu.Lock()
@@ -338,15 +384,13 @@ func (s *Service) RotateSetupToken() string {
 			s.Log.Warn("could not save the setup token for `tainerhub setup-link`", "err", err)
 		}
 	}
-	base := "http://<this server's IP>:8585"
-	if u := s.PublicURL(); u != nil {
-		base = strings.TrimSuffix(u.String(), "/")
-	}
-	s.Log.Warn("No users yet. Open this link within 15 minutes to create the owner account", "url", base+"/setup?token="+tok)
+	// The link itself is a credential (whoever opens it first becomes the
+	// owner), so it stays out of the logs, which are often shipped elsewhere.
+	s.Log.Warn("No users yet. To get the one-time link that creates the owner account, run: docker exec tainerhub /tainerhub setup-link")
 	return tok
 }
 
-// RunSetupTokenLoop keeps a valid setup link in the logs until setup completes.
+// RunSetupTokenLoop keeps a valid setup token available until setup completes.
 func (s *Service) RunSetupTokenLoop(ctx context.Context) {
 	for {
 		need, err := s.SetupRequired(ctx)
@@ -407,7 +451,7 @@ func (s *Service) BeginSetup(w http.ResponseWriter, r *http.Request, in SetupBeg
 	}
 	in.Username = strings.TrimSpace(in.Username)
 	if !validUsername(in.Username) {
-		return nil, errors.New("username must be 2-32 letters, digits, dots, dashes or underscores")
+		return nil, errBadUsername
 	}
 	if strings.TrimSpace(in.DisplayName) == "" {
 		in.DisplayName = in.Username
@@ -417,7 +461,9 @@ func (s *Service) BeginSetup(w http.ResponseWriter, r *http.Request, in SetupBeg
 	if err != nil {
 		return nil, err
 	}
-	s.putCeremony(w, r, &ceremony{kind: "setup", data: *data, user: u, keyName: keyName(in.PasskeyName)})
+	if err := s.putCeremony(w, r, &ceremony{kind: "setup", data: *data, user: u, keyName: keyName(in.PasskeyName)}); err != nil {
+		return nil, err
+	}
 	return opts, nil
 }
 
@@ -463,7 +509,9 @@ func (s *Service) BeginLogin(w http.ResponseWriter, r *http.Request) (*protocol.
 	if err != nil {
 		return nil, err
 	}
-	s.putCeremony(w, r, &ceremony{kind: "login", data: *data})
+	if err := s.putCeremony(w, r, &ceremony{kind: "login", data: *data}); err != nil {
+		return nil, err
+	}
 	return opts, nil
 }
 
@@ -518,6 +566,16 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) (store.Use
 
 var ErrRateLimited = errors.New("too many failed attempts; wait 15 minutes")
 
+// rateLimitedError is a refusal with its own message that handlers still
+// treat as ErrRateLimited (answering 429).
+type rateLimitedError struct{ msg string }
+
+func (e rateLimitedError) Error() string      { return e.msg }
+func (rateLimitedError) Is(target error) bool { return target == ErrRateLimited }
+
+// errTooManyBegins: one client started too many passkey sign-ins.
+var errTooManyBegins error = rateLimitedError{"too many sign-in attempts; wait a minute and try again"}
+
 // LoginWithRecoveryCode signs in with a single-use code. Each code works once.
 func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, username, code string) (store.User, error) {
 	ip := s.ClientIP(r)
@@ -562,7 +620,9 @@ func (s *Service) BeginAddPasskey(w http.ResponseWriter, r *http.Request, u stor
 	if err != nil {
 		return nil, err
 	}
-	s.putCeremony(w, r, &ceremony{kind: "add-passkey", data: *data, user: u, keyName: keyName(name)})
+	if err := s.putCeremony(w, r, &ceremony{kind: "add-passkey", data: *data, user: u, keyName: keyName(name)}); err != nil {
+		return nil, err
+	}
 	return opts, nil
 }
 
