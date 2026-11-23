@@ -5,11 +5,16 @@ import { api, bytes, stackProblem, type Host, type HostLoad, type Placement, typ
 import { useFleet } from './fleet'
 import { cx } from './ui'
 
-/** Hosts ranked by room for new work, or for moving a stack when stackId is set. */
-export function usePlacement(stackId?: string) {
+/** Hosts ranked by room for new work, or for moving a stack (stackId) or a single container. */
+export function usePlacement(stackId?: string, container?: { hostId: string; id: string }) {
+  const q = stackId
+    ? `?stack=${encodeURIComponent(stackId)}`
+    : container
+      ? `?host=${encodeURIComponent(container.hostId)}&container=${encodeURIComponent(container.id)}`
+      : ''
   return useQuery({
-    queryKey: ['placement', stackId ?? ''],
-    queryFn: () => api<Placement>(`/api/placement${stackId ? `?stack=${encodeURIComponent(stackId)}` : ''}`),
+    queryKey: ['placement', q],
+    queryFn: () => api<Placement>(`/api/placement${q}`),
     refetchInterval: 30000,
   })
 }

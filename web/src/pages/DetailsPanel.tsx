@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
+import { ArrowRightLeft, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
 import { api, can, errorText, mem, timeAgo, type Container, type DetailResponse } from '../api'
 import { useContainerAction, useOpenLogs, useOpenTerminal } from '../fleet'
 import { StackLink } from '../stacks'
@@ -8,6 +8,7 @@ import { PortLink } from './Containers'
 import { useFleet } from '../fleet'
 import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf } from '../ui'
 import { useMe } from './AppLayout'
+import { ContainerMoveNotes, MoveContainerDialog, movable } from './MoveContainer'
 
 /** Slide-over with everything Docker knows about one container. */
 export function DetailsPanel({ container, onClose }: { container: Container; onClose: () => void }) {
@@ -32,6 +33,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
   const operator = can(me.user, 'operator')
   const admin = can(me.user, 'admin')
   const openTerminal = useOpenTerminal()
+  const [moving, setMoving] = useState(false)
 
   return (
     <div className="fixed inset-0 z-40">
@@ -95,7 +97,17 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                 Remove
               </Button>
             )}
+            {admin && movable(container) && (
+              <Button icon={ArrowRightLeft} disabled={!host?.online} onClick={() => setMoving(true)}>
+                Move…
+              </Button>
+            )}
           </div>
+          {admin && container.project && !container.name.startsWith('tainerhub') && (
+            <p className="mt-3 text-xs text-ink-100/50">It belongs to the compose project {container.project}: to move it to another host, move its stack.</p>
+          )}
+          {admin && <ContainerMoveNotes c={container} />}
+          {moving && <MoveContainerDialog c={container} onClose={() => setMoving(false)} />}
           {running && (
             <div className="mt-4 grid grid-cols-2 gap-3">
               <Gauge icon={Cpu} label="CPU" value={container.cpu === undefined ? '–' : `${container.cpu.toFixed(1)}%`} pct={Math.min(container.cpu ?? 0, 100)} />

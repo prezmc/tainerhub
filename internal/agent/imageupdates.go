@@ -121,20 +121,7 @@ func (d *SocketDocker) recreate(ctx context.Context, id string) (wire.RecreateRe
 	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/json", nil, &insp); err != nil {
 		return res, err
 	}
-	var meta struct {
-		ID     string `json:"Id"`
-		Name   string
-		Image  string
-		State  struct{ Running bool }
-		Config struct {
-			Image    string
-			Hostname string
-			Labels   map[string]string
-		}
-		NetworkSettings struct {
-			Networks map[string]map[string]json.RawMessage
-		}
-	}
+	var meta containerMeta
 	b, _ := json.Marshal(insp)
 	if err := json.Unmarshal(b, &meta); err != nil {
 		return res, err
@@ -167,51 +154,7 @@ func (d *SocketDocker) recreate(ctx context.Context, id string) (wire.RecreateRe
 		return res, nil
 	}
 
-	// The new container's settings: the old container's, minus what came
-	// from the old image.
-	var cfg map[string]json.RawMessage
-	_ = json.Unmarshal(insp["Config"], &cfg)
-	var oldImg struct{ Config map[string]json.RawMessage }
-	if err := d.getJSON(ctx, "/images/"+url.PathEscape(meta.Image)+"/json", nil, &oldImg); err == nil {
-		for _, k := range ownImageSettings {
-			if sameJSON(cfg[k], oldImg.Config[k]) {
-				delete(cfg, k)
-			}
-		}
-		cfg["Env"] = withoutInherited(cfg["Env"], oldImg.Config["Env"])
-		cfg["Labels"] = labelsWithoutInherited(cfg["Labels"], oldImg.Config["Labels"])
-	}
-	if len(meta.ID) >= 12 && meta.Config.Hostname == meta.ID[:12] {
-		delete(cfg, "Hostname") // Docker's default (the old ID): let it pick the new one
-	}
-	cfg["Image"], _ = json.Marshal(ref)
-	endpoints := map[string]any{}
-	for net, ep := range meta.NetworkSettings.Networks {
-		e := map[string]json.RawMessage{}
-		for _, k := range []string{"IPAMConfig", "Links", "DriverOpts", "MacAddress"} {
-			if v, ok := ep[k]; ok && string(v) != "null" && string(v) != `""` {
-				e[k] = v
-			}
-		}
-		var aliases []string
-		_ = json.Unmarshal(ep["Aliases"], &aliases)
-		keep := []string{}
-		for _, a := range aliases {
-			if len(meta.ID) < 12 || a != meta.ID[:12] {
-				keep = append(keep, a)
-			}
-		}
-		if len(keep) > 0 {
-			e["Aliases"], _ = json.Marshal(keep)
-		}
-		endpoints[net] = e
-	}
-	body := map[string]any{}
-	for k, v := range cfg {
-		body[k] = v
-	}
-	body["HostConfig"] = insp["HostConfig"]
-	body["NetworkingConfig"] = map[string]any{"EndpointsConfig": endpoints}
+	body := d.createSpec(ctx, insp, meta, ref)
 
 	// Swap: stop and rename the old one, create and start the new one.
 	backup := fmt.Sprintf("%s-tainerhub-old-%d", name, time.Now().Unix())
@@ -260,6 +203,77 @@ func (d *SocketDocker) recreate(ctx context.Context, id string) (wire.RecreateRe
 	_ = d.remove(ctx, "/containers/"+url.PathEscape(meta.ID)+"?force=1")
 	res.Status = "updated"
 	return res, nil
+}
+
+// containerMeta is the part of a container's inspection that recreating
+// it needs.
+type containerMeta struct {
+	ID     string `json:"Id"`
+	Name   string
+	Image  string
+	State  struct{ Running bool }
+	Config struct {
+		Image    string
+		Hostname string
+		Labels   map[string]string
+	}
+	NetworkSettings struct {
+		Networks map[string]map[string]json.RawMessage
+	}
+}
+
+// createSpec is the body for POST /containers/create that makes a
+// container like the inspected one, on image ref: the old container's
+// settings minus what came from its image, so the new image's defaults
+// apply (a new version may change PATH, the command, ...).
+func (d *SocketDocker) createSpec(ctx context.Context, insp map[string]json.RawMessage, meta containerMeta, ref string) map[string]any {
+	var cfg map[string]json.RawMessage
+	_ = json.Unmarshal(insp["Config"], &cfg)
+	if cfg == nil {
+		cfg = map[string]json.RawMessage{}
+	}
+	var oldImg struct{ Config map[string]json.RawMessage }
+	if err := d.getJSON(ctx, "/images/"+url.PathEscape(meta.Image)+"/json", nil, &oldImg); err == nil {
+		for _, k := range ownImageSettings {
+			if sameJSON(cfg[k], oldImg.Config[k]) {
+				delete(cfg, k)
+			}
+		}
+		cfg["Env"] = withoutInherited(cfg["Env"], oldImg.Config["Env"])
+		cfg["Labels"] = labelsWithoutInherited(cfg["Labels"], oldImg.Config["Labels"])
+	}
+	if len(meta.ID) >= 12 && meta.Config.Hostname == meta.ID[:12] {
+		delete(cfg, "Hostname") // Docker's default (the old ID): let it pick the new one
+	}
+	cfg["Image"], _ = json.Marshal(ref)
+	endpoints := map[string]any{}
+	for net, ep := range meta.NetworkSettings.Networks {
+		e := map[string]json.RawMessage{}
+		for _, k := range []string{"IPAMConfig", "Links", "DriverOpts", "MacAddress"} {
+			if v, ok := ep[k]; ok && string(v) != "null" && string(v) != `""` {
+				e[k] = v
+			}
+		}
+		var aliases []string
+		_ = json.Unmarshal(ep["Aliases"], &aliases)
+		keep := []string{}
+		for _, a := range aliases {
+			if len(meta.ID) < 12 || a != meta.ID[:12] {
+				keep = append(keep, a)
+			}
+		}
+		if len(keep) > 0 {
+			e["Aliases"], _ = json.Marshal(keep)
+		}
+		endpoints[net] = e
+	}
+	body := map[string]any{}
+	for k, v := range cfg {
+		body[k] = v
+	}
+	body["HostConfig"] = insp["HostConfig"]
+	body["NetworkingConfig"] = map[string]any{"EndpointsConfig": endpoints}
+	return body
 }
 
 // restore undoes a half-done recreate: give the old container its name back

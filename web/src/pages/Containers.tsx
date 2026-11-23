@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowDown, Boxes, X, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
+import { ArrowDown, ArrowRightLeft, Boxes, X, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
 import { api, can, hostAddress, isUnhealthy, mem, publishedPort, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, useOpenTerminal, type Action, type SortKey } from '../fleet'
 import { Button, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { StackLink } from '../stacks'
+import { MoveContainerDialog, movable } from './MoveContainer'
 
 type View = 'all' | 'running' | 'stopped' | 'issues' | 'updates'
 type Group = 'host' | 'stack' | 'state'
@@ -269,6 +270,7 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
   const admin = can(useMe().user, 'admin')
   const openDetails = useOpenDetails()
   const { run, pendingId } = useContainerAction()
+  const [moving, setMoving] = useState(false)
   const bad = isUnhealthy(c)
   const running = c.state === 'running'
   const paused = c.state === 'paused'
@@ -353,8 +355,16 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
                   onClick: () => navigate({ to: '/stacks', search: { q: c.project } }),
                   hidden: !c.project || c.name.startsWith('tainerhub'),
                 },
+                { label: 'Move to another host…', icon: ArrowRightLeft, onClick: () => setMoving(true), hidden: !admin || !movable(c) || !host?.online },
+                {
+                  label: 'Move with its stack…',
+                  icon: ArrowRightLeft,
+                  onClick: () => navigate({ to: '/stacks', search: { q: c.project } }),
+                  hidden: !admin || !c.project || c.name.startsWith('tainerhub'),
+                },
               ]}
             />
+            {moving && <MoveContainerDialog c={c} onClose={() => setMoving(false)} />}
           </>
         )}
         {!operator && <IconButton icon={Info} label="Details" onClick={() => openDetails(c)} />}
