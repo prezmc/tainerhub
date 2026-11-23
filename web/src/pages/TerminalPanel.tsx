@@ -3,6 +3,7 @@ import { RotateCcw, SquareTerminal, X } from 'lucide-react'
 import { api, errorText, type Container } from '../api'
 import { IconButton, StatusDot, cx } from '../ui'
 import '@xterm/xterm/css/xterm.css'
+import './terminal.css'
 
 const SHELLS = [
   ['auto', 'Shell (bash or sh)'],
@@ -65,6 +66,7 @@ export function TerminalPanel({ container, onClose }: { container: Container; on
       term.open(box.current)
       // Draw with WebGL: xterm's default DOM renderer injects <style> blocks,
       // which TainerHub's Content-Security-Policy (style-src 'self') blocks.
+      // WebGL injects none (the scrollbar's colors come from terminal.css).
       try {
         const gl = new WebglAddon()
         gl.onContextLoss(() => gl.dispose())
@@ -91,19 +93,42 @@ export function TerminalPanel({ container, onClose }: { container: Container; on
         return
       }
 
-      // Keystrokes go out in order, batched every few milliseconds.
+      // Keystrokes are batched: each POST is a full round trip through the
+      // hub, so a burst of keys (or key repeat) goes out together. Enter and
+      // big inputs (pastes) go at once. Only one POST is in flight at a
+      // time, which keeps input in order; anything typed meanwhile rides on
+      // the next one.
       let pending = ''
       let timer: ReturnType<typeof setTimeout> | null = null
-      let chain = Promise.resolve()
-      const flush = () => {
+      let sending = false
+      let ended = false // the shell exited: nothing to send to
+      const send = async () => {
+        if (timer) clearTimeout(timer)
         timer = null
-        const data = pending
-        pending = ''
-        chain = chain.then(() => api(`/api/exec/${sid}/input`, { method: 'POST', body: { data: textToB64(data) } }).then(() => undefined)).catch(() => {})
+        if (sending) return // the running loop picks up what's pending
+        sending = true
+        try {
+          while (pending && !disposed) {
+            // The hub takes at most 32 KiB per POST; 8192 UTF-16 units are
+            // at most 24 KiB of UTF-8. Don't split a surrogate pair.
+            let n = Math.min(pending.length, 8192)
+            if (n < pending.length && /[\uD800-\uDBFF]/.test(pending[n - 1])) n--
+            const data = pending.slice(0, n)
+            pending = pending.slice(n)
+            await api(`/api/exec/${sid}/input`, { method: 'POST', body: { data: textToB64(data) } })
+          }
+        } catch (e) {
+          // What's still pending goes with the next keystroke.
+          if (!ended) term.write(`\r\n\x1b[31m[input may not have reached the shell: ${errorText(e)}]\x1b[0m\r\n`)
+        } finally {
+          sending = false
+        }
       }
       term.onData((d) => {
+        if (ended) return
         pending += d
-        if (!timer) timer = setTimeout(flush, 8)
+        if (d.includes('\r') || pending.length >= 1024) void send()
+        else if (!timer && !sending) timer = setTimeout(() => void send(), 15)
       })
 
       let resizeTimer: ReturnType<typeof setTimeout> | null = null
@@ -125,6 +150,7 @@ export function TerminalPanel({ container, onClose }: { container: Container; on
       es.addEventListener('end', (e) => {
         const d = JSON.parse((e as MessageEvent).data || '{}') as { error?: string }
         term.write(`\r\n\x1b[2m[${d.error ? d.error : 'session ended'}]\x1b[0m\r\n`)
+        ended = true
         setState('ended')
         es?.close()
       })

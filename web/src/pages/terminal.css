@@ -1,0 +1,13 @@
+/* xterm.js colors its scrollbar slider by injecting a <style> element, which
+   the hub's Content-Security-Policy (style-src 'self') blocks, leaving the
+   slider invisible. These are the rules xterm would inject for our theme:
+   the foreground (#dbe7e0) at 20%, 40% and 50% opacity. */
+.xterm .xterm-scrollable-element > .scrollbar > .slider {
+  background: rgba(219, 231, 224, 0.2);
+}
+.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {
+  background: rgba(219, 231, 224, 0.4);
+}
+.xterm .xterm-scrollable-element > .scrollbar > .slider.active {
+  background: rgba(219, 231, 224, 0.5);
+}
