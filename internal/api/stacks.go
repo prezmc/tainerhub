@@ -194,6 +194,7 @@ type stackInput struct {
 	Env       string    `json:"env"`
 	UpdatedAt time.Time `json:"updatedAt"` // edits: the version the editor loaded
 	Deploy    bool      `json:"deploy"`    // deploy right after saving
+	Adopt     bool      `json:"adopt"`     // take over a compose project already running on the host
 }
 
 func (in *stackInput) validate() error {
@@ -235,6 +236,22 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Deploying runs `compose up --remove-orphans` under this name, so a
+	// stack named after a project already running on the host would take
+	// over (or remove) its containers. That has to be a deliberate take-over.
+	if !in.Adopt && s.Reg != nil {
+		if a := s.Reg.Get(h.ID); a != nil {
+			stacks, err := s.Store.ListStacks(r.Context())
+			if err != nil {
+				s.fail(w, err)
+				return
+			}
+			if unmanagedProject(a.Status().Containers, stacks, h.ID, in.Name) {
+				jsonErr(w, http.StatusConflict, "a compose project called "+in.Name+" is already running on "+h.Name+", started outside TainerHub; choose another name, or use Manage in TainerHub next to it on the Stacks page to take it over")
+				return
+			}
+		}
+	}
 	u := userFrom(r)
 	st, err := s.Store.CreateStack(r.Context(), store.Stack{HostID: h.ID, Name: in.Name, Compose: in.Compose, Env: in.Env, UpdatedBy: u.Username})
 	if errors.Is(err, store.ErrConflict) {
@@ -245,7 +262,11 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.record(r, &u, "stack.created", h.Name+"/"+st.Name, map[string]string{"host": h.Name})
+	details := map[string]string{"host": h.Name}
+	if in.Adopt {
+		details["adopted"] = "yes"
+	}
+	s.record(r, &u, "stack.created", h.Name+"/"+st.Name, details)
 	res := map[string]any{"stack": st}
 	if in.Deploy {
 		if j, err := s.startStackJob(r, st, wire.StackDeploy, false, false); err != nil {
@@ -255,6 +276,25 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusCreated, res)
+}
+
+// unmanagedProject reports whether compose project name has containers on
+// the host (cs is its live list) but isn't one of TainerHub's stacks there.
+func unmanagedProject(cs []wire.Container, stacks []store.Stack, hostID, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, st := range stacks {
+		if st.HostID == hostID && st.Name == name {
+			return false // a managed stack: CreateStack reports the duplicate
+		}
+	}
+	for _, c := range cs {
+		if c.Project == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
