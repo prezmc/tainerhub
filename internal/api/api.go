@@ -268,6 +268,10 @@ func (s *Server) setupBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts, err := s.Auth.BeginSetup(w, r, in)
+	if errors.Is(err, auth.ErrRateLimited) {
+		jsonErr(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -288,6 +292,10 @@ func (s *Server) setupFinish(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) loginBegin(w http.ResponseWriter, r *http.Request) {
 	opts, err := s.Auth.BeginLogin(w, r)
+	if errors.Is(err, auth.ErrRateLimited) {
+		jsonErr(w, http.StatusTooManyRequests, err.Error()) // not audited: avoids log flooding
+		return
+	}
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -472,6 +480,10 @@ func (s *Server) addPasskeyBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts, err := s.Auth.BeginAddPasskey(w, r, userFrom(r), in.Name)
+	if errors.Is(err, auth.ErrRateLimited) {
+		jsonErr(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -626,7 +638,12 @@ func (s *Server) newHostToken(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	h, err := s.Store.GetHost(r.Context(), r.PathValue("id"))
+	id := r.PathValue("id")
+	if !validUUID(id) { // a malformed id would fail the ::uuid cast with a 500
+		jsonErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	h, err := s.Store.GetHost(r.Context(), id)
 	if err != nil {
 		s.notFoundOr(w, err)
 		return
@@ -753,6 +770,10 @@ func (s *Server) renameHost(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteHost(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !validUUID(id) {
+		jsonErr(w, http.StatusNotFound, "not found")
+		return
+	}
 	h, err := s.Store.GetHost(r.Context(), id)
 	if err != nil {
 		s.notFoundOr(w, err)
@@ -868,8 +889,9 @@ func (s *Server) pullImage(w http.ResponseWriter, r *http.Request) {
 	s.runOp(w, r, wire.Operation{Kind: wire.OpImagePull, Arg: in.Ref}, in.Ref)
 }
 
-// inspect returns container details. Environment values can hold secrets, so
-// only admins receive them; everyone else gets the variable names.
+// inspect returns container details. Environment values, label values and
+// command arguments can hold secrets, so only admins receive them; everyone
+// else gets the names (see redactForViewer).
 func (s *Server) inspect(w http.ResponseWriter, r *http.Request) {
 	a := s.Reg.Get(r.PathValue("id"))
 	if a == nil {
@@ -889,12 +911,10 @@ func (s *Server) inspect(w http.ResponseWriter, r *http.Request) {
 	}
 	reveal := roleRank[userFrom(r).Role] >= roleRank["admin"]
 	if !reveal {
-		for i, e := range d.Env {
-			if k, _, ok := strings.Cut(e, "="); ok {
-				d.Env[i] = k + "="
-			}
-		}
+		redactForViewer(&d)
 	}
+	// envRevealed covers labels and command arguments too; the name stays for
+	// older UIs.
 	writeJSON(w, http.StatusOK, map[string]any{"detail": d, "envRevealed": reveal, "hostId": a.HostID, "hostName": a.Name})
 }
 

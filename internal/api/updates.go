@@ -42,25 +42,76 @@ type latestRelease struct {
 	At      time.Time `json:"at"`
 }
 
-type latestCache struct {
-	mu  sync.Mutex
-	at  time.Time
-	val *latestRelease
-	err error
+// fetchTimeout bounds one GitHub lookup. It runs on its own context, not the
+// request's, so a browser closing the page can't cancel the shared fetch.
+const fetchTimeout = 15 * time.Second
+
+// flightCache caches one value fetched from GitHub. At most one fetch runs
+// at a time and the lock is never held during it: while a fetch is running,
+// callers get the previous value straight away, or (on the first fetch) wait
+// for it or for their own request to end, whichever comes first.
+type flightCache[T any] struct {
+	mu       sync.Mutex
+	at       time.Time // when val/err were fetched; zero: never
+	val      T         // the last value fetched successfully
+	err      error     // the last fetch's error, if it failed
+	inflight chan struct{}
 }
 
-func (c *latestCache) get(ctx context.Context) (*latestRelease, error) {
+// get returns the cached value, refreshing it after ttl (or after retry
+// when the last fetch failed).
+func (c *flightCache[T]) get(ctx context.Context, ttl, retry time.Duration, fetch func(context.Context) (T, error)) (T, error) {
+	c.mu.Lock()
+	age := ttl
+	if c.err != nil {
+		age = retry
+	}
+	if !c.at.IsZero() && time.Since(c.at) < age {
+		v, err := c.val, c.err
+		c.mu.Unlock()
+		return v, err
+	}
+	if c.inflight == nil {
+		done := make(chan struct{})
+		c.inflight = done
+		go c.refresh(done, fetch)
+	}
+	done := c.inflight
+	if !c.at.IsZero() { // stale but usable: don't make the page wait
+		v, err := c.val, c.err
+		c.mu.Unlock()
+		return v, err
+	}
+	c.mu.Unlock()
+	select {
+	case <-done:
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.val, c.err
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	}
+}
+
+func (c *flightCache[T]) refresh(done chan struct{}, fetch func(context.Context) (T, error)) {
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	defer cancel()
+	v, err := fetch(ctx)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.at.IsZero() && time.Since(c.at) < 15*time.Minute {
-		return c.val, c.err
+	c.at, c.err = time.Now(), err
+	if err == nil {
+		c.val = v
 	}
-	c.val, c.err = fetchLatest(ctx)
-	c.at = time.Now()
-	if c.err != nil {
-		c.at = time.Now().Add(-13 * time.Minute) // retry a failure after ~2 minutes
-	}
-	return c.val, c.err
+	c.inflight = nil
+	close(done)
+}
+
+type latestCache struct{ flightCache[*latestRelease] }
+
+func (c *latestCache) get(ctx context.Context) (*latestRelease, error) {
+	return c.flightCache.get(ctx, 15*time.Minute, 2*time.Minute, fetchLatest)
 }
 
 func fetchLatest(ctx context.Context) (*latestRelease, error) {
@@ -300,48 +351,45 @@ func (s *Server) statsSource(w http.ResponseWriter, r *http.Request) {
 // look like "docker-v29.10.0"), for the "newer Docker available" badge. What
 // a host can actually install depends on its package repository: the
 // upgrade dialog asks the host (OpDockerPlan) before anything happens.
-type dockerLatestCache struct {
-	mu  sync.Mutex
-	at  time.Time
-	val string
+type dockerLatestCache struct{ flightCache[string] }
+
+// get returns the newest release, or "" if it isn't known (yet).
+func (c *dockerLatestCache) get(ctx context.Context) string {
+	v, _ := c.flightCache.get(ctx, 6*time.Hour, 10*time.Minute, fetchDockerLatest)
+	return v
 }
 
-func (c *dockerLatestCache) get(ctx context.Context) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.at.IsZero() && time.Since(c.at) < 6*time.Hour {
-		return c.val
-	}
-	c.at = time.Now()
+func fetchDockerLatest(ctx context.Context) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubAPI+"/repos/moby/moby/releases?per_page=20", nil)
 	if err != nil {
-		return c.val
+		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "TainerHub")
 	resp, err := githubClient.Do(req)
 	if err != nil {
-		c.at = time.Now().Add(-5*time.Hour - 50*time.Minute) // retry in ~10 min
-		return c.val
+		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub answered %s", resp.Status)
+	}
 	var rels []struct {
 		Tag        string `json:"tag_name"`
 		Prerelease bool   `json:"prerelease"`
 		Draft      bool   `json:"draft"`
 	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&rels) != nil {
-		return c.val
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&rels); err != nil {
+		return "", err
 	}
 	for _, r := range rels {
 		v := strings.TrimPrefix(r.Tag, "docker-")
 		if r.Prerelease || r.Draft || !strings.HasPrefix(v, "v") || strings.Contains(v, "-") {
 			continue
 		}
-		c.val = strings.TrimPrefix(v, "v")
-		break
+		return strings.TrimPrefix(v, "v"), nil
 	}
-	return c.val
+	return "", errors.New("no Docker Engine release found")
 }
 
 // versionLess compares dotted versions like 29.9.2 and 29.10.0.
