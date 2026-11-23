@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUpCircle, CircleCheck, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react'
+import { ArrowUpCircle, CircleCheck, Feather, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react'
 import { api, errorText, timeAgo, type Host, type HubState } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, Modal, cx, useConfirm, useToast } from '../ui'
 
@@ -14,6 +14,7 @@ type HostUpdate = {
   current: boolean
   hubHost: boolean
   canUpdate: boolean
+  cgroupStats?: boolean
   note?: string
 }
 type Updates = {
@@ -65,6 +66,7 @@ export function UpdatesCard() {
   const [busy, setBusy] = useState<string | null>(null) // host id, or 'all'
   const [restarting, setRestarting] = useState(false)
   const [dockerFor, setDockerFor] = useState<HostUpdate | null>(null)
+  const [lightening, setLightening] = useState<string | null>(null) // host id
 
   if (!u.data) return null
   const d = u.data
@@ -121,6 +123,45 @@ export function UpdatesCard() {
         </div>
       </Card>
     )
+  }
+
+  // Hosts whose agent still asks Docker for every container's stats.
+  const heavy = d.hosts.filter((h) => h.online && h.cgroupStats === false)
+  const lighten = async (h: HostUpdate) => {
+    const ok = await confirm({
+      title: `Turn on lighter stats on ${h.name}?`,
+      body: (
+        <>
+          The agent will read container CPU and memory from the kernel instead of asking Docker, which costs the server less CPU. It adds one read-only mount (
+          <code className="mono text-lime-300">/sys/fs/cgroup</code>) in a new <code className="mono text-lime-300">compose.override.yml</code> next to your compose
+          file, then restarts only the agent. Your other containers{h.hubHost && ' and the hub'} aren't touched.
+        </>
+      ),
+      confirm: 'Turn on',
+    })
+    if (!ok) return
+    setLightening(h.id)
+    try {
+      await api(`/api/hosts/${h.id}/lighter-stats`, { method: 'POST' })
+      const deadline = Date.now() + 90_000
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000))
+        const now = await api<Updates>('/api/updates').catch(() => null)
+        if (now?.hosts.find((x) => x.id === h.id)?.cgroupStats) {
+          toast('good', `${h.name} now reads stats from the kernel`)
+          qc.setQueryData(['updates'], now)
+          return
+        }
+      }
+      toast(
+        'bad',
+        `${h.name}'s agent didn't come back with the mount. If compose.override.yml was already there, add "- /sys/fs/cgroup:/host/sys/fs/cgroup:ro" under the agent's volumes yourself.`,
+      )
+    } catch (e) {
+      toast('bad', errorText(e))
+    } finally {
+      setLightening(null)
+    }
   }
 
   const upToDate = stale.length === 0 && d.hubCurrent
@@ -194,6 +235,26 @@ export function UpdatesCard() {
             ))}
         </ul>
       </div>
+      {heavy.length > 0 && (
+        <div className="mt-5 border-t border-line pt-4">
+          <div className="mb-2 flex flex-wrap items-baseline gap-2">
+            <h3 className="font-semibold text-white">Lighter stats</h3>
+            <span className="text-xs text-ink-100/50">these agents ask Docker for every container's CPU and memory, which costs the server more</span>
+          </div>
+          <ul className="divide-y divide-line rounded-[3px] ring-1 ring-line">
+            {heavy.map((h) => (
+              <li key={h.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
+                <span className="font-semibold text-white">{h.name}</span>
+                <span className="text-xs text-ink-100/60">stats from Docker</span>
+                <span className="ml-auto" />
+                <Button icon={Feather} loading={lightening === h.id} disabled={!!lightening} onClick={() => lighten(h)}>
+                  Turn on lighter stats
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {dockerFor && <DockerUpgradeDialog host={dockerFor} onClose={() => setDockerFor(null)} onDone={() => qc.invalidateQueries({ queryKey: ['updates'] })} />}
     </Card>
   )

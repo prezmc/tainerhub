@@ -17,6 +17,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "compose-helper" { // see agent.ComposeHelper
+		err := agent.ComposeHelper(os.Args[2:])
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		if agent.Healthy(envOr("TAINERHUB_DATA_DIR", "/data"), 2*time.Minute) {
 			os.Exit(0)

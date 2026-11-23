@@ -72,6 +72,9 @@ type Hello struct {
 	// Stacks says whether this agent can run compose stacks. Nil from agents
 	// older than stack support.
 	Stacks *StackSupport `json:"stacks,omitempty"`
+	// CgroupStats says whether the agent reads container stats from the
+	// host's cgroup files (cheap) rather than the Docker API. Nil from older agents.
+	CgroupStats *bool `json:"cgroup_stats,omitempty"`
 }
 
 // StackSupport reports the agent's compose setup. Error is set (and stacks
@@ -398,8 +401,12 @@ const (
 	OpContainerRemoveVolumes = "container.remove_volumes"
 	// OpSelfUpdate updates the Docker Compose project the agent itself runs
 	// in (pull newer images, recreate what changed). On the hub's server that
-	// project is the whole hub. Takes no arguments.
+	// project is the whole hub. Arg SelfUpdateAddCgroupMount instead adds the
+	// read-only cgroup mount to the agent (in compose.override.yml next to the
+	// project's compose file) and recreates just the agent, without pulling.
 	OpSelfUpdate = "agent.update"
+	// SelfUpdateAddCgroupMount is OpSelfUpdate's Arg for adding the mount.
+	SelfUpdateAddCgroupMount = "add-cgroup-mount"
 	// OpImagesCheckUpdates asks the registry, now, whether each container's
 	// image tag has a newer image. Result: ImageUpdates.
 	OpImagesCheckUpdates = "images.check_updates"
@@ -487,6 +494,10 @@ func ValidOperation(op Operation) error {
 		}
 		if _, err := RemoveVolumeNames(op.Arg); err != nil {
 			return err
+		}
+	case OpSelfUpdate:
+		if op.Arg != "" && op.Arg != SelfUpdateAddCgroupMount {
+			return errors.New("invalid update mode")
 		}
 	case OpDockerUpgrade:
 		if op.Arg != "restart-all" {

@@ -55,7 +55,7 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		names, _ := wire.RemoveVolumeNames(op.Arg) // validated above
 		return d.removeWithVolumes(ctx, op.Target, names)
 	case wire.OpSelfUpdate:
-		return d.selfUpdate(ctx)
+		return d.selfUpdate(ctx, op.Arg == wire.SelfUpdateAddCgroupMount)
 	case wire.OpDockerPlan:
 		return d.dockerPlan(ctx)
 	case wire.OpDockerUpgrade:
@@ -465,8 +465,15 @@ func isAnonymousVolume(name string) bool {
 // always` for the project and removes itself when done. On the hub's server
 // the project is the hub's, so the hub, its database and this agent are all
 // brought up to date.
-func (d *SocketDocker) selfUpdate(ctx context.Context) (wire.SelfUpdateResult, error) {
+//
+// With addMount, it instead writes compose.override.yml (which docker
+// compose also reads by default) adding the read-only cgroup mount to this
+// agent's service, and recreates only what that changes: the agent.
+func (d *SocketDocker) selfUpdate(ctx context.Context, addMount bool) (wire.SelfUpdateResult, error) {
 	var res wire.SelfUpdateResult
+	if addMount && d.cg != nil {
+		return res, errors.New("this agent already reads stats from the kernel")
+	}
 	self, _ := os.Hostname() // Docker sets it to the container ID unless overridden
 	if !wire.ValidContainerRef(self) {
 		return res, errors.New("can't identify this agent's container")
@@ -493,20 +500,41 @@ func (d *SocketDocker) selfUpdate(ctx context.Context) (wire.SelfUpdateResult, e
 		}
 	}
 	cmd := []string{"--project-name", project, "--project-directory", dir}
-	binds := []string{hostSocket + ":/var/run/docker.sock", dir + ":" + dir + ":ro"}
+	dirMode := ":ro"
+	entrypoint := []string{"/usr/local/bin/docker-compose"}
+	override := filepath.Join(dir, "compose.override.yml")
+	if addMount {
+		service := l["com.docker.compose.service"]
+		if !validServiceName(service) {
+			return res, errors.New("can't tell this agent's compose service name")
+		}
+		// The helper (this image) writes the override, then runs compose.
+		entrypoint = []string{"/tainerhub-agent", "compose-helper", "--override", override, "--service", service, "--"}
+		dirMode = "" // it writes there
+	}
+	binds := []string{hostSocket + ":/var/run/docker.sock", dir + ":" + dir + dirMode}
+	haveOverride := false
 	for _, f := range strings.Split(files, ",") {
 		cmd = append(cmd, "--file", f)
+		haveOverride = haveOverride || f == override
 		if fd := filepath.Dir(f); fd != dir && !strings.HasPrefix(fd, dir+"/") {
 			binds = append(binds, fd+":"+fd+":ro")
 		}
 	}
-	cmd = append(cmd, "up", "--detach", "--pull", "always")
+	if addMount {
+		if !haveOverride {
+			cmd = append(cmd, "--file", override)
+		}
+		cmd = append(cmd, "up", "--detach", "--no-deps", l["com.docker.compose.service"])
+	} else {
+		cmd = append(cmd, "up", "--detach", "--pull", "always")
+	}
 
 	res.Project, res.Dir = project, dir
 	res.Helper = fmt.Sprintf("tainerhub-updater-%d", time.Now().Unix())
 	spec := map[string]any{
 		"Image":      insp.Config.Image,
-		"Entrypoint": []string{"/usr/local/bin/docker-compose"},
+		"Entrypoint": entrypoint,
 		"Cmd":        cmd,
 		"Env":        []string{"DOCKER_HOST=unix:///var/run/docker.sock", "HOME=/tmp", "DOCKER_CONFIG=/tmp/docker", "COMPOSE_ANSI=never"},
 		"WorkingDir": dir,

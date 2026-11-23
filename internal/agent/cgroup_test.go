@@ -77,3 +77,29 @@ func TestCgroupStats(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestWriteCgroupOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compose.override.yml")
+	if err := writeCgroupOverride(path, "bad name: x"); err == nil {
+		t.Fatal("accepted a service name that would break the YAML")
+	}
+	if err := writeCgroupOverride(path, "tainerhub-agent"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "  tainerhub-agent:\n    volumes:\n      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro\n") {
+		t.Fatalf("override:\n%s", b)
+	}
+	if err := writeCgroupOverride(path, "tainerhub-agent"); err != nil {
+		t.Fatalf("rewriting our own file: %v", err)
+	}
+	// Never replace a file the user wrote.
+	mine := "services:\n  web:\n    image: nginx\n"
+	os.WriteFile(path, []byte(mine), 0o644)
+	if err := writeCgroupOverride(path, "tainerhub-agent"); err == nil {
+		t.Fatal("overwrote the user's compose.override.yml")
+	}
+	if b, _ := os.ReadFile(path); string(b) != mine {
+		t.Fatal("the user's file changed")
+	}
+}
