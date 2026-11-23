@@ -253,6 +253,17 @@ To bring one under TainerHub's control, admins click **Manage in TainerHub** nex
 
 Compose recreates the containers from the new file and keeps their named volumes. Relative bind mounts such as `./data` now point into `/opt/tainerhub/stacks/<name>/`, so **move that data there first**.
 
+While you edit, a **takeover check** compares the pasted file with what the running containers use and lists what would change:
+
+- **Folders that would move**: a bind mount whose host path changes (usually a relative `./…` path). If the new folder is missing or empty it says so and gives the `cp -a` command that copies the data across.
+- **Volumes that would be swapped**: a volume whose name changes would be created empty.
+- **Services missing from the file**: their containers would be removed.
+- **Several compose files**: the project was started with an override file, say, which must be merged into the one you paste.
+- **Variables that aren't set**: TainerHub runs compose with only the pasted `.env`, not your shell's variables.
+- **Problems that stop the deploy**: a `build:` section, or a file compose rejects from the new folder (such as a relative `env_file` that isn't there).
+
+**Save & deploy** stays disabled until there are no blocking problems and you tick that you've dealt with the rest. Changing the files runs the check again and asks again. If you save without deploying, the stack's page shows the same check, with **Deploy and take over**. Only admins can do that first deploy.
+
 You can't create a new stack with the name of a project that is already running on that host. Use **Manage in TainerHub** instead.
 
 ### TainerHub protects its own project

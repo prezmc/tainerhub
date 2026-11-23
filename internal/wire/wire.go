@@ -556,6 +556,13 @@ type Operation struct {
 	Arg    string `json:"arg,omitempty"`    // image reference for pulls, "all" for prunes
 	// Create is OpContainerCreate's container (and the networks it needs).
 	Create *ContainerCreate `json:"create,omitempty"`
+	// Files are a compose file and .env to check (OpStackPreview only).
+	Files *StackFiles `json:"files,omitempty"`
+}
+
+type StackFiles struct {
+	Compose string `json:"compose"`
+	Env     string `json:"env,omitempty"`
 }
 
 const (
@@ -605,6 +612,12 @@ const (
 	// its owners) and the folder itself. Refused while the stack is deployed
 	// on this host (its compose file is there). Used to clean up after a move.
 	OpStackDirRemove = "stack.remove_dir"
+	// OpStackPreview compares Files (a compose file and .env for stack
+	// Target) with the compose project of that name running on the host,
+	// without changing anything: what the file resolves to in the stack's
+	// folder, and what the running containers use now. Used before taking
+	// over a project started outside TainerHub. Result: StackPreview.
+	OpStackPreview = "stack.preview"
 	// OpContainerExport describes standalone container Target for moving it
 	// to another host: the body to create it again (what Pull & recreate
 	// uses), its volumes with sizes, host folders, networks and published
@@ -720,6 +733,43 @@ func ValidContainerCreate(c *ContainerCreate) error {
 	return nil
 }
 
+// StackPreview is what OpStackPreview found.
+type StackPreview struct {
+	// ConfigError is set when `compose config` rejects the file in the
+	// stack's folder (e.g. a relative env_file that isn't there).
+	ConfigError string `json:"config_error,omitempty"`
+	// Warnings are compose's own, such as variables that aren't set.
+	Warnings []string       `json:"warnings,omitempty"`
+	Services []StackService `json:"services,omitempty"`
+	Mounts   []StackMount   `json:"mounts,omitempty"`
+	// Dir is the stack's folder; DirFiles counts what's already in it.
+	Dir      string `json:"dir"`
+	DirFiles int    `json:"dir_files"`
+	// Paths says, for each bind source inside Dir, how many entries it
+	// holds (-1: it doesn't exist; 0: an empty folder; 1 for a file).
+	Paths map[string]int `json:"paths,omitempty"`
+
+	// The project as it runs now.
+	Running     []RunningContainer `json:"running,omitempty"`
+	WorkingDir  string             `json:"working_dir,omitempty"`  // folder it was started from
+	ConfigFiles []string           `json:"config_files,omitempty"` // compose files it was started with
+}
+
+// StackMount is one mount the compose file gives a service: a host path
+// for binds, a Docker volume name for volumes.
+type StackMount struct {
+	Service string `json:"service"`
+	Type    string `json:"type"` // bind or volume
+	Source  string `json:"source"`
+	Target  string `json:"target"`
+}
+
+type RunningContainer struct {
+	Name    string        `json:"name"`
+	Service string        `json:"service"`
+	Mounts  []DetailMount `json:"mounts"`
+}
+
 // StackInspect describes a stack's data and needs on one host.
 type StackInspect struct {
 	Deployed bool `json:"deployed"` // the stack's compose file is in its folder
@@ -814,7 +864,7 @@ var OpKinds = map[string]bool{
 	OpContainerRemoveVolumes: true, OpSelfUpdate: true,
 	OpImagesCheckUpdates: false, OpContainerRecreate: true,
 	OpDockerPlan: false, OpDockerUpgrade: true,
-	OpStackInspect: false, OpStackDirRemove: true,
+	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false,
 	OpContainerExport: false, OpContainerCreate: true,
 }
 
@@ -854,6 +904,16 @@ func ValidOperation(op Operation) error {
 	case OpStackInspect, OpStackDirRemove:
 		if !ValidStackName(op.Target) {
 			return errors.New("invalid stack name")
+		}
+	case OpStackPreview:
+		if !ValidStackName(op.Target) {
+			return errors.New("invalid stack name")
+		}
+		if op.Files == nil {
+			return errors.New("no compose file to check")
+		}
+		if err := ValidStackCommand(StackCommand{Action: StackDeploy, Name: op.Target, Compose: op.Files.Compose, Env: op.Files.Env}); err != nil {
+			return err
 		}
 	case OpImagesPrune, OpVolumesPrune, OpNetworksPrune:
 		if op.Arg != "" && op.Arg != "all" {

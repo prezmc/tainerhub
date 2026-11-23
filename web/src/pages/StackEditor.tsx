@@ -9,6 +9,7 @@ import { CodeEditor, StackStatusBadge, useOpenJob, useStackAction, useStacks, wi
 import { useMe } from './AppLayout'
 import { HostSelect, useDefaultHost } from '../placement'
 import { MoveSection } from './MoveStack'
+import { TakeoverPanel, takeoverReady, useTakeoverCheck } from '../takeover'
 
 const STARTER = `services:
   app:
@@ -66,9 +67,13 @@ export function NewStackPage() {
   const problem = stackProblem(host)
   const existing = stacks.data?.find((s) => s.hostId === hostId && s.name === name)
   const validName = /^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)
+  const takingOver = adopting && !!existing && !existing.managed
+  const check = useTakeoverCheck({ hostId, name, compose, env }, takingOver)
+  const [acked, setAcked] = useState('')
+  const deployReady = !takingOver || takeoverReady(check.data, acked)
 
   const save = useMutation({
-    mutationFn: (deploy: boolean) => api<StackSaveResult>('/api/stacks', { method: 'POST', body: { hostId, name, compose, env, deploy, adopt: adopting } }),
+    mutationFn: (deploy: boolean) => api<StackSaveResult>('/api/stacks', { method: 'POST', body: { hostId, name, compose, env, deploy, adopt: adopting, ack: acked } }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['stacks'] })
       if (res.deployError) toast('bad', `Saved, but the deploy didn't start: ${res.deployError}`)
@@ -130,15 +135,26 @@ export function NewStackPage() {
               </p>
             )}
             {existing && !existing.managed && adopting && (
-              <p className="rounded-[3px] bg-lime-500/10 px-3 py-2 text-xs leading-relaxed text-lime-100 ring-1 ring-inset ring-lime-500/20">
-                <strong>{name}</strong> is already running on {existing.hostName}, started outside TainerHub. Deploying takes it over: compose recreates its containers from
-                this file. Named volumes are reused; relative paths now point into the stack folder, so move bind-mounted data there first.
-              </p>
+              <>
+                <p className="rounded-[3px] bg-lime-500/10 px-3 py-2 text-xs leading-relaxed text-lime-100 ring-1 ring-inset ring-lime-500/20">
+                  <strong>{name}</strong> is already running on {existing.hostName}, started outside TainerHub. Deploying takes it over: compose recreates its containers from
+                  this file. The check below compares it with what runs now.
+                </p>
+                <TakeoverPanel check={check} acked={acked} setAcked={setAcked} name={name} />
+              </>
             )}
             {existing?.managed && <p className="text-xs text-rose-300">This host already has a stack called {name}.</p>}
             <ErrorNote error={error} />
             <div className="flex flex-col gap-2">
-              <Button variant="primary" icon={RefreshCw} name="action" value="deploy" loading={save.isPending && save.variables} disabled={!validName || !!problem || !!existing?.managed || (!!existing && !adopting) || save.isPending}>
+              <Button
+                variant="primary"
+                icon={RefreshCw}
+                name="action"
+                value="deploy"
+                loading={save.isPending && save.variables}
+                disabled={!validName || !!problem || !!existing?.managed || (!!existing && !adopting) || save.isPending || !deployReady || check.isFetching}
+                title={!deployReady ? 'Deal with the takeover check first' : undefined}
+              >
                 Save & deploy
               </Button>
               <Button icon={Save} name="action" value="save" loading={save.isPending && !save.variables} disabled={!validName || !hostId || !!existing?.managed || (!!existing && !adopting) || save.isPending}>
@@ -187,6 +203,9 @@ export function StackPage() {
     )
   const d = detail.data
   const s = live ?? d.summary
+  // Saved while taking over a running project, not deployed by TainerHub yet:
+  // the first deploy goes through the takeover check.
+  const takeover = !d.stack.deployedAt && s.containers > 0 && s.online
   return (
     <div>
       <BackLink />
@@ -201,10 +220,11 @@ export function StackPage() {
           </span>
         }
       >
-        {operator && <LifecycleButtons s={s} />}
+        {operator && <LifecycleButtons s={s} takeover={takeover} />}
       </PageHeader>
 
       <div className="space-y-6">
+        {takeover && admin && <TakeoverDeploy d={d} s={s} />}
         <StackContainers s={s} />
         {admin ? <FilesEditor d={d} /> : <FilesLocked />}
         {admin && s.managed && <MoveSection d={d} s={s} />}
@@ -214,7 +234,7 @@ export function StackPage() {
   )
 }
 
-function LifecycleButtons({ s }: { s: StackSummary }) {
+function LifecycleButtons({ s, takeover }: { s: StackSummary; takeover: boolean }) {
   const { run, pending } = useStackAction()
   const openJob = useOpenJob()
   if (s.job) {
@@ -239,9 +259,46 @@ function LifecycleButtons({ s }: { s: StackSummary }) {
       {s.running > 0 && btn('stop', 'Stop', Square, 'ghost')}
       {has && s.running < s.containers && btn('start', 'Start', Play, 'ghost')}
       {has && btn('down', 'Down', ArrowDownToLine, 'ghost')}
-      {btn('pull', 'Pull & redeploy', Download)}
-      {btn('deploy', 'Deploy', RefreshCw, 'primary')}
+      {!takeover && btn('pull', 'Pull & redeploy', Download)}
+      {!takeover && btn('deploy', 'Deploy', RefreshCw, 'primary')}
     </div>
+  )
+}
+
+/** First deploy of a taken-over project: check, confirm, deploy. */
+function TakeoverDeploy({ d, s }: { d: StackDetail; s: StackSummary }) {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const openJob = useOpenJob()
+  const check = useTakeoverCheck({ hostId: s.hostId, name: s.name, compose: d.stack.compose, env: d.stack.env }, true)
+  const [acked, setAcked] = useState('')
+  const deploy = useMutation({
+    mutationFn: () => api<{ jobId: string }>(`/api/stacks/${s.id}/deploy`, { method: 'POST', body: { ack: acked } }),
+    onSuccess: (res) => {
+      openJob(res.jobId)
+      qc.invalidateQueries({ queryKey: ['stacks'] })
+      qc.invalidateQueries({ queryKey: ['stack', s.id] })
+    },
+    onError: (e) => {
+      check.refetch()
+      toast('bad', errorText(e))
+    },
+  })
+  return (
+    <Card className="space-y-4 p-5 ring-lime-400/30">
+      <div>
+        <h2 className="font-display text-lg font-bold text-white">Take over {s.name}</h2>
+        <p className="text-sm text-ink-100/60">
+          It still runs as it was started outside TainerHub. Deploying recreates its containers from the saved compose file, run from TainerHub's folder.
+        </p>
+      </div>
+      <TakeoverPanel check={check} acked={acked} setAcked={setAcked} name={s.name} />
+      <div className="flex justify-end">
+        <Button variant="primary" icon={RefreshCw} loading={deploy.isPending} disabled={!takeoverReady(check.data, acked) || check.isFetching || !!s.job} onClick={() => deploy.mutate()}>
+          Deploy and take over
+        </Button>
+      </div>
+    </Card>
   )
 }
 
