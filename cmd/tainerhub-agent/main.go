@@ -57,6 +57,7 @@ func main() {
 			Socket:     socket,
 			WorkDir:    filepath.Join(dataDir, "compose"),
 			CheckMount: docker.CheckSameMount,
+			OwnProject: docker.OwnProject,
 		},
 		Log: log,
 	}

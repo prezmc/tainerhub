@@ -39,6 +39,9 @@ type StackRunner struct {
 
 	// CheckMount, if set, verifies Dir is bind-mounted from the same host path.
 	CheckMount func(ctx context.Context, dir string) error
+	// OwnProject, if set, returns the compose project the agent itself runs
+	// in, so no stack can take that name.
+	OwnProject func(ctx context.Context) string
 
 	mu    sync.Mutex
 	busy  map[string]bool
@@ -130,6 +133,13 @@ func (r *StackRunner) unlock(name string) {
 func (r *StackRunner) Run(ctx context.Context, c wire.StackCommand, out io.Writer) error {
 	if err := wire.ValidStackCommand(c); err != nil {
 		return err
+	}
+	// `up/down --remove-orphans` under TainerHub's own project name would
+	// treat the hub, its database and this agent as orphans and remove them.
+	if r.OwnProject != nil {
+		if p := r.OwnProject(ctx); p != "" && strings.EqualFold(p, c.Name) {
+			return errOwnProject(c.Name)
+		}
 	}
 	if sup := r.Supported(ctx); sup.Error != "" {
 		return errors.New(sup.Error)
