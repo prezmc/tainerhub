@@ -5,9 +5,11 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +50,12 @@ type Config struct {
 	IdleStatsEvery    time.Duration // default 60s while nobody does
 	PingEvery         time.Duration // default 20s
 	DeadAfter         time.Duration // default 90s
+
+	// The hub's client certificates expire (after a year by default), so the
+	// agent renews its own once it is within RenewBefore of expiry: before
+	// each connection attempt and every RenewCheckEvery while connected.
+	RenewBefore     time.Duration // default 30 days
+	RenewCheckEvery time.Duration // default 12h
 }
 
 // HealthFile (in DataDir) is refreshed while the agent is connected to the hub.
@@ -63,6 +71,9 @@ type Agent struct {
 	cfg  Config
 	log  *slog.Logger
 	root context.Context // lives for the whole Run, across reconnects
+	// creds is the client certificate in use. Renewal replaces it; only one
+	// renewal runs at a time (before a session, or inside one).
+	creds atomic.Pointer[tls.Certificate]
 }
 
 func New(cfg Config) (*Agent, error) {
@@ -89,6 +100,12 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.DeadAfter == 0 {
 		cfg.DeadAfter = 90 * time.Second
+	}
+	if cfg.RenewBefore == 0 {
+		cfg.RenewBefore = 30 * 24 * time.Hour
+	}
+	if cfg.RenewCheckEvery == 0 {
+		cfg.RenewCheckEvery = 12 * time.Hour
 	}
 	l := cfg.Log
 	if l == nil {
@@ -123,12 +140,19 @@ func (a *Agent) Run(ctx context.Context) error {
 			return errors.New("agent is not enrolled and no join token was given")
 		}
 	}
+	a.creds.Store(&creds)
 	backoff := time.Second
 	for {
+		a.renewIfDue(ctx)
 		started := time.Now()
-		err := a.session(ctx, creds)
+		err := a.session(ctx, *a.creds.Load())
 		if ctx.Err() != nil {
 			return nil
+		}
+		if errors.Is(err, errCertRenewed) {
+			a.log.Info("reconnecting with the renewed certificate")
+			backoff = time.Second
+			continue
 		}
 		if time.Since(started) > time.Minute {
 			backoff = time.Second
@@ -146,9 +170,15 @@ func (a *Agent) Run(ctx context.Context) error {
 // ---- enrollment ----
 
 func (a *Agent) loadCreds() (tls.Certificate, error) {
+	a.finishRenewal()
 	cert, err := tls.LoadX509KeyPair(a.path("agent.crt"), a.path("agent.key"))
 	if err != nil {
 		return cert, err
+	}
+	if cert.Leaf == nil { // renewal reads the expiry and host ID from it
+		if cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0]); err != nil {
+			return cert, err
+		}
 	}
 	if _, err := pki.ReadCertFile(a.path("ca.crt")); err != nil {
 		return cert, err
@@ -293,6 +323,190 @@ func verifyHub(cs tls.ConnectionState, roots *x509.CertPool) error {
 	return err
 }
 
+// ---- certificate renewal ----
+
+// errCertRenewed ends a session so the agent reconnects with its new cert.
+var errCertRenewed = errors.New("client certificate renewed")
+
+// certDue reports whether a certificate is close enough to expiry to renew.
+func (a *Agent) certDue(cert *tls.Certificate) bool {
+	return cert.Leaf != nil && time.Until(cert.Leaf.NotAfter) < a.cfg.RenewBefore
+}
+
+// renewIfDue renews the client certificate if it is near expiry and reports
+// whether it did. Failures only log a warning: the current certificate keeps
+// working until it expires, and the next check tries again.
+func (a *Agent) renewIfDue(ctx context.Context) bool {
+	cur := a.creds.Load()
+	if cur == nil || !a.certDue(cur) {
+		return false
+	}
+	next, err := a.renew(ctx, *cur)
+	if err != nil {
+		if ctx.Err() == nil {
+			a.log.Warn("could not renew the client certificate; will retry", "err", err, "expires", cur.Leaf.NotAfter)
+		}
+		return false
+	}
+	a.creds.Store(&next)
+	a.log.Info("renewed the client certificate", "expires", next.Leaf.NotAfter)
+	return true
+}
+
+// renew asks the hub for a new certificate over mTLS with the current one,
+// then saves the new key and certificate to the data directory.
+func (a *Agent) renew(ctx context.Context, cur tls.Certificate) (tls.Certificate, error) {
+	roots, err := a.caPool()
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	key, csr, err := pki.NewKeyAndCSR(cur.Leaf.Subject.CommonName)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	tr := &http.Transport{TLSClientConfig: a.hubTLS(cur, roots), ForceAttemptHTTP2: true}
+	defer tr.CloseIdleConnections()
+	body, _ := json.Marshal(wire.RenewRequest{CSR: csr})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+a.cfg.HubAddr+wire.PathRenew, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Transport: tr, Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return tls.Certificate{}, fmt.Errorf("hub refused renewal: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+	}
+	var rr wire.RenewResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&rr); err != nil {
+		return tls.Certificate{}, err
+	}
+	leaf, err := x509.ParseCertificate(rr.Cert)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("renewed certificate: %w", err)
+	}
+	// Sanity-check before replacing anything on disk: the new certificate
+	// must be for our new key, for the same host, and chain to our CA.
+	if !key.PublicKey.Equal(leaf.PublicKey) {
+		return tls.Certificate{}, errors.New("renewed certificate is not for our key")
+	}
+	if leaf.Subject.CommonName != cur.Leaf.Subject.CommonName {
+		return tls.Certificate{}, errors.New("renewed certificate is for a different host")
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		return tls.Certificate{}, fmt.Errorf("renewed certificate: %w", err)
+	}
+	next := tls.Certificate{Certificate: [][]byte{rr.Cert}, PrivateKey: key, Leaf: leaf}
+	if err := a.saveCreds(key, rr.Cert); err != nil {
+		// The hub has already switched to the new certificate, so the old
+		// one is no longer accepted: keep the new one in memory regardless.
+		a.log.Error("renewed certificate could not be saved; the agent will need re-enrolling if it restarts", "err", err)
+	}
+	return next, nil
+}
+
+// saveCreds replaces agent.key and agent.crt without ever leaving the data
+// directory with no usable pair: both new files are written and synced
+// under temporary names first, then renamed over the old ones (key first).
+// finishRenewal completes the renames if the agent stops part way through.
+func (a *Agent) saveCreds(key *ecdsa.PrivateKey, certDER []byte) error {
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return err
+	}
+	if err := writeSynced(a.path("agent.key.new"), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		return err
+	}
+	if err := writeSynced(a.path("agent.crt.new"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(a.path("agent.key.new"), a.path("agent.key")); err != nil {
+		return err
+	}
+	if err := os.Rename(a.path("agent.crt.new"), a.path("agent.crt")); err != nil {
+		return err
+	}
+	syncDir(a.cfg.DataDir)
+	return nil
+}
+
+// finishRenewal recovers from an agent stopped in the middle of saveCreds.
+// The hub may already have switched to the new certificate, so a complete
+// new pair left behind is preferred over the old one.
+func (a *Agent) finishRenewal() {
+	newCrt, newKey := a.path("agent.crt.new"), a.path("agent.key.new")
+	if _, err := os.Stat(newCrt); err != nil {
+		return
+	}
+	switch {
+	case loads(newCrt, newKey): // stopped before either rename
+		if os.Rename(newKey, a.path("agent.key")) != nil {
+			return
+		}
+	case loads(newCrt, a.path("agent.key")): // stopped between the renames
+	default: // half-written leftovers; the old pair is still in place
+		return
+	}
+	if err := os.Rename(newCrt, a.path("agent.crt")); err == nil {
+		a.log.Info("completed an interrupted certificate renewal")
+		syncDir(a.cfg.DataDir)
+	}
+}
+
+func loads(certFile, keyFile string) bool {
+	_, err := tls.LoadX509KeyPair(certFile, keyFile)
+	return err == nil
+}
+
+func writeSynced(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(perm); err != nil { // in case a leftover had other modes
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// syncDir makes completed renames durable; best effort.
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+}
+
+// renewLoop checks the certificate's expiry while connected, for agents
+// that stay connected for weeks. After renewing it ends the session so the
+// agent reconnects with the new certificate.
+func (s *session) renewLoop() {
+	t := time.NewTicker(s.a.cfg.RenewCheckEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-t.C:
+			if s.a.renewIfDue(s.ctx) {
+				s.renewed.Store(true)
+				s.cancel()
+				return
+			}
+		}
+	}
+}
+
 // ---- connected session ----
 
 type session struct {
@@ -305,6 +519,7 @@ type session struct {
 	// an older hub, which never says, keeps the frequent sampling.
 	watching atomic.Bool
 	watchCh  chan struct{} // wakes statsLoop when someone starts watching
+	renewed  atomic.Bool   // the session ended to reconnect with a renewed certificate
 
 	mu    sync.Mutex
 	logs  map[string]context.CancelFunc // log streams, stack ops and terminals, by command ID
@@ -334,21 +549,23 @@ func (s *session) requestSnapshot() {
 	}
 }
 
+// hubTLS is the mTLS client config for talking to the hub once enrolled.
+func (a *Agent) hubTLS(cert tls.Certificate, roots *x509.CertPool) *tls.Config {
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		Certificates:       []tls.Certificate{cert},
+		ServerName:         a.serverName(),
+		InsecureSkipVerify: true, // replaced by VerifyConnection: CA check without a hostname check
+		VerifyConnection:   func(cs tls.ConnectionState) error { return verifyHub(cs, roots) },
+	}
+}
+
 func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	roots, err := a.caPool()
 	if err != nil {
 		return err
 	}
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			MinVersion:         tls.VersionTLS13,
-			Certificates:       []tls.Certificate{cert},
-			ServerName:         a.serverName(),
-			InsecureSkipVerify: true, // replaced by VerifyConnection: CA check without a hostname check
-			VerifyConnection:   func(cs tls.ConnectionState) error { return verifyHub(cs, roots) },
-		},
-		ForceAttemptHTTP2: true,
-	}
+	tr := &http.Transport{TLSClientConfig: a.hubTLS(cert, roots), ForceAttemptHTTP2: true}
 	defer tr.CloseIdleConnections()
 
 	ctx, cancel := context.WithCancel(parent)
@@ -412,10 +629,11 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	}
 	a.log.Info("connected to hub", "hub", a.cfg.HubAddr, "proto", resp.Proto)
 
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); s.snapshotLoop() }()
 	go func() { defer wg.Done(); s.eventLoop() }()
 	go func() { defer wg.Done(); s.statsLoop() }()
+	go func() { defer wg.Done(); s.renewLoop() }()
 	s.requestSnapshot()
 
 	var lastRead time.Time
@@ -453,6 +671,9 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 			cancel()
 			if parent.Err() != nil {
 				return nil
+			}
+			if s.renewed.Load() {
+				return errCertRenewed
 			}
 			return err
 		}

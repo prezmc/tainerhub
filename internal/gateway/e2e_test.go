@@ -26,6 +26,8 @@ type memStore struct {
 	mu     sync.Mutex
 	tokens map[string]*gateway.JoinTokenRecord
 	hosts  map[string]*gateway.HostCert
+
+	renewals int
 }
 
 func (m *memStore) GetJoinToken(_ context.Context, id string) (gateway.JoinTokenRecord, error) {
@@ -58,6 +60,24 @@ func (m *memStore) GetHostCert(_ context.Context, hostID string) (gateway.HostCe
 		return gateway.HostCert{}, gateway.ErrNotFound
 	}
 	return *h, nil
+}
+
+func (m *memStore) RenewHostCert(_ context.Context, hostID, oldSerial, newSerial string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.hosts[hostID]
+	if !ok || oldSerial == "" || h.CertSerial != oldSerial {
+		return gateway.ErrSerialChanged
+	}
+	h.CertSerial = newSerial
+	m.renewals++
+	return nil
+}
+
+func (m *memStore) serial(hostID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hosts[hostID].CertSerial
 }
 
 func (m *memStore) TouchHost(context.Context, string, *wire.Hello, time.Time) error { return nil }

@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -26,6 +27,11 @@ import (
 )
 
 var ErrNotFound = errors.New("not found")
+
+// ErrSerialChanged is returned by RenewHostCert when the host's stored serial
+// is no longer the one the caller presented (another renewal won, or the
+// host was re-enrolled or revoked in the meantime).
+var ErrSerialChanged = errors.New("certificate serial changed")
 
 type JoinTokenRecord struct {
 	ID         string
@@ -48,7 +54,17 @@ type Store interface {
 	// already was) and record the host's certificate serial.
 	CompleteEnrollment(ctx context.Context, tokenID, hostID, certSerial string) error
 	GetHostCert(ctx context.Context, hostID string) (HostCert, error)
+	// RenewHostCert must replace the host's serial only if it still equals
+	// oldSerial (compare-and-swap), returning ErrSerialChanged otherwise, so
+	// two concurrent renewals with the same certificate cannot both win.
+	RenewHostCert(ctx context.Context, hostID, oldSerial, newSerial string) error
 	TouchHost(ctx context.Context, hostID string, hello *wire.Hello, at time.Time) error
+}
+
+// CertRenewalRecorder is optionally implemented by the Store to keep a
+// durable record (the audit log) of agent certificate renewals.
+type CertRenewalRecorder interface {
+	RecordCertRenewal(ctx context.Context, hostID, hostName, remoteIP string) error
 }
 
 type Gateway struct {
@@ -70,6 +86,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+wire.PathEnroll, g.handleEnroll)
 	mux.HandleFunc("POST "+wire.PathConnect, g.handleConnect)
+	mux.HandleFunc("POST "+wire.PathRenew, g.handleRenew)
 	return mux
 }
 
@@ -133,11 +150,7 @@ func (g *Gateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		deny("token used or expired")
 		return
 	}
-	validity := g.CertValidity
-	if validity == 0 {
-		validity = 365 * 24 * time.Hour
-	}
-	cert, err := g.CA.SignClientCSR(req.CSR, rec.HostID, validity)
+	cert, err := g.CA.SignClientCSR(req.CSR, rec.HostID, g.validity())
 	if err != nil {
 		http.Error(w, "bad csr", http.StatusBadRequest)
 		return
@@ -151,20 +164,92 @@ func (g *Gateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(wire.EnrollResponse{HostID: rec.HostID, Cert: cert.Raw, CA: g.CA.Cert.Raw})
 }
 
-func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
+func (g *Gateway) validity() time.Duration {
+	if g.CertValidity > 0 {
+		return g.CertValidity
+	}
+	return 365 * 24 * time.Hour
+}
+
+func remoteIP(r *http.Request) string {
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return h
+	}
+	return r.RemoteAddr
+}
+
+// authAgent identifies an agent by its client certificate, for connect and
+// renew alike. It writes the error response itself and returns ok=false
+// when the agent is refused.
+func (g *Gateway) authAgent(w http.ResponseWriter, r *http.Request, what string) (leaf *x509.Certificate, hc HostCert, ok bool) {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		http.Error(w, "client certificate required", http.StatusUnauthorized)
-		return
+		return nil, hc, false
 	}
-	// VerifyClientCertIfGiven has already checked the chain against our CA.
-	leaf := r.TLS.PeerCertificates[0]
+	// VerifyClientCertIfGiven has already checked the chain (and expiry)
+	// against our CA. The serial check makes only the host's latest
+	// certificate count, so renewed or re-enrolled hosts' old ones stop working.
+	leaf = r.TLS.PeerCertificates[0]
 	hostID := leaf.Subject.CommonName
 	hc, err := g.Store.GetHostCert(r.Context(), hostID)
 	if err != nil || hc.Revoked || hc.CertSerial != pki.SerialString(leaf) {
-		g.log().Warn("agent connection refused", "host_id", hostID, "remote", r.RemoteAddr)
+		g.log().Warn("agent "+what+" refused", "host_id", hostID, "remote", r.RemoteAddr)
 		http.Error(w, "certificate revoked or unknown", http.StatusForbidden)
+		return nil, hc, false
+	}
+	return leaf, hc, true
+}
+
+// handleRenew issues a new client certificate to an agent that still holds a
+// valid one, so agents never need re-enrolling by hand as theirs nears expiry.
+func (g *Gateway) handleRenew(w http.ResponseWriter, r *http.Request) {
+	leaf, hc, ok := g.authAgent(w, r, "certificate renewal")
+	if !ok {
 		return
 	}
+	hostID := leaf.Subject.CommonName
+	var req wire.RenewRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	// As at enrollment the CSR's subject is ignored: the host ID comes from
+	// the certificate the agent authenticated with.
+	cert, err := g.CA.SignClientCSR(req.CSR, hostID, g.validity())
+	if err != nil {
+		http.Error(w, "bad csr", http.StatusBadRequest)
+		return
+	}
+	oldSerial, newSerial := pki.SerialString(leaf), pki.SerialString(cert)
+	if err := g.Store.RenewHostCert(r.Context(), hostID, oldSerial, newSerial); err != nil {
+		g.log().Warn("agent certificate renewal refused", "host_id", hostID, "remote", r.RemoteAddr, "err", err)
+		if errors.Is(err, ErrSerialChanged) {
+			http.Error(w, "certificate revoked or unknown", http.StatusForbidden)
+		} else {
+			http.Error(w, "renewal failed", http.StatusInternalServerError)
+		}
+		return
+	}
+	g.log().Info("agent certificate renewed", "host", hc.Name, "host_id", hostID, "remote", r.RemoteAddr,
+		"old_serial", oldSerial, "new_serial", newSerial, "expires", cert.NotAfter)
+	if g.Reg != nil {
+		g.Reg.AddActivity(registry.Activity{Kind: "host", Action: "certificate renewed", HostID: hostID, Host: hc.Name})
+	}
+	if rec, ok := g.Store.(CertRenewalRecorder); ok {
+		if err := rec.RecordCertRenewal(context.WithoutCancel(r.Context()), hostID, hc.Name, remoteIP(r)); err != nil {
+			g.log().Warn("audit certificate renewal", "err", err)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(wire.RenewResponse{Cert: cert.Raw, CA: g.CA.Cert.Raw})
+}
+
+func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
+	leaf, hc, ok := g.authAgent(w, r, "connection")
+	if !ok {
+		return
+	}
+	hostID := leaf.Subject.CommonName
 
 	rc := http.NewResponseController(w)
 	_ = rc.EnableFullDuplex() // needed for HTTP/1.1; HTTP/2 is duplex already
@@ -176,11 +261,7 @@ func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	remoteIP := r.RemoteAddr
-	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		remoteIP = h
-	}
-	agent := g.Reg.AttachFrom(hostID, hc.Name, remoteIP, cancel)
+	agent := g.Reg.AttachFrom(hostID, hc.Name, remoteIP(r), cancel)
 	defer g.Reg.Detach(agent)
 	log := g.log().With("host", hc.Name, "host_id", hostID)
 	log.Info("agent connected", "remote", r.RemoteAddr, "proto", r.Proto)

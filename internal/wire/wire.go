@@ -20,6 +20,7 @@ import (
 const (
 	PathEnroll  = "/v1/enroll"
 	PathConnect = "/v1/connect"
+	PathRenew   = "/v1/renew"
 
 	// ProtocolVersion is sent in Hello; bump on incompatible changes.
 	ProtocolVersion = 1
@@ -37,6 +38,20 @@ type EnrollResponse struct {
 	HostID string `json:"host_id"`
 	Cert   []byte `json:"cert"` // DER, client certificate
 	CA     []byte `json:"ca"`   // DER, hub CA certificate
+}
+
+// RenewRequest asks for a fresh client certificate before the current one
+// expires. It is sent over mTLS with the current certificate, which is what
+// identifies the host; the CSR only carries the new public key.
+type RenewRequest struct {
+	CSR []byte `json:"csr"` // DER-encoded PKCS#10
+}
+
+// RenewResponse has the same shape as EnrollResponse minus the host ID,
+// which the agent already knows.
+type RenewResponse struct {
+	Cert []byte `json:"cert"` // DER, new client certificate
+	CA   []byte `json:"ca"`   // DER, hub CA certificate
 }
 
 // AgentMessage flows agent -> hub. Exactly one field is set.

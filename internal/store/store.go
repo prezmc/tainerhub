@@ -494,6 +494,28 @@ func (s *Store) GetHostCert(ctx context.Context, hostID string) (gateway.HostCer
 	return hc, notFound(err)
 }
 
+// RenewHostCert swaps in a renewed certificate's serial only if the host
+// still has the one the agent presented, so of two concurrent renewals with
+// the same certificate exactly one wins.
+func (s *Store) RenewHostCert(ctx context.Context, hostID, oldSerial, newSerial string) error {
+	if oldSerial == "" { // an empty serial means not enrolled, never renewable
+		return gateway.ErrSerialChanged
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE hosts SET cert_serial = $3 WHERE id = $1::uuid AND cert_serial = $2`, hostID, oldSerial, newSerial)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return gateway.ErrSerialChanged
+	}
+	return nil
+}
+
+// RecordCertRenewal puts "agent certificate renewed" in the audit log.
+func (s *Store) RecordCertRenewal(ctx context.Context, hostID, hostName, remoteIP string) error {
+	return s.Audit(ctx, AuditEntry{Actor: "agent", Action: "host.cert_renewed", Target: hostName, IP: remoteIP})
+}
+
 func (s *Store) TouchHost(ctx context.Context, hostID string, hello *wire.Hello, at time.Time) error {
 	if hello == nil {
 		_, err := s.db.Exec(ctx, `UPDATE hosts SET last_seen_at = $2 WHERE id = $1::uuid`, hostID, at)
