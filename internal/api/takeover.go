@@ -51,8 +51,8 @@ type takeoverReport struct {
 }
 
 // buildTakeoverReport compares the pasted files (resolved in TainerHub's
-// folder) with the running project.
-func buildTakeoverReport(p wire.StackPreview) takeoverReport {
+// folder) with the running project. compose is the pasted file itself.
+func buildTakeoverReport(p wire.StackPreview, compose string) takeoverReport {
 	rep := takeoverReport{Issues: []takeoverIssue{}, WorkingDir: p.WorkingDir, Dir: p.Dir, Running: len(p.Running)}
 	add := func(i takeoverIssue) { rep.Issues = append(rep.Issues, i) }
 
@@ -123,7 +123,9 @@ func buildTakeoverReport(p wire.StackPreview) takeoverReport {
 		}
 	}
 
-	if len(p.ConfigFiles) > 1 {
+	// A file TainerHub read from the project already merges all of them.
+	merged := len(p.ConfigFiles) > 0 && strings.Contains(compose, "# Merged from: "+strings.Join(p.ConfigFiles, ", ")+"\n")
+	if len(p.ConfigFiles) > 1 && !merged {
 		add(takeoverIssue{Key: "files:" + strings.Join(p.ConfigFiles, ","), Level: levelConfirm,
 			Title:  fmt.Sprintf("It was started with %d compose files", len(p.ConfigFiles)),
 			Detail: strings.Join(p.ConfigFiles, "\n") + "\nTainerHub uses one file: make sure the pasted one includes everything from all of them (an override file, say)."})
@@ -242,7 +244,7 @@ func (s *Server) takeoverCheck(ctx context.Context, hostID, name, compose, env s
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return takeoverReport{}, fmt.Errorf("unreadable answer: %w", err)
 	}
-	return buildTakeoverReport(p), nil
+	return buildTakeoverReport(p, compose), nil
 }
 
 // isTakeover reports whether deploying st would be TainerHub's first deploy
@@ -325,4 +327,37 @@ func (s *Server) checkTakeover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rep)
+}
+
+// takeoverSource answers GET /api/stacks/takeover-source?host=&name=: the
+// project's own compose files, merged by compose with relative paths made
+// absolute, and its .env, read from the folder it was started in.
+func (s *Server) takeoverSource(w http.ResponseWriter, r *http.Request) {
+	hostID, name := r.URL.Query().Get("host"), r.URL.Query().Get("name")
+	if !validUUID(hostID) || !wire.ValidStackName(name) {
+		jsonErr(w, http.StatusBadRequest, "choose a host and a valid name")
+		return
+	}
+	a := s.Reg.Get(hostID)
+	if a == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host is offline")
+		return
+	}
+	raw, err := a.Operate(r.Context(), wire.Operation{Kind: wire.OpStackRead, Target: name})
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "unknown operation") {
+			msg = "this host's agent is too old to read the project; update it, or paste the compose file"
+		}
+		jsonErr(w, http.StatusBadGateway, msg)
+		return
+	}
+	var src wire.StackSource
+	if err := json.Unmarshal(raw, &src); err != nil {
+		jsonErr(w, http.StatusBadGateway, "unreadable answer from the agent")
+		return
+	}
+	u := userFrom(r)
+	s.record(r, &u, "stack.takeover_read", s.hostName(r.Context(), hostID)+"/"+name, map[string]any{"from": src.WorkingDir, "files": src.ConfigFiles, "copied": src.Copied})
+	writeJSON(w, http.StatusOK, src)
 }

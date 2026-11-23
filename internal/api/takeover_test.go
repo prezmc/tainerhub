@@ -48,7 +48,7 @@ func TestTakeoverReportFindsChanges(t *testing.T) {
 		ConfigFiles: []string{"/home/me/apps/app/compose.yaml", "/home/me/apps/app/compose.override.yml"},
 		Warnings:    []string{`The "DB_PASSWORD" variable is not set. Defaulting to a blank string.`, "something else"},
 	}
-	rep := buildTakeoverReport(p)
+	rep := buildTakeoverReport(p, "")
 	if rep.Blocked {
 		t.Fatalf("blocked: %+v", rep.Issues)
 	}
@@ -84,7 +84,7 @@ func TestTakeoverReportFindsChanges(t *testing.T) {
 
 	// The ack changes when the findings do, so an old confirmation doesn't carry over.
 	p.Mounts[2].Source = "app_db"
-	if again := buildTakeoverReport(p); again.Ack == rep.Ack || issue(again, "volume:") != nil {
+	if again := buildTakeoverReport(p, ""); again.Ack == rep.Ack || issue(again, "volume:") != nil {
 		t.Errorf("ack after fixing the volume: %q vs %q", again.Ack, rep.Ack)
 	}
 }
@@ -100,7 +100,7 @@ func TestTakeoverReportCleanAndBlocked(t *testing.T) {
 		},
 		Running: running(),
 	}
-	rep := buildTakeoverReport(clean)
+	rep := buildTakeoverReport(clean, "")
 	if rep.Blocked || rep.Ack != "" || len(rep.Issues) != 0 {
 		t.Errorf("clean takeover: %+v", rep)
 	}
@@ -109,22 +109,22 @@ func TestTakeoverReportCleanAndBlocked(t *testing.T) {
 	moved := clean
 	moved.Mounts = append([]wire.StackMount{{Service: "web", Type: "bind", Source: tdir + "/html", Target: "/usr/share/nginx/html"}}, clean.Mounts[1:]...)
 	moved.Paths = map[string]int{tdir + "/html": 0}
-	if b := issue(buildTakeoverReport(moved), "bind:"); b == nil || b.Fix != "sudo cp -a /home/me/apps/app/html/. /opt/tainerhub/stacks/app/html/" {
+	if b := issue(buildTakeoverReport(moved, ""), "bind:"); b == nil || b.Fix != "sudo cp -a /home/me/apps/app/html/. /opt/tainerhub/stacks/app/html/" {
 		t.Errorf("empty target: %+v", b)
 	}
 	moved.Paths[tdir+"/html"] = 3
-	if b := issue(buildTakeoverReport(moved), "bind:"); b == nil || b.Fix != "" || !strings.Contains(b.Detail, "already has files") {
+	if b := issue(buildTakeoverReport(moved, ""), "bind:"); b == nil || b.Fix != "" || !strings.Contains(b.Detail, "already has files") {
 		t.Errorf("filled target: %+v", b)
 	}
 
 	broken := wire.StackPreview{Dir: tdir, ConfigError: "env file /opt/tainerhub/stacks/app/app.env not found", Running: running()}
-	rep = buildTakeoverReport(broken)
+	rep = buildTakeoverReport(broken, "")
 	if !rep.Blocked || issue(rep, "config") == nil || issue(rep, "orphan:") != nil {
 		t.Errorf("config error: %+v", rep)
 	}
 	build := clean
 	build.Services = append(build.Services, wire.StackService{Name: "api", Build: true})
-	if !buildTakeoverReport(build).Blocked {
+	if !buildTakeoverReport(build, "").Blocked {
 		t.Error("build: not blocked")
 	}
 }
@@ -132,5 +132,17 @@ func TestTakeoverReportCleanAndBlocked(t *testing.T) {
 func TestShellQuote(t *testing.T) {
 	if shellQuote("/srv/a-b_c.d") != "/srv/a-b_c.d" || shellQuote("/srv/my media") != "'/srv/my media'" || shellQuote("it's") != `'it'\''s'` {
 		t.Errorf("%s %s %s", shellQuote("/srv/a-b_c.d"), shellQuote("/srv/my media"), shellQuote("it's"))
+	}
+}
+
+func TestTakeoverReportMergedFile(t *testing.T) {
+	files := []string{"/home/me/apps/app/compose.yaml", "/home/me/apps/app/compose.override.yml"}
+	p := wire.StackPreview{Dir: tdir, ConfigFiles: files}
+	if issue(buildTakeoverReport(p, "services: {}\n"), "files:") == nil {
+		t.Error("a pasted file should be asked about the override file")
+	}
+	header := "# Taken over by TainerHub from /home/me/apps/app\n# Merged from: " + strings.Join(files, ", ") + "\n"
+	if issue(buildTakeoverReport(p, header+"services: {}\n"), "files:") != nil {
+		t.Error("a file TainerHub merged from them shouldn't be")
 	}
 }

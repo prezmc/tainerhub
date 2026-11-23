@@ -218,20 +218,24 @@ If the hub restarts during a move, the move stops. The stack's page says so: the
 
 Compose projects you started by hand show up under **Started outside TainerHub**. You can manage their containers from the Containers page as usual.
 
-To bring one under TainerHub's control, admins click **Manage in TainerHub** next to it. This opens a new stack with the same name and host:
+To bring one under TainerHub's control, admins click **Manage in TainerHub** next to it. This opens a new stack with the same name and host, and **TainerHub reads the project's own files** from the folder it was started in (compose records that folder and its files on the containers):
 
-1. Paste the compose file the project was started with.
-2. Add its `.env`, if it had one.
-3. Click **Save & deploy**.
+- All its compose files (an override file, say) are merged into one by `docker compose config`, with **relative paths made absolute**: `./data` becomes `/home/you/apps/app/data`. Bind mounts keep pointing at the data where it is, so nothing is copied or moved.
+- Variables stay as `${...}`, and its `.env` (or the `--env-file` it was started with) is filled in.
+- Files given with `env_file:` are copied into the stack's folder (`env/`), since the agent can only read that folder later on, and the file points at the copies.
 
-Compose recreates the containers from the new file and keeps their named volumes. Relative bind mounts such as `./data` now point into `/opt/tainerhub/stacks/<name>/`, so **move that data there first**.
+Then click **Save & deploy**. When the file matches what runs, compose leaves the containers running as they are.
 
-While you edit, a **takeover check** compares the pasted file with what the running containers use and lists what would change:
+The file is compose's own tidied-up version: comments and formatting aren't kept, and it uses compose's long form. You can edit it, click **Read again**, or paste your own file instead. To read the files, the agent briefly runs a helper container (its own image, without network) with those folders mounted read-only; system folders such as `/etc` are refused. If the project's containers don't say where it was started (very old compose), paste the file.
+
+If you paste your own file, relative bind mounts such as `./data` point into `/opt/tainerhub/stacks/<name>/`, so **move that data there first**.
+
+While you edit, a **takeover check** compares the file with what the running containers use and lists what would change:
 
 - **Folders that would move**: a bind mount whose host path changes (usually a relative `./…` path). If the new folder is missing or empty it says so and gives the `cp -a` command that copies the data across.
 - **Volumes that would be swapped**: a volume whose name changes would be created empty.
 - **Services missing from the file**: their containers would be removed.
-- **Several compose files**: the project was started with an override file, say, which must be merged into the one you paste.
+- **Several compose files**: the project was started with an override file, say, which must be merged into the one you paste. (Not asked when TainerHub read and merged them itself.)
 - **Variables that aren't set**: TainerHub runs compose with only the pasted `.env`, not your shell's variables.
 - **Problems that stop the deploy**: a `build:` section, or a file compose rejects from the new folder (such as a relative `env_file` that isn't there).
 
