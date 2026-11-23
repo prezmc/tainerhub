@@ -618,6 +618,13 @@ const (
 	// folder, and what the running containers use now. Used before taking
 	// over a project started outside TainerHub. Result: StackPreview.
 	OpStackPreview = "stack.preview"
+	// OpStackRead reads the compose project Target as it was started outside
+	// TainerHub, from the folder and files its containers' labels name, and
+	// merges it with `docker compose config --no-interpolate` into one file
+	// whose relative paths are absolute (so its data stays where it is).
+	// Files given with env_file are copied into the stack's folder and the
+	// file points at the copies. Result: StackSource.
+	OpStackRead = "stack.read"
 	// OpContainerExport describes standalone container Target for moving it
 	// to another host: the body to create it again (what Pull & recreate
 	// uses), its volumes with sizes, host folders, networks and published
@@ -629,6 +636,17 @@ const (
 	// ContainerCreateResult.
 	OpContainerCreate = "container.create"
 )
+
+// StackSource is a running project's compose setup, read from its host.
+type StackSource struct {
+	Compose     string   `json:"compose"`            // the merged file, variables left as ${...}
+	Env         string   `json:"env"`                // its .env (or --env-file), as written
+	WorkingDir  string   `json:"working_dir"`        // the folder it was started from
+	ConfigFiles []string `json:"config_files"`       // the compose files that were merged
+	EnvFile     string   `json:"env_file,omitempty"` // where Env came from, if anywhere
+	Copied      []string `json:"copied,omitempty"`   // env_file files copied into the stack's folder
+	Warnings    []string `json:"warnings,omitempty"` // compose's
+}
 
 // ContainerExport describes a standalone container on its host.
 type ContainerExport struct {
@@ -864,7 +882,7 @@ var OpKinds = map[string]bool{
 	OpContainerRemoveVolumes: true, OpSelfUpdate: true,
 	OpImagesCheckUpdates: false, OpContainerRecreate: true,
 	OpDockerPlan: false, OpDockerUpgrade: true,
-	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false,
+	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false, OpStackRead: true,
 	OpContainerExport: false, OpContainerCreate: true,
 }
 
@@ -901,7 +919,7 @@ func ValidOperation(op Operation) error {
 		if op.Arg != "restart-all" {
 			return errors.New("upgrading Docker restarts every container: it needs an explicit OK")
 		}
-	case OpStackInspect, OpStackDirRemove:
+	case OpStackInspect, OpStackDirRemove, OpStackRead:
 		if !ValidStackName(op.Target) {
 			return errors.New("invalid stack name")
 		}

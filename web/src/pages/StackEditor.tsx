@@ -9,7 +9,7 @@ import { CodeEditor, StackStatusBadge, useOpenJob, useStackAction, useStacks, wi
 import { useMe } from './AppLayout'
 import { HostSelect, useDefaultHost } from '../placement'
 import { MoveSection } from './MoveStack'
-import { TakeoverPanel, takeoverReady, useTakeoverCheck } from '../takeover'
+import { SourceNote, TakeoverPanel, takeoverReady, useTakeoverCheck, useTakeoverSource } from '../takeover'
 
 const STARTER = `services:
   app:
@@ -68,6 +68,14 @@ export function NewStackPage() {
   const existing = stacks.data?.find((s) => s.hostId === hostId && s.name === name)
   const validName = /^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)
   const takingOver = adopting && !!existing && !existing.managed
+  const source = useTakeoverSource(hostId, name, takingOver)
+  // Fill the editor from the project once, unless something was typed already.
+  useEffect(() => {
+    if (source.data && compose === '') {
+      setCompose(source.data.compose)
+      setEnv(source.data.env)
+    }
+  }, [source.data]) // eslint-disable-line react-hooks/exhaustive-deps
   const check = useTakeoverCheck({ hostId, name, compose, env }, takingOver)
   const [acked, setAcked] = useState('')
   const deployReady = !takingOver || takeoverReady(check.data, acked)
@@ -103,7 +111,24 @@ export function NewStackPage() {
               <h2 className="font-display text-lg font-bold text-white">compose.yaml</h2>
               <span className="text-xs text-ink-100/40">{compose.length.toLocaleString()} bytes</span>
             </div>
-            <CodeEditor label="compose.yaml" value={compose} onChange={setCompose} placeholder={adopting ? `Paste the compose file that ${search.name} was started with.` : undefined} />
+            {takingOver && (
+              <SourceNote
+                source={source}
+                onReload={async () => {
+                  const r = await source.refetch()
+                  if (r.data) {
+                    setCompose(r.data.compose)
+                    setEnv(r.data.env)
+                  }
+                }}
+              />
+            )}
+            <CodeEditor
+              label="compose.yaml"
+              value={compose}
+              onChange={setCompose}
+              placeholder={adopting ? (source.isFetching ? `Reading ${search.name}'s compose files from the host…` : `Paste the compose file that ${search.name} was started with.`) : undefined}
+            />
           </Card>
           <Card className="space-y-3 p-5">
             <h2 className="font-display text-lg font-bold text-white">.env</h2>
