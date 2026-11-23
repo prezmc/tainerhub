@@ -209,6 +209,7 @@ type stackInput struct {
 	UpdatedAt time.Time `json:"updatedAt"` // edits: the version the editor loaded
 	Deploy    bool      `json:"deploy"`    // deploy right after saving
 	Adopt     bool      `json:"adopt"`     // take over a compose project already running on the host
+	Ack       string    `json:"ack"`       // confirms the takeover check's findings (first deploy of a taken-over project)
 }
 
 func (in *stackInput) validate() error {
@@ -274,6 +275,9 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if in.Deploy && s.isTakeover(h.ID, in.Name, false) && !s.requireTakeoverAck(w, r, h.ID, in.Name, in.Compose, in.Env, in.Ack) {
+		return
+	}
 	u := userFrom(r)
 	st, err := s.Store.CreateStack(r.Context(), store.Stack{HostID: h.ID, Name: in.Name, Compose: in.Compose, Env: in.Env, UpdatedBy: u.Username})
 	if errors.Is(err, store.ErrConflict) {
@@ -333,6 +337,9 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if in.Deploy && s.isTakeover(st.HostID, st.Name, st.DeployedAt != nil) && !s.requireTakeoverAck(w, r, st.HostID, st.Name, in.Compose, in.Env, in.Ack) {
+		return
+	}
 	u := userFrom(r)
 	st, err := s.Store.UpdateStack(r.Context(), st.ID, in.Compose, in.Env, u.Username, in.UpdatedAt)
 	if errors.Is(err, store.ErrStale) {
@@ -370,6 +377,21 @@ func (s *Server) stackAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		jsonErr(w, http.StatusNotFound, "unknown stack action")
 		return
+	}
+	// The first deploy of a project taken over from outside TainerHub needs
+	// the takeover check confirmed (body {"ack": ...}).
+	if action == wire.StackDeploy && s.isTakeover(st.HostID, st.Name, st.DeployedAt != nil) {
+		var in struct{ Ack string }
+		if r.ContentLength != 0 {
+			_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in)
+		}
+		if roleRank[userFrom(r).Role] < roleRank["admin"] {
+			jsonErr(w, http.StatusForbidden, "this is the first deploy of a project taken over from outside TainerHub: an admin has to check and deploy it")
+			return
+		}
+		if !s.requireTakeoverAck(w, r, st.HostID, st.Name, st.Compose, st.Env, in.Ack) {
+			return
+		}
 	}
 	s.respondJob(w, r, st, action, pull, false)
 }
