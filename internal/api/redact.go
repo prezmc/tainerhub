@@ -20,6 +20,13 @@ var safeLabelPrefixes = []string{"com.docker.compose.", "org.opencontainers.imag
 // arguments (--password=..., -p secret). Names and the program being run
 // stay visible, so viewers can still tell what the container is.
 func redactForViewer(d *wire.ContainerDetail) {
+	// Health-check output is whatever the probe printed, which can include
+	// tokens or connection strings; pass/fail and exit codes stay visible.
+	if d.State.Health != nil {
+		for i := range d.State.Health.Log {
+			d.State.Health.Log[i].Output = ""
+		}
+	}
 	for i, e := range d.Env {
 		if k, _, ok := strings.Cut(e, "="); ok {
 			d.Env[i] = k + "="

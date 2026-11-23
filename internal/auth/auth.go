@@ -673,7 +673,7 @@ func (s *Service) UserFromRequest(r *http.Request) (store.User, error) {
 		return store.User{}, ErrUnauthorized
 	}
 	h := Hash(ck.Value)
-	ss, err := s.Store.GetSession(r.Context(), h)
+	ss, u, err := s.Store.SessionUser(r.Context(), h) // session and user in one query
 	if err != nil {
 		return store.User{}, ErrUnauthorized
 	}
@@ -684,10 +684,6 @@ func (s *Service) UserFromRequest(r *http.Request) (store.User, error) {
 	}
 	if now.Sub(ss.LastSeenAt) > time.Minute {
 		_ = s.Store.TouchSession(r.Context(), h)
-	}
-	u, err := s.Store.UserByID(r.Context(), ss.UserID)
-	if err != nil {
-		return store.User{}, ErrUnauthorized
 	}
 	return u, nil
 }

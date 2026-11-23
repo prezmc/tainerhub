@@ -104,9 +104,12 @@ func openManaged[T passwordDB](ctx context.Context, open func(context.Context, s
 	if err := os.Rename(pending, saved); err != nil {
 		return zero, err
 	}
+	// The password itself stays out of the logs, which are often shipped
+	// elsewhere; `tainerhub db-password` prints it on demand.
 	log.Warn("SAVE THIS: the default database password was replaced with a random one. "+
 		"TainerHub keeps it in its data volume and you don't need it day to day, "+
-		"but keep a copy (e.g. in your password manager) in case you restore the database without that volume.",
-		"database_password", pw, "saved_in", saved)
+		"but keep a copy (e.g. in your password manager) in case you restore the database without that volume. "+
+		"See it with: docker exec tainerhub /tainerhub db-password",
+		"saved_in", saved)
 	return open(ctx, pw)
 }

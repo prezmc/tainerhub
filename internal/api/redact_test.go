@@ -43,3 +43,12 @@ func TestRedactForViewer(t *testing.T) {
 		t.Errorf("cmd = %v", d2.Cmd)
 	}
 }
+
+func TestRedactHidesHealthOutput(t *testing.T) {
+	d := &wire.ContainerDetail{}
+	d.State.Health = &wire.DetailHealth{Log: []wire.HealthProbe{{ExitCode: 1, Output: "auth failed for token abc123"}}}
+	redactForViewer(d)
+	if p := d.State.Health.Log[0]; p.Output != "" || p.ExitCode != 1 {
+		t.Fatalf("probe = %+v; want output hidden, exit code kept", p)
+	}
+}

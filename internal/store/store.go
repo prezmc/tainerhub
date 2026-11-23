@@ -328,6 +328,20 @@ func (s *Store) GetSession(ctx context.Context, tokenHash []byte) (Session, erro
 	return ss, notFound(err)
 }
 
+// SessionUser loads a session and its user in one query: it runs on every
+// API request, so this halves the database round trips of the old
+// GetSession + UserByID pair.
+func (s *Store) SessionUser(ctx context.Context, tokenHash []byte) (Session, User, error) {
+	var ss Session
+	var u User
+	err := s.db.QueryRow(ctx, `SELECT s.user_id::text, s.created_at, s.last_seen_at, s.expires_at,
+		u.id::text, u.username, u.display_name, u.role, u.webauthn_id, u.created_at, u.password_hash
+		FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1`, tokenHash).
+		Scan(&ss.UserID, &ss.CreatedAt, &ss.LastSeenAt, &ss.ExpiresAt,
+			&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.WebAuthnID, &u.CreatedAt, &u.PasswordHash)
+	return ss, u, notFound(err)
+}
+
 func (s *Store) TouchSession(ctx context.Context, tokenHash []byte) error {
 	_, err := s.db.Exec(ctx, `UPDATE sessions SET last_seen_at = now() WHERE token_hash = $1`, tokenHash)
 	return err
