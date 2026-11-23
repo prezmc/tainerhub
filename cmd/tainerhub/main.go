@@ -169,7 +169,8 @@ func run(log *slog.Logger) error {
 	reg.OnEvent = func(hostID string, ev wire.DockerEvent) {
 		log.Debug("docker event", "host_id", hostID, "action", ev.Action, "container", ev.Name)
 	}
-	gw := &gateway.Gateway{CA: ca, Store: st, Reg: reg, Log: log.With("component", "gateway")}
+	gwStore := &hostWatchStore{Store: st}
+	gw := &gateway.Gateway{CA: ca, Store: gwStore, Reg: reg, Log: log.With("component", "gateway")}
 
 	authSvc, err := auth.New(st, cfg.PublicURL, cfg.Trusted, log.With("component", "auth"))
 	if err != nil {
@@ -187,6 +188,7 @@ func run(log *slog.Logger) error {
 
 	apiSrv := &api.Server{Store: st, Auth: authSvc, Reg: reg, CA: ca, Log: log.With("component", "api"), AgentAddr: cfg.AgentAddr, Web: web.Dist(), DataDir: cfg.DataDir,
 		HTTPS: api.HTTPSConfig{EnvPublicURL: cfg.PublicURL, EnvTrusted: cfg.Trusted, HTTPPort: httpPort(cfg.HTTPAddr)}}
+	gwStore.changed = apiSrv.HostsChanged // set before the gateway starts serving
 	if err := apiSrv.LoadStatsSettings(ctx); err != nil {
 		log.Warn("load stats settings", "err", err)
 	}
@@ -310,4 +312,28 @@ func httpPort(addr string) string {
 		return p
 	}
 	return "8585"
+}
+
+// hostWatchStore is the gateway's store, telling the API when an agent's
+// enrollment, hello or disconnect updates its host row, so the cached fleet
+// shown to browsers is refreshed right away.
+type hostWatchStore struct {
+	*store.Store
+	changed func()
+}
+
+func (h *hostWatchStore) CompleteEnrollment(ctx context.Context, tokenID, hostID, certSerial string) error {
+	err := h.Store.CompleteEnrollment(ctx, tokenID, hostID, certSerial)
+	if err == nil && h.changed != nil {
+		h.changed()
+	}
+	return err
+}
+
+func (h *hostWatchStore) TouchHost(ctx context.Context, hostID string, hello *wire.Hello, at time.Time) error {
+	err := h.Store.TouchHost(ctx, hostID, hello, at)
+	if err == nil && h.changed != nil {
+		h.changed()
+	}
+	return err
 }

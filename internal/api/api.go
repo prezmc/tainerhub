@@ -51,6 +51,8 @@ type Server struct {
 	execs        execList          // open terminals
 	https        httpsState        // HTTPS setup tests
 	statsMu      sync.Mutex        // serializes stats source changes (one settings row)
+	fleetOnce    sync.Once
+	fleet        *fleetFeed // shared /api/events producer (see fleet.go)
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -555,6 +557,11 @@ func (s *Server) hostViews(ctx context.Context) ([]hostView, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.hostViewsFrom(hs), nil
+}
+
+// hostViewsFrom joins host rows with their agents' live state.
+func (s *Server) hostViewsFrom(hs []store.Host) []hostView {
 	out := make([]hostView, 0, len(hs))
 	local := s.localHostID()
 	for _, h := range hs {
@@ -580,7 +587,7 @@ func (s *Server) hostViews(ctx context.Context) ([]hostView, error) {
 		}
 		out = append(out, v)
 	}
-	return out, nil
+	return out
 }
 
 func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
@@ -607,6 +614,7 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.HostsChanged()
 	s.issueToken(w, r, h, addr)
 }
 
@@ -734,6 +742,7 @@ func (s *Server) renameHost(w http.ResponseWriter, r *http.Request) {
 		s.notFoundOr(w, err)
 		return
 	}
+	s.HostsChanged()
 	// The live connection carries the name it connected under; dropping it
 	// makes the agent reconnect (within seconds) under the new one.
 	s.Reg.Disconnect(id)
@@ -753,6 +762,7 @@ func (s *Server) deleteHost(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.HostsChanged()
 	s.Reg.Disconnect(id) // its certificate is no longer accepted from now on
 	u := userFrom(r)
 	s.record(r, &u, "host.removed", h.Name, nil)
@@ -910,21 +920,23 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	defer s.Reg.Watch()() // agents sample often only while someone is watching
+	// One shared producer builds each update; this stream just copies it.
+	feed := s.fleetFeed()
+	defer feed.subscribe()()
 	keepalive := time.NewTicker(25 * time.Second)
 	defer keepalive.Stop()
 	// Re-check the session periodically so a revoked session stops streaming.
 	recheck := time.NewTicker(time.Minute)
 	defer recheck.Stop()
 	for {
-		changed := s.Reg.Changed()
-		hosts, err := s.hostViews(ctx)
-		if err != nil {
-			return
-		}
-		b, _ := json.Marshal(map[string]any{"hosts": hosts, "containers": s.containerViews(), "activity": s.Reg.Activity(40)})
-		fmt.Fprintf(w, "event: fleet\ndata: %s\n\n", b)
-		if err := rc.Flush(); err != nil {
-			return
+		frame, next := feed.current()
+		if frame != nil {
+			if _, err := w.Write(frame); err != nil {
+				return
+			}
+			if err := rc.Flush(); err != nil {
+				return
+			}
 		}
 	wait:
 		for {
@@ -940,15 +952,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 				if _, err := s.Auth.UserFromRequest(r); err != nil {
 					return
 				}
-			case <-changed:
+			case <-next:
 				break wait
 			}
-		}
-		// Coalesce bursts (e.g. a compose stack starting) into one update.
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }
