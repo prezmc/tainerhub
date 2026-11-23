@@ -53,6 +53,9 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return nil, d.remove(ctx, "/networks/"+url.PathEscape(op.Target))
 	case wire.OpContainerRemoveVolumes:
 		names, _ := wire.RemoveVolumeNames(op.Arg) // validated above
+		if err := d.guardSelf(ctx, op.Target); err != nil {
+			return nil, err
+		}
 		return d.removeWithVolumes(ctx, op.Target, names)
 	case wire.OpSelfUpdate:
 		return d.selfUpdate(ctx, op.Arg == wire.SelfUpdateAddCgroupMount)
