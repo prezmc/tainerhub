@@ -30,6 +30,7 @@ type stackSummary struct {
 	HostID     string     `json:"hostId"`
 	HostName   string     `json:"hostName"`
 	Managed    bool       `json:"managed"`
+	TainerHub  bool       `json:"tainerhub,omitempty"` // TainerHub's own project: can't be taken over
 	Online     bool       `json:"online"`
 	Status     string     `json:"status"` // running, partial, stopped, down, not deployed, unknown
 	Containers int        `json:"containers"`
@@ -92,8 +93,13 @@ func (s *Server) stackSummaries(ctx context.Context) ([]stackSummary, error) {
 		return nil, err
 	}
 	live := map[string][]wire.Container{}
+	own := map[string]string{} // host ID -> the agent's own compose project
 	for _, a := range s.Reg.All() {
-		live[a.HostID] = a.Status().Containers
+		st := a.Status()
+		live[a.HostID] = st.Containers
+		if st.Hello != nil {
+			own[a.HostID] = st.Hello.OwnProject
+		}
 	}
 	jobs := s.jobs.running()
 
@@ -121,7 +127,7 @@ func (s *Server) stackSummaries(ctx context.Context) ([]stackSummary, error) {
 				continue
 			}
 			seen[c.Project] = true
-			sum := stackSummary{Name: c.Project, HostID: hostID, HostName: hostName[hostID], Online: true}
+			sum := stackSummary{Name: c.Project, HostID: hostID, HostName: hostName[hostID], Online: true, TainerHub: c.Project == own[hostID]}
 			summarize(&sum, cs)
 			out = append(out, sum)
 		}
@@ -239,6 +245,14 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 	// Deploying runs `compose up --remove-orphans` under this name, so a
 	// stack named after a project already running on the host would take
 	// over (or remove) its containers. That has to be a deliberate take-over.
+	if s.Reg != nil {
+		if a := s.Reg.Get(h.ID); a != nil {
+			if hello := a.Status().Hello; hello != nil && hello.OwnProject != "" && strings.EqualFold(hello.OwnProject, in.Name) {
+				jsonErr(w, http.StatusConflict, in.Name+" is TainerHub's own compose project on "+h.Name+"; choose another name")
+				return
+			}
+		}
+	}
 	if !in.Adopt && s.Reg != nil {
 		if a := s.Reg.Get(h.ID); a != nil {
 			stacks, err := s.Store.ListStacks(r.Context())

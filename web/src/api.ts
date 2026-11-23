@@ -305,6 +305,7 @@ export interface StackSummary {
   hostId: string
   hostName: string
   managed: boolean
+  tainerhub?: boolean
   online: boolean
   status: StackStatus
   containers: number

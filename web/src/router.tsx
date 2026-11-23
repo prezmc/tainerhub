@@ -33,7 +33,13 @@ function Splash({ text = 'Loading…' }: { text?: string }) {
 
 const rootRoute = createRootRoute({ component: Root })
 const setupRoute = createRoute({ getParentRoute: () => rootRoute, path: '/setup', component: SetupPage })
-const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login', component: LoginPage })
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/login',
+  component: LoginPage,
+  // Where to go after signing in; LoginPage only follows same-site paths (safeNext).
+  validateSearch: (s: Record<string, unknown>): { next?: string } => ({ next: typeof s.next === 'string' ? s.next : undefined }),
+})
 const appRoute = createRoute({ getParentRoute: () => rootRoute, id: 'app', component: AppLayout })
 const overviewRoute = createRoute({ getParentRoute: () => appRoute, path: '/', component: OverviewPage })
 const containersRoute = createRoute({
