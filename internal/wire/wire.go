@@ -79,6 +79,9 @@ type Hello struct {
 	// CgroupStats says whether the agent reads container stats from the
 	// host's cgroup files (cheap) rather than the Docker API. Nil from older agents.
 	CgroupStats *bool `json:"cgroup_stats,omitempty"`
+	// OwnProject is the compose project the agent itself runs in (on the
+	// hub's server, the hub's). The agent refuses stack operations on it.
+	OwnProject string `json:"own_project,omitempty"`
 }
 
 // StackSupport reports the agent's compose setup. Error is set (and stacks

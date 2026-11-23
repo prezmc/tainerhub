@@ -177,6 +177,7 @@ func (d *SocketDocker) Info(ctx context.Context) (wire.Hello, error) {
 	cg := d.cg != nil
 	return wire.Hello{
 		CgroupStats:   &cg,
+		OwnProject:    d.OwnProject(ctx),
 		Hostname:      info.Name,
 		DockerVersion: info.ServerVersion,
 		OS:            info.OperatingSystem,

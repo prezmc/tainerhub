@@ -110,7 +110,11 @@ export function AppLayout() {
 
   if (me.isPending) return <div className="flex min-h-screen items-center justify-center text-sm text-ink-100/60">Loading…</div>
   if (me.isError) {
-    if (me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/login" />
+    if (me.error instanceof ApiError && me.error.status === 401) {
+      // Back to this page after signing in (Login only follows same-site paths).
+      const here = window.location.pathname + window.location.search
+      return <Navigate to="/login" search={{ next: here === '/' ? undefined : here }} />
+    }
     return <div className="p-8 text-sm text-rose-300">{me.error.message}</div>
   }
 

@@ -83,7 +83,7 @@ export function StacksPage() {
               </p>
               <Card className="divide-y divide-white/[0.06]">
                 {external.map((s) => (
-                  <StackRow key={`${s.hostId}/${s.name}`} s={s} actions={[]} adopt={admin} />
+                  <StackRow key={`${s.hostId}/${s.name}`} s={s} actions={[]} adopt={admin && !s.tainerhub} />
                 ))}
               </Card>
             </section>
