@@ -896,8 +896,24 @@ func (s *Server) issueToken(w http.ResponseWriter, r *http.Request, h store.Host
 		"joinToken": encoded,
 		"expiresAt": expires,
 		"agentAddr": agentAddr,
+		"directURL": directHubURL(agentAddr, s.HTTPS.HTTPPort),
 		"compose":   agentCompose(agentAddr, encoded),
 	})
+}
+
+// directHubURL is the hub's own web address on the host agents dial, e.g.
+// http://192.168.1.10:8585. The Add host dialog offers it for downloading
+// the installer when the browser reaches the hub through a reverse proxy
+// whose access list may not admit the new server (a proxy answers 403).
+func directHubURL(agentAddr, httpPort string) string {
+	host, _, err := net.SplitHostPort(agentAddr)
+	if err != nil || host == "" {
+		return ""
+	}
+	if httpPort == "" {
+		httpPort = "8585"
+	}
+	return "http://" + net.JoinHostPort(host, httpPort)
 }
 
 func agentCompose(hub, token string) string {

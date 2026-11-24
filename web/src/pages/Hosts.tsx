@@ -10,6 +10,7 @@ import { useHostsQuery } from '../fleet'
 // Admins only: load the updates card when it's shown.
 const UpdatesCard = lazy(() => import('./Updates').then((m) => ({ default: m.UpdatesCard })))
 import { LoadBars } from '../placement'
+import { directAlternative, joinCommand } from '../join'
 
 export function HostsPage() {
   const me = useMe()
@@ -297,12 +298,39 @@ function Ring({ pct }: { pct: number }) {
 function JoinInstructions({ join }: { join: JoinTokenResponse }) {
   // One line to paste on the new server: the hub serves a script that writes
   // the agent's compose file, starts it and waits until it's connected.
-  const command = `curl -fsSL "${window.location.origin}/join/${join.joinToken}?hub=${encodeURIComponent(join.agentAddr)}" | sh`
+  // Behind a reverse proxy, the proxy's access list may refuse a server on
+  // another subnet (curl: 403), so offer the hub's own address too.
+  const page = window.location.origin
+  const direct = directAlternative(page, join.directURL)
+  const [useDirect, setUseDirect] = useState(false)
+  const base = useDirect && direct ? direct : page
+  const command = joinCommand(base, join.joinToken, join.agentAddr)
   return (
     <div className="space-y-5 text-sm text-ink-100/80">
       <p>
         On <strong className="text-white">{join.host.name}</strong>, paste this into a terminal (as root, or a user in the <code className="mono text-lime-300">docker</code> group):
       </p>
+      {direct && (
+        <div role="radiogroup" aria-label="Download the installer from" className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-ink-100/50">Download the installer from</span>
+          {[
+            { on: false, label: 'this page’s address', url: page },
+            { on: true, label: 'the hub directly', url: direct },
+          ].map((o) => (
+            <button
+              key={o.label}
+              type="button"
+              role="radio"
+              aria-checked={useDirect === o.on}
+              title={o.url}
+              onClick={() => setUseDirect(o.on)}
+              className={cx('rounded-[3px] px-2.5 py-1 ring-1 ring-inset transition', useDirect === o.on ? 'bg-lime-400/10 text-lime-200 ring-lime-400/40' : 'text-ink-100/70 ring-line hover:text-white')}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
       <pre className="mono overflow-x-auto whitespace-pre-wrap break-all rounded-[3px] bg-black/50 p-4 text-xs leading-relaxed text-lime-200 ring-1 ring-line">{command}</pre>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="text-xs text-ink-100/50">
@@ -311,7 +339,13 @@ function JoinInstructions({ join }: { join: JoinTokenResponse }) {
         <CopyButton text={command} label="Copy command" variant="primary" />
       </div>
       <p className="text-xs text-ink-100/50">
-        The server must reach <code className="mono text-ink-100/80">{join.agentAddr}</code> (agents connect there) and this page's address (to download the installer).
+        The server must reach <code className="mono text-ink-100/80">{join.agentAddr}</code> (agents connect there) and <code className="mono text-ink-100/80">{base}</code> (to download the installer).
+        {direct && !useDirect && (
+          <>
+            {' '}
+            If curl answers <code className="mono text-ink-100/80">403</code>, your reverse proxy's access list doesn't admit this server's network: choose <em>the hub directly</em> above, add the server's subnet to the access list, or set it up by hand below.
+          </>
+        )}
       </p>
       <details className="rounded-[3px] ring-1 ring-line">
         <summary className="cursor-pointer select-none px-4 py-2.5 text-xs text-ink-100/70 hover:text-white">Set it up by hand instead</summary>

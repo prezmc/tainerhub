@@ -108,7 +108,7 @@ The sign-in page at the secure address now shows **Sign in with passkey**, with 
 
 HTTPS doesn't have to mean "on the internet". To use passkeys at home without exposing TainerHub:
 
-- **Use an NPM Access List.** In NPM, create an Access List that allows only your LAN range (for example `192.168.1.0/24`) and denies everything else, then select it on the TainerHub proxy host.
+- **Use an NPM Access List.** In NPM, create an Access List that allows only your LAN range (for example `192.168.1.0/24`) and denies everything else, then select it on the TainerHub proxy host. Include every network you add servers from (other subnets, VLANs, VPN), or download their installer from the hub directly (see [Add your other servers](getting-started.md#4-add-your-other-servers)). Otherwise the install command fails with `403`.
 - **Or use split DNS.** Give `tainerhub.example.com` a record only in your local DNS (router or Pi-hole), pointing at NPM's LAN IP. Outside your network, the name doesn't resolve. Let's Encrypt can still issue a certificate if NPM uses a DNS challenge with your DNS provider, or use a wildcard certificate you already have.
 - **Don't forward port 8585 or 443 to TainerHub on your router** unless you mean to.
 

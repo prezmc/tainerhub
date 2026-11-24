@@ -25,3 +25,16 @@ func TestJoinScriptIsValidShell(t *testing.T) {
 		t.Fatalf("sh -n: %v %s", err, out)
 	}
 }
+
+func TestDirectHubURL(t *testing.T) {
+	for _, c := range []struct{ addr, port, want string }{
+		{"192.168.1.10:7443", "8585", "http://192.168.1.10:8585"},
+		{"hub.lan:7443", "", "http://hub.lan:8585"},
+		{"[fd00::10]:7443", "9000", "http://[fd00::10]:9000"},
+		{"garbage", "8585", ""},
+	} {
+		if got := directHubURL(c.addr, c.port); got != c.want {
+			t.Errorf("directHubURL(%q, %q) = %q, want %q", c.addr, c.port, got, c.want)
+		}
+	}
+}

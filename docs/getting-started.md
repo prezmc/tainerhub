@@ -134,6 +134,8 @@ The command:
 
 The host turns green in TainerHub when it's connected.
 
+If you opened TainerHub through a reverse proxy (an `https://` name), the dialog also shows **Download the installer from**. **This page's address** downloads through the proxy. **The hub directly** uses `http://<hub address for agents>:8585` and skips the proxy. Choose the hub directly when the new server is on a network your proxy's access list doesn't allow. Otherwise curl stops with `curl: (22) The requested URL returned error: 403`. See [Troubleshooting](troubleshooting.md#the-install-command-fails-with-curl-22--403).
+
 The link works **once** and expires **one hour** after you created it. If it expires, open the host's menu (the `…` button on its card) and pick **New join token**.
 
 The new server must be able to reach two addresses: the hub's port 7443 (where the agent connects) and the address you opened TainerHub on (to download the installer).

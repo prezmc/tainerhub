@@ -184,6 +184,8 @@ export interface JoinTokenResponse {
   joinToken: string
   expiresAt: string
   agentAddr: string
+  /** The hub's own web address (http://<agent host>:8585), to skip a reverse proxy. */
+  directURL?: string
   compose: string
 }
 

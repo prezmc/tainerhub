@@ -73,6 +73,18 @@ Prefer to edit by hand? Replace the `TAINERHUB_JOIN_TOKEN` value in `~/tainerhub
 
 Too many failed enrollments from one IP address (10 in 15 minutes) are refused with "too many failed enrollment attempts; try again later". Wait 15 minutes.
 
+## The install command fails with "curl: (22) ... 403"
+
+TainerHub never answers the install link with 403: a bad or used token gets a short script that prints the reason. A bare `403` comes from something in front of the hub, almost always your reverse proxy. The command downloads the installer from the address your browser uses, so if you opened TainerHub at `https://tainerhub.example.com`, the new server asks Nginx Proxy Manager. An NPM **Access List** that allows only your LAN range (as suggested in [Keeping it LAN-only](https-and-passkeys.md#keeping-it-lan-only)) refuses a server on another subnet, VLAN or VPN.
+
+Pick one:
+
+- **Download from the hub directly.** In the **Add host** dialog, under **Download the installer from**, choose **the hub directly**. The command then uses `http://<hub address for agents>:8585`, which skips the proxy. The new server must be able to reach port 8585 on the hub (check any `DOCKER-USER` rule you added).
+- **Allow the server's network in the proxy.** In NPM, edit the Access List and add the server's subnet (for example `192.168.20.0/24`) under **Allow**.
+- **Set it up by hand.** Open **Set it up by hand instead** in the dialog, save the compose file on the server and run `docker compose up -d`. This needs no download from the hub.
+
+The agent itself always connects to port 7443 directly, so the proxy never affects it after the install.
+
 ## "Stacks unavailable" on a host card
 
 The agent couldn't set up compose stacks on that server. The message after "Stacks unavailable:" says why.
