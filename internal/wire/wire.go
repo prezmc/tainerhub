@@ -993,6 +993,9 @@ type ImageUpdates struct {
 	Checked int64             `json:"checked"` // unix seconds
 	Images  map[string]bool   `json:"images"`
 	Errors  map[string]string `json:"errors,omitempty"`
+	// Remote is the registry's digest for each image found newer. The
+	// agent keeps it to tell when a container already runs that image.
+	Remote map[string]string `json:"-"`
 }
 
 type RecreateResult struct {

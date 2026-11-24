@@ -132,7 +132,7 @@ func TestPullSendsOnlyItsRegistrysLogin(t *testing.T) {
 // local image inspection.
 func TestUpdateCheckUsesLoginForRegistryOnly(t *testing.T) {
 	d, seen := authEngine(t)
-	newer, err := d.newerImage(context.Background(), "ghcr.io/org/app:1", []wire.RegistryAuth{ghcrLogin})
+	newer, _, err := d.newerImage(context.Background(), "ghcr.io/org/app:1", []wire.RegistryAuth{ghcrLogin})
 	if err != nil || !newer {
 		t.Fatalf("newerImage = %v, %v", newer, err)
 	}

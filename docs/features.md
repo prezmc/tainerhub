@@ -86,7 +86,7 @@ A move can't start when the new host already has a container or volume of that n
 
 ### Image updates
 
-The hub has each host check for newer images 2–3 minutes after its agent connects and then every 6 hours (set `TAINERHUB_UPDATE_CHECK_HOURS` on the hub; `0` turns this off). Hosts are spread out so a large fleet doesn't hit the registries all at once. The agent asks the registry for the current digest of each image tag your containers use and compares it with what's on disk. Containers with a newer image get an **update** badge next to the image name.
+The hub has each host check for newer images 2–3 minutes after its agent connects and then every 6 hours (set `TAINERHUB_UPDATE_CHECK_HOURS` on the hub; `0` turns this off). Hosts are spread out so a large fleet doesn't hit the registries all at once. The agent asks the registry for the current digest of each image tag your containers use and compares it with what's on disk. Containers with a newer image get an **update** badge next to the image name. The badge goes away as soon as the container runs the newer image (after **Pull & redeploy**, **Pull & recreate** or an automatic update), without waiting for the next check. A pull alone doesn't clear it: the container still runs the old image until it's recreated.
 
 Operators can click **Check for updates** to check every online host right away; hovering over it shows when the hosts were last checked.
 

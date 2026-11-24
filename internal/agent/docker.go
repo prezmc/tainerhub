@@ -216,6 +216,7 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 		ID      string `json:"Id"`
 		Names   []string
 		Image   string
+		ImageID string
 		State   string
 		Status  string
 		Created int64
@@ -274,8 +275,9 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			Status:  r.Status,
 			Created: r.Created,
 			Project: r.Labels["com.docker.compose.project"],
-			// from the last update check (RunUpdateChecks / OpImagesCheckUpdates)
-			UpdateAvailable: d.updates.has(r.Image),
+			// from the last update check (RunUpdateChecks / OpImagesCheckUpdates),
+			// against the image this container runs
+			UpdateAvailable: d.updateFor(ctx, r.Image, r.ImageID),
 			Ports:           ports,
 			Labels:          r.Labels,
 		})

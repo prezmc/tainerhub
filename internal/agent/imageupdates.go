@@ -29,7 +29,7 @@ func updateable(ref string) bool {
 // Docker's own registry access (/distribution), with the login in auths for
 // each image's registry (Docker does the token handshake with it).
 func (d *SocketDocker) checkUpdates(ctx context.Context, auths []wire.RegistryAuth) (wire.ImageUpdates, error) {
-	res := wire.ImageUpdates{Checked: time.Now().Unix(), Images: map[string]bool{}, Errors: map[string]string{}}
+	res := wire.ImageUpdates{Checked: time.Now().Unix(), Images: map[string]bool{}, Errors: map[string]string{}, Remote: map[string]string{}}
 	cs, err := d.List(ctx)
 	if err != nil {
 		return res, err
@@ -49,7 +49,7 @@ func (d *SocketDocker) checkUpdates(ctx context.Context, auths []wire.RegistryAu
 		go func(ref string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			newer, err := d.newerImage(ctx, ref, auths)
+			newer, remote, err := d.newerImage(ctx, ref, auths)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -57,41 +57,58 @@ func (d *SocketDocker) checkUpdates(ctx context.Context, auths []wire.RegistryAu
 				return
 			}
 			res.Images[ref] = newer
+			if newer {
+				res.Remote[ref] = remote
+			}
 		}(ref)
 	}
 	wg.Wait()
 	return res, nil
 }
 
-func (d *SocketDocker) newerImage(ctx context.Context, ref string, auths []wire.RegistryAuth) (bool, error) {
+// newerImage reports whether the registry's image for ref differs from the
+// local one, and the registry's digest.
+func (d *SocketDocker) newerImage(ctx context.Context, ref string, auths []wire.RegistryAuth) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	var local struct{ RepoDigests []string }
 	if err := d.getJSON(ctx, "/images/"+url.PathEscape(ref)+"/json", nil, &local); err != nil {
-		return false, err
+		return false, "", err
 	}
 	if len(local.RepoDigests) == 0 {
-		return false, errors.New("built locally: no registry digest to compare")
+		return false, "", errors.New("built locally: no registry digest to compare")
 	}
 	var remote struct{ Descriptor struct{ Digest string } }
 	if err := d.getJSON(withRegistryAuth(ctx, auths, ref), "/distribution/"+url.PathEscape(ref)+"/json", nil, &remote); err != nil {
-		return false, err
+		return false, "", err
 	}
-	if remote.Descriptor.Digest == "" {
-		return false, errors.New("registry returned no digest")
+	digest := remote.Descriptor.Digest
+	if digest == "" {
+		return false, "", errors.New("registry returned no digest")
 	}
-	for _, rd := range local.RepoDigests {
-		if strings.HasSuffix(rd, "@"+remote.Descriptor.Digest) {
-			return false, nil
+	if hasDigest(local.RepoDigests, digest) {
+		return false, digest, nil
+	}
+	return true, digest, nil
+}
+
+func hasDigest(repoDigests []string, digest string) bool {
+	for _, rd := range repoDigests {
+		if strings.HasSuffix(rd, "@"+digest) {
+			return true
 		}
 	}
-	return true, nil
+	return false
 }
 
 // updateCache keeps the last check's results across reconnects.
 type updateCache struct {
 	mu      sync.Mutex
-	results map[string]bool
+	results map[string]bool   // image name -> the registry has a newer image
+	remote  map[string]string // image name -> the registry's digest, when newer
+	// runs remembers, per image ID and digest, whether that image is the
+	// registry's newer one (the answer never changes for an image ID).
+	runs map[string]bool
 }
 
 // set keeps the new results. An image whose check failed this time keeps
@@ -101,21 +118,61 @@ func (u *updateCache) set(r wire.ImageUpdates) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	next := make(map[string]bool, len(r.Images))
+	remote := make(map[string]string, len(r.Remote))
 	for ref, newer := range r.Images {
 		next[ref] = newer
+		if newer && r.Remote[ref] != "" {
+			remote[ref] = r.Remote[ref]
+		}
 	}
 	for ref := range r.Errors {
 		if u.results[ref] {
 			next[ref] = true
+			if d := u.remote[ref]; d != "" {
+				remote[ref] = d
+			}
 		}
 	}
-	u.results = next
+	u.results, u.remote, u.runs = next, remote, map[string]bool{}
+}
+
+func (u *updateCache) newer(ref string) (bool, string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.results[ref], u.remote[ref]
 }
 
 func (u *updateCache) has(ref string) bool {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.results[ref]
+	n, _ := u.newer(ref)
+	return n
+}
+
+// updateFor says whether a container on image imageID (named ref) has an
+// update. The last check found the registry's image for ref newer; once the
+// container runs that image (after Pull & redeploy, a recreate or an
+// automatic update) it's up to date, without waiting for the next check.
+func (d *SocketDocker) updateFor(ctx context.Context, ref, imageID string) bool {
+	newer, digest := d.updates.newer(ref)
+	if !newer || digest == "" || imageID == "" {
+		return newer
+	}
+	key := imageID + "|" + digest
+	d.updates.mu.Lock()
+	runs, known := d.updates.runs[key]
+	d.updates.mu.Unlock()
+	if !known {
+		var img struct{ RepoDigests []string }
+		if err := d.getJSON(ctx, "/images/"+url.PathEscape(imageID)+"/json", nil, &img); err != nil {
+			return true // can't tell: keep the check's answer
+		}
+		runs = hasDigest(img.RepoDigests, digest)
+		d.updates.mu.Lock()
+		if d.updates.runs != nil {
+			d.updates.runs[key] = runs
+		}
+		d.updates.mu.Unlock()
+	}
+	return !runs
 }
 
 // ---------------- recreate ----------------
