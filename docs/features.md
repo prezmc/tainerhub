@@ -122,8 +122,9 @@ Opted-in stacks show an **auto** badge in the Stacks list.
 1. For each host with opted-in targets, the hub runs a fresh image update check with the saved registry logins (waiting for a check that is already running there rather than starting a second one).
 2. A container is updated when its image has a newer version. A stack is updated when any image its containers run, or that its compose file names, has a newer version.
 3. An update is the same thing you'd click: a stack gets **Pull & redeploy** (a job by "Automatic updates" you can open from the stack's page), a container gets **Pull & recreate** (which puts the old container back if the new one won't start).
-4. The hub then waits up to 2 minutes for the containers to be running, and healthy if they have a health check (a one-off service that exited with code 0, such as a migration step, counts as fine; a container that was stopped is recreated stopped and not waited for). If they aren't, the update is marked **failed** (nothing more is rolled back: the old container is already gone, or the stack is on its new images; check its logs).
-5. The outcome (**ok**, **failed** with the error, or **skipped** with the reason) is kept on the target, listed under **Recent automatic updates** in Settings, and shown under the switch. Every update tried is written to the audit log (actor `automatic updates`, actions `update.auto_applied` and `update.auto_failed`, with the images and, for containers, the old and new image IDs) and to the live activity feed.
+4. The hub then waits up to 2 minutes for the containers to be running, and healthy if they have a health check (a one-off service that exited with code 0, such as a migration step, counts as fine; a container that was stopped is recreated stopped and not waited for).
+5. If a stack's Pull & redeploy fails, or its containers don't come up healthy in time, and **Roll back automatically if the update fails** is ticked (under the stack's switch; on by default), the hub [rolls the stack back](#rolling-back-a-stack) right away to the images it ran before the update. The stack then stays on those images, and later windows skip it until someone uses **Return to latest**. With the box unticked, the update is just marked **failed**. A container's **Pull & recreate** already puts the old container back when the new one won't start; that outcome is shown as **rolled back** too. A container that starts but isn't healthy in time is marked **failed**: its old container is gone by then.
+6. The outcome (**ok**, **rolled back**, **failed** with the error, or **skipped** with the reason) is kept on the target, listed under **Recent automatic updates** in Settings (a rolled-back stack links to the rollback's output), and shown under the switch. Every update tried is written to the audit log (actor `automatic updates`, actions `update.auto_applied`, `update.auto_rolled_back` and `update.auto_failed`, with the images and, for containers, the old and new image IDs) and to the live activity feed.
 
 Hosts are worked through in parallel, at most 4 at a time; the targets on one host are updated one after the other. When the window's time is up, targets not reached yet are skipped and left for the next window.
 
@@ -131,7 +132,7 @@ Hosts are worked through in parallel, at most 4 at a time; the targets on one ho
 
 - Nothing is updated unless an admin opted it in. Turning a target on or off, changing the window and **Run now** need a recent sign-in, and API tokens can't do them. Each is audited.
 - TainerHub's own containers and compose project (the hub, its database, the agents, anything named `tainerhub…`) are never updated automatically: use the update card on the Hosts page.
-- A target is skipped, not forced, when its host is offline, a job is already running for it (a deploy, a move), or (for stacks) it has saved changes that haven't been deployed, since Pull & redeploy would deploy those too. Stacks never deployed by TainerHub are skipped as well.
+- A target is skipped, not forced, when its host is offline, a job is already running for it (a deploy, a move), or (for stacks) it has saved changes that haven't been deployed, since Pull & redeploy would deploy those too. Stacks never deployed by TainerHub are skipped as well, and so are stacks that run a rollback (someone, or a failed update, went back to older images on purpose).
 - Images pinned by digest never have a newer version, so such containers can't be opted in.
 
 **Stacks that build images.** A service with `build:` makes its own image, which has no registry digest to compare, so TainerHub can't tell whether its base image changed. A stack that builds is updated only when one of its pulled images has a newer version (Pull & redeploy then also rebuilds with `--pull`, refreshing the base images). Otherwise it's skipped as "builds". Redeploy it yourself when you know a base image changed.
@@ -264,6 +265,7 @@ On a stack's page, operators and admins have:
 | --- | --- |
 | **Deploy** | Runs `docker compose up -d` with the saved files (with `--build` when a service builds its image). |
 | **Pull & redeploy** | Pulls newer images (and rebuilds on newer base images), then redeploys. This is how you update a stack's containers. |
+| **Roll back** | Puts every service back on the image it ran before the last deploy, update or rollback. See [Rolling back a stack](#rolling-back-a-stack). |
 | **Restart**, **Stop**, **Start** | Act on the stack's containers. |
 | **Down** | Runs `docker compose down`: stops and removes the stack's containers. |
 
@@ -274,6 +276,21 @@ The same actions are in the `…` menu on the Stacks list.
 Output streams live into a drawer at the bottom of the screen. A deploy keeps running if you close the tab or the connection drops. Click **View progress** to reopen it. The result goes into the audit log.
 
 When a stack is deployed, the agent writes `compose.yaml`, `.env` and the stack's other files to `/opt/tainerhub/stacks/<name>/` on the host and runs the `docker compose` binary that ships inside the agent image. Relative paths such as `./data` in your compose file point into that folder.
+
+### Rolling back a stack
+
+Right before every **Deploy**, **Pull & redeploy**, automatic update and rollback, TainerHub records which image each of the stack's services runs: the image name, its ID and its registry digest. That's a rollback point; each stack keeps its last 5. Nothing is recorded while the stack isn't running (there's nothing to go back to), and the job's output says whether a point was recorded.
+
+**Roll back** on the stack's page (operators and admins) opens a preview: for each service, the image it runs now and the one it would go back to, with when and before what the point was recorded. Confirming runs a job like a deploy, with its output in the drawer:
+
+1. The agent checks that every old image is still on the host. If one is gone, the rollback stops before changing anything.
+2. It pins each service to its old image with an extra compose file, `.tainerhub-rollback.yaml` in the stack's folder (with `pull_policy: never`), and runs `docker compose up -d --remove-orphans` with it. Nothing is pulled or built, and the stack's own files, `.env` and its deployed version don't change: a rolled-back stack doesn't show **changes not deployed**. A service the compose file no longer has is skipped.
+
+The stack then stays **pinned**: the page shows *Running the images from &lt;time&gt; (rolled back)*, and **Restart**, **Stop**, **Start** and **Down** keep using the old images, so containers never flip back by surprise. **Return to latest** on that banner runs **Pull & redeploy**; any deploy runs without the pin and removes it once it worked. Rolling back again goes back one more step: to what ran before the rollback, which undoes it. The audit log records each rollback as `stack.rolled_back`, with the images.
+
+**Keeping the old images.** A rollback needs the old images, so the agent tags the newest point's images `tainerhub-rollback/<stack>:<service>` (and a rolled-back stack's images `tainerhub-rollback/<stack>/pinned:<service>`). TainerHub's own prunes leave those images alone, and Resources shows them as **kept for rollback of &lt;stack&gt;**; only an admin can remove one, after a warning. Deleting the stack drops its tags. A `docker image prune -a` run outside TainerHub doesn't know about them and can still remove the images; the next rollback then fails with "the previous image is gone" and changes nothing.
+
+**Limits.** A rollback changes images only: if the compose file was deployed again since the point was recorded, the rest of the current file stays (the preview warns about it). Data the new version changed (database migrations, say) isn't rolled back. Moving a stack to another host clears its rollback points, since the old images are on the old host.
 
 ### Editing a stack
 
@@ -376,8 +393,8 @@ Admins save logins under **Settings → Container registries**: the registry's a
 
 Images, volumes and networks across all hosts, in three tabs. Pick a host or show all, and filter by name.
 
-- **Images**: size, created date, and **Used by** (which containers use it). The summary shows the total on disk and how much is unused.
-  - Operators can **Pull image** (for example `nginx:1.27` or `ghcr.io/org/app:tag`) onto a host, pull a tag again to update it, and remove images. An image in use can't be removed; remove its containers first.
+- **Images**: size, created date, and **Used by** (which containers use it). The summary shows the total on disk and how much is unused. Images kept so a stack can [roll back](#rolling-back-a-stack) to them show **kept for rollback of &lt;stack&gt;**.
+  - Operators can **Pull image** (for example `nginx:1.27` or `ghcr.io/org/app:tag`) onto a host, pull a tag again to update it, and remove images. An image in use can't be removed; remove its containers first. An image kept for a rollback can only be removed by an admin, after a warning (the stack can't roll back to it afterwards).
 - **Volumes**: the stack and driver of each one, and which containers use it. Unused volumes are marked **unused**. Only admins can delete volumes. Deleting a volume deletes its data permanently.
 - **Networks**: driver, scope, and which containers use each one. Docker's built-in networks can't be removed.
 
@@ -393,7 +410,7 @@ The **Prune** menu cleans up one host at a time. You confirm each prune first.
 
 The result tells you how many items were removed and how much space was freed.
 
-**All unused** images means the images marked **unused** in the list. Docker's own prune runs first. Some Docker setups prune nothing without saying why, so TainerHub then removes each unused image that's still there one by one, never forcing. If Docker refuses one, the result names it and gives Docker's reason.
+**All unused** images means the images marked **unused** in the list, except those kept for a stack's rollback (the result lists them as kept). Docker's own prune runs first, unless there are images kept for a rollback: it can't be told to spare them, so then only the one-by-one pass below runs. Some Docker setups prune nothing without saying why, so TainerHub then removes each unused image that's still there one by one, never forcing. If Docker refuses one, the result names it and gives Docker's reason.
 
 ## Hosts
 

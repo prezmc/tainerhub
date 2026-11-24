@@ -7,6 +7,7 @@ import {
   containerAutoProblem,
   daysText,
   findTarget,
+  resultLabel,
   resultText,
   resultTone,
   WEEK,
@@ -18,6 +19,7 @@ import {
   type AutoWindow,
 } from './autoupdates'
 import { Badge, Button, Card, ErrorNote, Input, cx, useToast } from './ui'
+import { useOpenJob } from './stacks'
 
 /** Opted-in targets, the window and the last run (admins only). Polls quickly while a run is going. */
 export function useAutoUpdates(enabled = true) {
@@ -68,8 +70,8 @@ function LastResult({ t }: { t: AutoUpdateTarget }) {
   if (!t.lastResult) return <span className="text-ink-100/50">Not run yet.</span>
   return (
     <span className="flex flex-wrap items-center gap-2">
-      <Badge tone={resultTone(t.lastResult)}>{t.lastResult === 'ok' ? 'updated' : t.lastResult}</Badge>
-      <span className={t.lastResult === 'failed' ? 'text-rose-200' : 'text-ink-100/60'}>
+      <Badge tone={resultTone(t.lastResult)}>{resultLabel(t.lastResult)}</Badge>
+      <span className={t.lastResult === 'failed' ? 'text-rose-200' : t.lastResult === 'rolled_back' ? 'text-amber-200' : 'text-ink-100/60'}>
         {t.lastError || (t.lastResult === 'ok' ? 'to the newest image' : '')}
         {t.lastRunAt && <span className="text-ink-100/40"> · {timeAgo(t.lastRunAt)}</span>}
       </span>
@@ -131,6 +133,7 @@ export function AutoUpdateToggle({ stackId, hostId, name, problem, compact }: { 
             {q.data && <WindowNote w={q.data.window} />}
           </p>
         )}
+        {target && stackId && <AutoRollbackSetting path={path} on={target.autoRollback} label={name} />}
         {target && (
           <div className="text-xs">
             <LastResult t={target} />
@@ -142,6 +145,31 @@ export function AutoUpdateToggle({ stackId, hostId, name, problem, compact }: { 
   )
   if (compact) return <div className="rounded-[3px] px-3 py-3 ring-1 ring-line">{body}</div>
   return <Card className="p-5">{body}</Card>
+}
+
+/** "Roll back automatically if the update fails" for an opted-in stack (on by default). */
+function AutoRollbackSetting({ path, on, label }: { path: string; on: boolean; label: string }) {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const m = useMutation({
+    mutationFn: (autoRollback: boolean) => api<{ enabled: boolean; autoRollback: boolean }>(path, { method: 'PUT', body: { enabled: true, autoRollback } }),
+    onSuccess: (r) => {
+      toast('good', r.autoRollback ? `${label}: a failed update is rolled back automatically` : `${label}: a failed update is left as it is`)
+      qc.invalidateQueries({ queryKey: ['auto-updates'] })
+    },
+    onError: (e) => !needsReauth(e) && toast('bad', errorText(e)),
+  })
+  return (
+    <label className="flex items-start gap-2 pt-1 text-sm">
+      <input type="checkbox" className="mt-0.5 accent-lime-400" checked={on} disabled={m.isPending} onChange={(e) => m.mutate(e.target.checked)} />
+      <span>
+        <span className="text-white">Roll back automatically if the update fails</span>
+        <span className="block text-xs text-ink-100/55">
+          When the redeploy fails or the containers don't come up healthy, TainerHub puts the previous images back right away (see Roll back above).
+        </span>
+      </span>
+    </label>
+  )
 }
 
 /** Container details: the toggle for standalone containers, a pointer to the stack otherwise. */
@@ -337,6 +365,15 @@ export function AutoUpdatesCard() {
   )
 }
 
+function RollbackOutput({ jobId }: { jobId: string }) {
+  const openJob = useOpenJob()
+  return (
+    <button type="button" className="ml-2 text-lime-300 underline-offset-2 hover:underline" onClick={() => openJob(jobId)}>
+      rollback output
+    </button>
+  )
+}
+
 function TargetName({ kind, name, stackId }: { kind: 'stack' | 'container'; name: string; stackId?: string }) {
   return (
     <span className="flex min-w-0 items-center gap-2">
@@ -376,14 +413,15 @@ function RecentRun({ outcomes, running, startedAt, trigger, error }: { outcomes?
                 <TargetName kind={o.kind} name={o.name} stackId={o.stackId} />
                 <span className="text-xs text-ink-100/50">{o.host}</span>
                 <Badge tone={resultTone(o.result)} className="ml-auto">
-                  {o.result === 'ok' ? 'updated' : o.result}
+                  {resultLabel(o.result)}
                 </Badge>
                 <span className="text-xs text-ink-100/40">{timeAgo(o.at)}</span>
               </div>
               {(o.reason || o.images?.length) && (
-                <div className={cx('mt-0.5 text-xs', o.result === 'failed' ? 'text-rose-200' : 'text-ink-100/55')}>
+                <div className={cx('mt-0.5 text-xs', o.result === 'failed' ? 'text-rose-200' : o.result === 'rolled_back' ? 'text-amber-200' : 'text-ink-100/55')}>
                   {o.result === 'skipped' ? resultText(o.result, o.reason) : o.reason}
                   {o.images && o.images.length > 0 && <span className="font-mono text-ink-100/50"> {o.images.join(', ')}</span>}
+                  {o.rollbackJobId && <RollbackOutput jobId={o.rollbackJobId} />}
                 </div>
               )}
             </li>

@@ -1,7 +1,8 @@
 // Automatic updates: types for /api/auto-updates and small helpers (kept
 // free of React so `npm test` can check them).
 
-export type AutoResult = 'ok' | 'failed' | 'skipped'
+/** rolled_back: the update failed and the previous images were put back. */
+export type AutoResult = 'ok' | 'failed' | 'skipped' | 'rolled_back'
 
 export interface AutoUpdateTarget {
   id: string
@@ -16,6 +17,8 @@ export interface AutoUpdateTarget {
   lastRunAt: string | null
   lastResult: AutoResult | ''
   lastError: string
+  /** Stacks: roll back right away when the update fails (on by default). */
+  autoRollback: boolean
 }
 
 export interface AutoSettings {
@@ -46,6 +49,8 @@ export interface AutoOutcome {
   oldImage?: string
   newImage?: string
   jobId?: string
+  /** The automatic rollback's job, after a failed stack update. */
+  rollbackJobId?: string
   at: string
 }
 
@@ -94,7 +99,10 @@ export function windowText(w: AutoWindow): string {
   return `${daysText(w.settings.days)} at ${w.settings.time} (${w.zone}), up to ${durationText(w.settings.maxMinutes)}`
 }
 
-export const resultTone = (r: AutoResult | ''): 'good' | 'bad' | 'idle' => (r === 'ok' ? 'good' : r === 'failed' ? 'bad' : 'idle')
+export const resultTone = (r: AutoResult | ''): 'good' | 'bad' | 'warn' | 'idle' => (r === 'ok' ? 'good' : r === 'failed' ? 'bad' : r === 'rolled_back' ? 'warn' : 'idle')
+
+/** The badge text: "updated", "rolled back", "failed", "skipped". */
+export const resultLabel = (r: AutoResult): string => (r === 'ok' ? 'updated' : r === 'rolled_back' ? 'rolled back' : r)
 
 /** "updated", "failed", "skipped: host offline", "not run yet". */
 export function resultText(result: AutoResult | '', reason?: string): string {
@@ -103,6 +111,8 @@ export function resultText(result: AutoResult | '', reason?: string): string {
       return 'updated'
     case 'failed':
       return 'failed'
+    case 'rolled_back':
+      return reason ? `rolled back: ${reason}` : 'rolled back'
     case 'skipped':
       return reason ? `skipped: ${reason}` : 'skipped'
     default:

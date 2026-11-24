@@ -999,6 +999,11 @@ func (s *session) operate(ctx context.Context, op wire.Operation) (any, error) {
 		return s.previewStack(ctx, op.Target, *op.Files)
 	case wire.OpStackRead:
 		return s.readProject(ctx, op.Target)
+	case wire.OpStackImages:
+		if s.a.cfg.Stacks == nil {
+			return nil, errors.New("stacks aren't set up on this host")
+		}
+		return s.a.cfg.Stacks.StackImages(ctx, op.Target, op.Arg == wire.StackImagesProtect)
 	}
 	return s.a.cfg.Docker.Operate(ctx, op)
 }

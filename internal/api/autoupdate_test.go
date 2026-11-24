@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -200,11 +201,58 @@ type fakeAutoStore struct {
 	stacks   map[string]store.Stack
 	hosts    map[string]store.Host
 	deployed map[string]string
+	points   map[string][]store.RollbackPoint // newest last
 	n        int
 }
 
 func newFakeAutoStore() *fakeAutoStore {
-	return &fakeAutoStore{settings: map[string]string{}, stacks: map[string]store.Stack{}, hosts: map[string]store.Host{}, deployed: map[string]string{}}
+	return &fakeAutoStore{settings: map[string]string{}, stacks: map[string]store.Stack{}, hosts: map[string]store.Host{}, deployed: map[string]string{}, points: map[string][]store.RollbackPoint{}}
+}
+
+// AddRollbackPoint keeps the newest store.RollbackKeep, like the SQL does.
+func (f *fakeAutoStore) AddRollbackPoint(_ context.Context, p store.RollbackPoint) (store.RollbackPoint, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.n++
+	p.ID = fmt.Sprintf("70000000-0000-4000-8000-%012d", f.n)
+	p.CreatedAt = time.Now()
+	ps := append(f.points[p.StackID], p)
+	if len(ps) > store.RollbackKeep {
+		ps = ps[len(ps)-store.RollbackKeep:]
+	}
+	f.points[p.StackID] = ps
+	return p, nil
+}
+
+func (f *fakeAutoStore) LatestRollbackPoint(_ context.Context, id string) (store.RollbackPoint, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ps := f.points[id]
+	if len(ps) == 0 {
+		return store.RollbackPoint{}, store.ErrNotFound
+	}
+	return ps[len(ps)-1], nil
+}
+
+func (f *fakeAutoStore) SetStackRolledBack(_ context.Context, id string, to *time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.stacks[id]
+	st.RolledBackTo = to
+	f.stacks[id] = st
+	return nil
+}
+
+func (f *fakeAutoStore) SetStackAutoRollback(_ context.Context, id string, on bool) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, t := range f.targets {
+		if t.Kind == "stack" && t.StackID == id {
+			f.targets[i].AutoRollback = on
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeAutoStore) Setting(_ context.Context, k string) (string, error) {
@@ -249,7 +297,7 @@ func (f *fakeAutoStore) EnableStackAutoUpdate(_ context.Context, id, by string) 
 			return nil
 		}
 	}
-	f.add(store.AutoUpdateTarget{Kind: "stack", StackID: id, EnabledBy: by})
+	f.add(store.AutoUpdateTarget{Kind: "stack", StackID: id, EnabledBy: by, AutoRollback: true})
 	return nil
 }
 
@@ -372,8 +420,33 @@ type fakeHost struct {
 	// containers (default running), or an error.
 	newState, newStatus string
 	failWith            string
+	failRollback        string        // a rollback's error (rollbacks ignore failWith)
 	hold                time.Duration // how long an update takes (real time)
 	ops                 []string
+	rollbacks           []wire.StackCommand
+}
+
+// fakeImageID is a container's image ID in the fake: changes with its ID.
+func fakeImageID(containerID string) string {
+	return fmt.Sprintf("sha256:%064x", sha256.Sum256([]byte(containerID)))
+}
+
+// stackImages answers OpStackImages from the fake's containers.
+func (h *fakeHost) stackImages(project string) wire.StackImages {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := wire.StackImages{Services: map[string]wire.StackImage{}}
+	for _, c := range h.containers {
+		if c.Project != project {
+			continue
+		}
+		svc := c.Labels["com.docker.compose.service"]
+		if svc == "" {
+			svc = strings.TrimPrefix(strings.TrimSuffix(c.Name, "-1"), project+"-")
+		}
+		out.Services[svc] = wire.StackImage{Ref: c.Image, ImageID: fakeImageID(c.ID)}
+	}
+	return out
 }
 
 func (h *fakeHost) snapshot() {
@@ -440,6 +513,31 @@ func (h *fakeHost) serve() {
 				res := wire.ImageUpdates{Images: h.updates}
 				h.mu.Unlock()
 				go h.reply(cmd.ID, res, "")
+			case cmd.Op != nil && cmd.Op.Kind == wire.OpStackImages:
+				h.mu.Lock()
+				h.ops = append(h.ops, "images "+cmd.Op.Target+" "+cmd.Op.Arg)
+				h.mu.Unlock()
+				go h.reply(cmd.ID, h.stackImages(cmd.Op.Target), "")
+			case cmd.Stack != nil && cmd.Stack.Action == wire.StackRollback:
+				go func(cmd wire.Command) {
+					done := h.busy("rollback " + cmd.Stack.Name)
+					defer done()
+					h.mu.Lock()
+					h.rollbacks = append(h.rollbacks, *cmd.Stack)
+					fail := h.failRollback
+					if fail == "" {
+						// The old images come back up fine.
+						for i, c := range h.containers {
+							if c.Project == cmd.Stack.Name {
+								h.containers[i].ID = "back-" + c.Name
+								h.containers[i].State, h.containers[i].Status = "running", "Up 1 second"
+							}
+						}
+					}
+					h.mu.Unlock()
+					h.snapshot()
+					h.a.Handle(wire.AgentMessage{Log: &wire.LogChunk{CommandID: cmd.ID, EOF: true, Error: fail}}, nil)
+				}(*cmd)
 			case cmd.Op != nil && cmd.Op.Kind == wire.OpContainerRecreate:
 				go func(cmd wire.Command) {
 					done := h.busy("recreate " + cmd.Op.Target)
@@ -451,6 +549,11 @@ func (h *fakeHost) serve() {
 					h.replace(func(c wire.Container) bool { return c.ID == cmd.Op.Target })
 					h.reply(cmd.ID, wire.RecreateResult{Status: "updated", OldImage: "sha256:old", NewImage: "sha256:new"}, "")
 				}(*cmd)
+			case cmd.Op != nil: // anything else: noted and answered OK
+				h.mu.Lock()
+				h.ops = append(h.ops, "op "+cmd.Op.Kind+" "+cmd.Op.Arg)
+				h.mu.Unlock()
+				go h.reply(cmd.ID, nil, "")
 			case cmd.Stack != nil:
 				go func(cmd wire.Command) {
 					done := h.busy("stack " + cmd.Stack.Name)
@@ -523,7 +626,7 @@ func newAutoRig(t *testing.T) *autoRig {
 func (x *autoRig) host(id, name string, cs ...wire.Container) *fakeHost {
 	x.db.hosts[id] = store.Host{ID: id, Name: name}
 	h := &fakeHost{rig: x, a: x.s.Reg.Attach(id, name, func() {}), containers: cs, updates: map[string]bool{}}
-	h.a.Handle(wire.AgentMessage{Hello: &wire.Hello{OwnProject: "tainerhub", Stacks: &wire.StackSupport{Dir: "/stacks"}}}, nil)
+	h.a.Handle(wire.AgentMessage{Hello: &wire.Hello{OwnProject: "tainerhub", Stacks: &wire.StackSupport{Dir: "/stacks", Rollback: true}}}, nil)
 	h.snapshot()
 	go h.serve()
 	x.t.Cleanup(func() { x.s.Reg.Detach(h.a) })
@@ -671,7 +774,9 @@ func TestAutoRunFailuresAndSkips(t *testing.T) {
 	}
 	busy.finish("")
 
-	// The stack's deploy fails: failed, with the job's error.
+	// The stack's deploy fails: failed, with the job's error (automatic
+	// rollback is off here; TestAutoRollback covers it).
+	_, _ = x.db.SetStackAutoRollback(context.Background(), stack.ID, false)
 	h.failWith = "compose up failed"
 	run = x.runNow()
 	if o := outcome(t, run, "app"); o.Result != autoFailed || o.Reason != "compose up failed" {

@@ -130,6 +130,9 @@ type StackSupport struct {
 	// Files: the agent writes a stack's extra files (Dockerfile, scripts,
 	// config) next to its compose file. Older agents would silently drop them.
 	Files bool `json:"files,omitempty"`
+	// Rollback: the agent records and keeps rollback images and runs
+	// StackRollback. Older agents would refuse the command.
+	Rollback bool `json:"rollback,omitempty"`
 }
 
 type Container struct {
@@ -365,6 +368,9 @@ const (
 	StackRestart = "restart" // restart containers
 	StackDown    = "down"    // remove containers and networks (volumes only if Volumes)
 	StackRemove  = "remove"  // down, then delete the stack's files on the host
+	// StackRollback puts the services in Rollback back on their older
+	// images (see rollback.go), without changing the stack's files.
+	StackRollback = "rollback"
 )
 
 // Size limits for a stack's files.
@@ -387,6 +393,8 @@ type StackCommand struct {
 	// Auth are logins for the private registries the compose file's images
 	// come from (deploy only). Used for this one command, never stored.
 	Auth []RegistryAuth `json:"auth,omitempty"`
+	// Rollback lists the services and images a StackRollback goes back to.
+	Rollback []RollbackService `json:"rollback,omitempty"`
 }
 
 // ValidStackName accepts compose project names: lowercase letters, digits,
@@ -407,9 +415,16 @@ func ValidStackName(s string) bool {
 
 func ValidStackCommand(c StackCommand) error {
 	switch c.Action {
-	case StackDeploy, StackStart, StackStop, StackRestart, StackDown, StackRemove:
+	case StackDeploy, StackStart, StackStop, StackRestart, StackDown, StackRemove, StackRollback:
 	default:
 		return errors.New("unknown stack action")
+	}
+	if c.Action == StackRollback {
+		if err := ValidRollback(c.Rollback); err != nil {
+			return err
+		}
+	} else if len(c.Rollback) > 0 {
+		return errors.New("only a rollback names images to go back to")
 	}
 	if !ValidStackName(c.Name) {
 		return errors.New("invalid stack name: use lowercase letters, digits, '-' and '_' (max 63)")
@@ -675,13 +690,16 @@ const (
 	OpImagesList       = "images.list"
 	OpImagePull        = "image.pull"
 	OpImageRemove      = "image.remove"
-	OpImagesPrune      = "images.prune"
-	OpVolumesList      = "volumes.list"
-	OpVolumeRemove     = "volume.remove"
-	OpVolumesPrune     = "volumes.prune"
-	OpNetworksList     = "networks.list"
-	OpNetworkRemove    = "network.remove"
-	OpNetworksPrune    = "networks.prune"
+	// ImageRemoveForce is OpImageRemove's Arg for removing an image kept for
+	// a stack's rollback (an admin's explicit choice).
+	ImageRemoveForce = "force"
+	OpImagesPrune    = "images.prune"
+	OpVolumesList    = "volumes.list"
+	OpVolumeRemove   = "volume.remove"
+	OpVolumesPrune   = "volumes.prune"
+	OpNetworksList   = "networks.list"
+	OpNetworkRemove  = "network.remove"
+	OpNetworksPrune  = "networks.prune"
 	// OpContainerRemoveVolumes removes a container (even if running) with its
 	// anonymous volumes, then deletes the named volumes listed in Arg
 	// (comma-separated) that it mounted and nothing else uses.
@@ -744,6 +762,11 @@ const (
 	// through the Docker Engine (POST /auth), without saving it on the host.
 	// Result: RegistryLoginResult.
 	OpRegistryLogin = "registry.login"
+	// OpStackImages lists the image each service of compose project Target
+	// runs (from its containers). With Arg StackImagesProtect it also tags
+	// those images tainerhub-rollback/<stack>:<service> so pruning leaves
+	// them, and drops that stack's older rollback tags. Result: StackImages.
+	OpStackImages = "stack.images"
 )
 
 // RegistryLoginResult is what the registry said to a login check.
@@ -999,6 +1022,7 @@ var OpKinds = map[string]bool{
 	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false, OpStackRead: true,
 	OpContainerExport: false, OpContainerCreate: true,
 	OpRegistryLogin: false,
+	OpStackImages:   true, // with StackImagesProtect it tags images
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -1025,6 +1049,9 @@ func ValidOperation(op Operation) error {
 		if !ValidImageID(op.Target) {
 			return errors.New("invalid image id")
 		}
+		if op.Arg != "" && op.Arg != ImageRemoveForce {
+			return errors.New("invalid remove mode")
+		}
 	case OpImagePull:
 		if !ValidImageRef(op.Arg) {
 			return errors.New("invalid image reference")
@@ -1047,6 +1074,13 @@ func ValidOperation(op Operation) error {
 	case OpStackInspect, OpStackDirRemove, OpStackRead:
 		if !ValidStackName(op.Target) {
 			return errors.New("invalid stack name")
+		}
+	case OpStackImages:
+		if !ValidStackName(op.Target) {
+			return errors.New("invalid stack name")
+		}
+		if op.Arg != "" && op.Arg != StackImagesProtect {
+			return errors.New("invalid stack images mode")
 		}
 	case OpStackPreview:
 		if !ValidStackName(op.Target) {
@@ -1194,6 +1228,9 @@ type Image struct {
 	Size    int64    `json:"size"`
 	Created int64    `json:"created"`
 	UsedBy  []string `json:"usedBy"`
+	// KeptFor names the stacks this image is kept for, to roll back to
+	// (it has a tainerhub-rollback/ tag). TainerHub's prunes leave it.
+	KeptFor []string `json:"keptFor,omitempty"`
 }
 
 type Volume struct {

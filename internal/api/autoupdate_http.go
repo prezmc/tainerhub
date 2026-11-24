@@ -133,10 +133,20 @@ func (s *Server) stackAutoUpdate(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, "stack not found")
 		return
 	}
-	on, ok := autoToggle(w, r)
-	if !ok {
+	// {"enabled": true|false, "autoRollback": true|false}; autoRollback
+	// ("Roll back automatically if the update fails") is optional.
+	var in struct {
+		Enabled      *bool `json:"enabled"`
+		AutoRollback *bool `json:"autoRollback"`
+	}
+	if !readJSON(w, r, &in) {
 		return
 	}
+	if in.Enabled == nil {
+		jsonErr(w, http.StatusBadRequest, `send {"enabled": true} or {"enabled": false}`)
+		return
+	}
+	on := *in.Enabled
 	db := s.aus()
 	st, err := db.GetStack(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
@@ -157,6 +167,9 @@ func (s *Server) stackAutoUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = db.EnableStackAutoUpdate(r.Context(), st.ID, u.Username)
+		if err == nil && in.AutoRollback != nil {
+			_, err = db.SetStackAutoRollback(r.Context(), st.ID, *in.AutoRollback)
+		}
 	} else {
 		_, err = db.DisableStackAutoUpdate(r.Context(), st.ID)
 	}
@@ -164,8 +177,22 @@ func (s *Server) stackAutoUpdate(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.record(r, &u, autoToggleAction(on), hostName+"/"+st.Name, map[string]string{"kind": "stack", "host": hostName})
-	writeJSON(w, http.StatusOK, map[string]bool{"enabled": on})
+	detail := map[string]any{"kind": "stack", "host": hostName}
+	res := map[string]bool{"enabled": on}
+	if on {
+		// The saved value (on unless turned off), for the response and the log.
+		roll := true
+		if ts, err := db.ListAutoUpdateTargets(r.Context()); err == nil {
+			for _, t := range ts {
+				if t.Kind == "stack" && t.StackID == st.ID {
+					roll = t.AutoRollback
+				}
+			}
+		}
+		detail["autoRollback"], res["autoRollback"] = roll, roll
+	}
+	s.record(r, &u, autoToggleAction(on), hostName+"/"+st.Name, detail)
+	writeJSON(w, http.StatusOK, res)
 }
 
 // stackAutoRefusal is why a stack can't be opted in ("" if it can).

@@ -46,6 +46,9 @@ type StackRunner struct {
 	// OwnProject, if set, returns the compose project the agent itself runs
 	// in, so no stack can take that name.
 	OwnProject func(ctx context.Context) string
+	// Images, if set, records and keeps the images stacks can roll back to
+	// (see stackrollback.go). Without it rollbacks are refused.
+	Images RollbackImages
 
 	mu    sync.Mutex
 	busy  map[string]bool
@@ -55,7 +58,7 @@ type StackRunner struct {
 // Probe checks the compose binary and the stacks folder. The result is sent
 // to the hub in Hello so the UI can explain what is missing.
 func (r *StackRunner) Probe(ctx context.Context) wire.StackSupport {
-	sup := wire.StackSupport{Dir: r.Dir, Files: true}
+	sup := wire.StackSupport{Dir: r.Dir, Files: true, Rollback: r.Images != nil}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var out bytes.Buffer
@@ -165,7 +168,9 @@ func (r *StackRunner) Run(ctx context.Context, c wire.StackCommand, out io.Write
 
 	dir := filepath.Join(r.Dir, c.Name)
 	deployed := fileExists(filepath.Join(dir, composeFile))
-	run := composeRunner{r: r, dockerConfig: filepath.Join(r.WorkDir, "docker")}
+	// A rolled-back stack keeps its override for every command but a
+	// deploy (which returns it to the newest images).
+	run := composeRunner{r: r, dockerConfig: filepath.Join(r.WorkDir, "docker"), pinned: pinned(dir) && c.Action != wire.StackDeploy}
 	if len(c.Auth) > 0 {
 		// The registry logins go in a DOCKER_CONFIG of their own for this
 		// command only, removed as soon as it's done: the shared one never
@@ -188,7 +193,14 @@ func (r *StackRunner) Run(ctx context.Context, c wire.StackCommand, out io.Write
 				return err
 			}
 		}
+		// Only after the deploy worked: until then the stack stays pinned.
+		r.unpin(ctx, c.Name, dir, out)
 		return nil
+	case wire.StackRollback:
+		if !deployed {
+			return errors.New("this stack has not been deployed on this host yet" + nothingChanged)
+		}
+		return run.rollback(ctx, c, dir, out)
 	case wire.StackStart, wire.StackStop, wire.StackRestart:
 		if !deployed {
 			return errors.New("this stack has not been deployed on this host yet")
@@ -205,11 +217,13 @@ func (r *StackRunner) Run(ctx context.Context, c wire.StackCommand, out io.Write
 				return err
 			}
 		}
-		for _, f := range []string{composeFile, envFile} {
+		for _, f := range []string{composeFile, envFile, wire.StackRollbackFile} {
 			if err := os.Remove(filepath.Join(dir, f)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
 		}
+		r.unpin(ctx, c.Name, dir, nil)
+		r.forgetRollbackImages(ctx, c.Name)
 		removeAllManaged(dir, out)
 		_ = os.RemoveAll(filepath.Join(dir, stagingDir))
 		// Only removes the folder when empty: anything left is the stack's own data.
@@ -331,10 +345,15 @@ func composeBuilds(resolved []byte) bool {
 type composeRunner struct {
 	r            *StackRunner
 	dockerConfig string
+	pinned       bool // also use the rollback override file
 }
 
 func (cr composeRunner) compose(ctx context.Context, name, dir string, out io.Writer, args ...string) error {
-	base := []string{"--project-name", name, "--file", filepath.Join(dir, composeFile), "--project-directory", dir, "--progress", "plain"}
+	base := []string{"--project-name", name, "--file", filepath.Join(dir, composeFile)}
+	if cr.pinned {
+		base = append(base, "--file", rollbackOverridePath(dir))
+	}
+	base = append(base, "--project-directory", dir, "--progress", "plain")
 	return cr.run(ctx, out, append(base, args...)...)
 }
 

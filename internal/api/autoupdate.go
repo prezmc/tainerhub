@@ -45,6 +45,9 @@ const (
 	autoOK      = "ok"
 	autoFailed  = "failed"
 	autoSkipped = "skipped"
+	// autoRolledBack: the update failed and the old images were put back
+	// (a stack's automatic rollback, or a container's recreate).
+	autoRolledBack = "rolled_back"
 )
 
 // autoUpdateStore is the part of the store automatic updates (and stack
@@ -62,6 +65,11 @@ type autoUpdateStore interface {
 	GetHost(ctx context.Context, id string) (store.Host, error)
 	MarkStackDeployed(ctx context.Context, id, hash string) error
 	DeleteStack(ctx context.Context, id string) error
+	SetStackAutoRollback(ctx context.Context, stackID string, on bool) (bool, error)
+	// Rollback points (see rollback.go).
+	AddRollbackPoint(ctx context.Context, p store.RollbackPoint) (store.RollbackPoint, error)
+	LatestRollbackPoint(ctx context.Context, stackID string) (store.RollbackPoint, error)
+	SetStackRolledBack(ctx context.Context, id string, to *time.Time) error
 }
 
 func (s *Server) aus() autoUpdateStore {
@@ -101,19 +109,21 @@ type autoRun struct {
 }
 
 type autoOutcome struct {
-	TargetID string    `json:"targetId"`
-	Kind     string    `json:"kind"`
-	Name     string    `json:"name"`
-	StackID  string    `json:"stackId,omitempty"`
-	HostID   string    `json:"hostId"`
-	Host     string    `json:"host"`
-	Result   string    `json:"result"`           // ok, failed, skipped
-	Reason   string    `json:"reason,omitempty"` // the error, or why it was skipped
-	Images   []string  `json:"images,omitempty"` // the image references that had a newer image
-	OldImage string    `json:"oldImage,omitempty"`
-	NewImage string    `json:"newImage,omitempty"`
-	JobID    string    `json:"jobId,omitempty"`
-	At       time.Time `json:"at"`
+	TargetID string   `json:"targetId"`
+	Kind     string   `json:"kind"`
+	Name     string   `json:"name"`
+	StackID  string   `json:"stackId,omitempty"`
+	HostID   string   `json:"hostId"`
+	Host     string   `json:"host"`
+	Result   string   `json:"result"`           // ok, failed, skipped
+	Reason   string   `json:"reason,omitempty"` // the error, or why it was skipped
+	Images   []string `json:"images,omitempty"` // the image references that had a newer image
+	OldImage string   `json:"oldImage,omitempty"`
+	NewImage string   `json:"newImage,omitempty"`
+	JobID    string   `json:"jobId,omitempty"`
+	// RollbackJobID is the automatic rollback's job after a failed stack update.
+	RollbackJobID string    `json:"rollbackJobId,omitempty"`
+	At            time.Time `json:"at"`
 }
 
 func (s *Server) autoNow() time.Time {
@@ -359,8 +369,11 @@ func (s *Server) autoRecord(ctx context.Context, run *autoRun, t store.AutoUpdat
 		return
 	}
 	action := "update.auto_applied"
-	if o.Result == autoFailed {
+	switch o.Result {
+	case autoFailed:
 		action = "update.auto_failed"
+	case autoRolledBack:
+		action = "update.auto_rolled_back"
 	}
 	detail := map[string]any{"kind": t.Kind, "host": t.HostName, "run": run.ID}
 	if len(o.Images) > 0 {
@@ -398,6 +411,9 @@ func (s *Server) autoTarget(ctx context.Context, a *registry.Agent, t store.Auto
 		o.OldImage, o.NewImage = res.OldImage, res.NewImage
 		if err != nil {
 			o.Result, o.Reason = autoFailed, err.Error()
+			if strings.Contains(o.Reason, "the old container was put back") {
+				o.Result = autoRolledBack // recreate rolls back on its own
+			}
 			return o
 		}
 		if res.Status == "current" {
@@ -456,8 +472,42 @@ func (s *Server) autoTarget(ctx context.Context, a *registry.Agent, t store.Auto
 	o.Result = autoOK
 	if err != nil {
 		o.Result, o.Reason = autoFailed, err.Error()
+		if t.AutoRollback {
+			s.autoRollback(ctx, a, stack, j.point, &o)
+		}
 	}
 	return o
+}
+
+// autoRollback puts a stack whose automatic update failed back on the
+// images it ran before (the rollback point the update's job recorded),
+// and says how that went in o.
+func (s *Server) autoRollback(ctx context.Context, a *registry.Agent, stack store.Stack, point *store.RollbackPoint, o *autoOutcome) {
+	if point == nil {
+		o.Reason += "; there was no rollback point to go back to"
+		return
+	}
+	if ctx.Err() != nil {
+		// The hub is stopping: the rollback must still happen.
+		ctx = context.WithoutCancel(ctx)
+	}
+	j, err := s.launchStackJob(stack, wire.StackRollback, stackJobOpts{rollback: point}, jobActor{Name: autoActorName, Audit: autoActor, Auto: true})
+	if err == nil {
+		o.RollbackJobID = j.ID
+		var jobErr string
+		jobErr, err = j.wait(ctx)
+		if err == nil && jobErr != "" {
+			err = errors.New(jobErr)
+		}
+	}
+	if err != nil {
+		o.Reason += "; rollback failed: " + err.Error()
+		return
+	}
+	o.Result, o.Reason = autoRolledBack, "the update failed ("+o.Reason+"), so the previous images were put back"
+	if err := s.waitHealthy(ctx, a, func(x wire.Container) bool { return x.Project == stack.Name }); err != nil {
+		o.Reason += "; after the rollback: " + err.Error()
+	}
 }
 
 // ownContainer: TainerHub's own containers (the hub, its database, agents)
@@ -540,6 +590,10 @@ func planStack(stack store.Stack, st registry.Status, upd wire.ImageUpdates, job
 	case stack.DeployedHash != stackHash(stack):
 		// Pull & redeploy would also deploy these unreviewed edits.
 		return nil, "it has saved changes that haven't been deployed: deploy them yourself first"
+	case stack.RolledBackTo != nil:
+		// Someone (or an earlier failed update) went back to older images
+		// on purpose; Pull & redeploy would undo that.
+		return nil, "it runs a rollback: use Return to latest on its page first"
 	}
 	seen := map[string]bool{}
 	var refs []string

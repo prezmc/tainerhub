@@ -75,6 +75,7 @@ const jobVerb: Record<string, string> = {
   restart: 'restarting',
   down: 'taking down',
   remove: 'removing',
+  rollback: 'rolling back',
 }
 
 const jobTitle: Record<string, string> = {
@@ -86,6 +87,7 @@ const jobTitle: Record<string, string> = {
   restart: 'Restart',
   down: 'Down',
   remove: 'Delete',
+  rollback: 'Roll back',
 }
 
 export const ACTION_LABELS: Record<StackAction, string> = {

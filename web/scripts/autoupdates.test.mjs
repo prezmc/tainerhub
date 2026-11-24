@@ -1,7 +1,7 @@
 // Tests for src/autoupdates.ts. Run with `npm test`.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { containerAutoProblem, daysText, durationText, findTarget, resultText, windowText } from '../src/autoupdates.ts'
+import { containerAutoProblem, daysText, durationText, findTarget, resultLabel, resultText, resultTone, windowText } from '../src/autoupdates.ts'
 
 test('daysText names common sets', () => {
   assert.equal(daysText(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']), 'every day')
@@ -37,4 +37,12 @@ test('containerAutoProblem mirrors the hub', () => {
   assert.match(containerAutoProblem({ name: 'app-1', project: 'app', image: 'x' }), /stack/)
   assert.match(containerAutoProblem({ name: 'tainerhub-agent', image: 'x' }), /TainerHub/)
   assert.match(containerAutoProblem({ name: 'r', image: 'redis@sha256:ab' }), /pinned/)
+})
+
+test('a rolled-back update reads differently from a failure', () => {
+  assert.equal(resultLabel('rolled_back'), 'rolled back')
+  assert.equal(resultLabel('ok'), 'updated')
+  assert.equal(resultTone('rolled_back'), 'warn')
+  assert.equal(resultTone('failed'), 'bad')
+  assert.equal(resultText('rolled_back', 'web is unhealthy'), 'rolled back: web is unhealthy')
 })

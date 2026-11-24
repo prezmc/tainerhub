@@ -30,11 +30,13 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 	case wire.OpImagePull:
 		return d.pull(ctx, op.Arg, op.Auth)
 	case wire.OpImageRemove:
-		return nil, d.remove(ctx, "/images/"+url.PathEscape(op.Target))
+		return nil, d.removeImage(ctx, op.Target, op.Arg == wire.ImageRemoveForce)
 	case wire.OpImagesPrune:
 		if op.Arg == "all" {
 			return d.pruneAllImages(ctx)
 		}
+		// Only untagged images are dangling, so the images kept for stack
+		// rollbacks (tagged tainerhub-rollback/…) are never pruned here.
 		return d.prune(ctx, "/images/prune", map[string][]string{"dangling": {"true"}}, "ImagesDeleted")
 	case wire.OpVolumesList:
 		return d.volumes(ctx)
@@ -226,7 +228,7 @@ func (d *SocketDocker) images(ctx context.Context) ([]wire.Image, error) {
 				tags = append(tags, t)
 			}
 		}
-		out = append(out, wire.Image{ID: im.ID, Tags: tags, Size: im.Size, Created: im.Created, UsedBy: nonNil(u.images[im.ID])})
+		out = append(out, wire.Image{ID: im.ID, Tags: tags, Size: im.Size, Created: im.Created, UsedBy: nonNil(u.images[im.ID]), KeptFor: keptFor(tags)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Created > out[j].Created })
 	return out, nil
@@ -602,20 +604,34 @@ func (d *SocketDocker) selfUpdate(ctx context.Context, addMount bool, auths []wi
 // without forcing. Some Docker setups prune nothing for reasons they don't
 // report; this way the result matches the list, and an image Docker refuses
 // to remove is reported with Docker's reason.
+//
+// Images kept for a stack's rollback (tagged tainerhub-rollback/…) stay.
+// Docker's own prune can't be told to spare them, so while there are any
+// only the sweep runs, and it skips them.
 func (d *SocketDocker) pruneAllImages(ctx context.Context) (wire.PruneResult, error) {
 	before := d.imageLayersSize(ctx)
-	res, err := d.prune(ctx, "/images/prune", map[string][]string{"dangling": {"false"}}, "ImagesDeleted")
-	if err != nil {
-		return res, err
-	}
-	pruned := res.Deleted
 	imgs, err := d.images(ctx)
 	if err != nil {
-		return res, err
+		return wire.PruneResult{}, err
 	}
+	var res wire.PruneResult
+	if !anyKept(imgs) {
+		res, err = d.prune(ctx, "/images/prune", map[string][]string{"dangling": {"false"}}, "ImagesDeleted")
+		if err != nil {
+			return res, err
+		}
+		if imgs, err = d.images(ctx); err != nil {
+			return res, err
+		}
+	}
+	pruned := res.Deleted
 	swept := 0
 	for _, im := range imgs {
 		if len(im.UsedBy) > 0 || ctx.Err() != nil {
+			continue
+		}
+		if len(im.KeptFor) > 0 {
+			res.Kept = append(res.Kept, wire.KeptItem{Name: im.Tags[0], Reason: "kept so " + strings.Join(im.KeptFor, ", ") + " can be rolled back"})
 			continue
 		}
 		name := shortImageID(im.ID)
@@ -645,6 +661,15 @@ func (d *SocketDocker) pruneAllImages(ctx context.Context) (wire.PruneResult, er
 		res.Reclaimed = max(res.Reclaimed, before-after)
 	}
 	return res, nil
+}
+
+func anyKept(imgs []wire.Image) bool {
+	for _, im := range imgs {
+		if len(im.KeptFor) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // imageLayersSize is the disk space all images take (shared layers counted

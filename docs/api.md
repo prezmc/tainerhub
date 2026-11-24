@@ -266,12 +266,17 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 | GET | `/api/dockerhub/search` | admin | yes | Query: `q` (1-100 characters). `[{"name", "description", "stars", "pulls", "official"}]`. |
 | GET | `/api/dockerhub/tags` | admin | yes | Query: `repo` (`nginx`, `linuxserver/plex`). `[{"name", "updated", "size"}]`. |
 | PUT | `/api/stacks/{sid}/auto-update` | admin | **no** | Turn [automatic updates](#automatic-updates) on or off for the stack. Body: `{"enabled": true}`. |
+| GET | `/api/stacks/{sid}/rollback` | viewer | yes | Preview a rollback (below). `404` when there's nothing to roll back to. |
+| POST | `/api/stacks/{sid}/rollback` | operator | yes | Roll back to the newest rollback point. `202 {"jobId"}`; `404` when there's none. Audited as `stack.rolled_back`. |
 
 - **Stack summary** (list): `id` (empty for projects TainerHub doesn't manage), `name`, `hostId`, `hostName`, `managed`, `tainerhub` (TainerHub's own project), `online`, `status` (`running`, `partial`, `stopped`, `down`, `not deployed`, `unknown`), `containers`, `running`, `unhealthy`, `updatedAt`, `updatedBy`, `deployedAt`, `pending` (saved changes not yet deployed), `autoUpdate` (opted in to automatic updates), `job` (`{"id", "action"}` while one runs).
-- **Get** returns `{"stack", "summary", "filesVisible", "moves"}`. `stack` has `id`, `hostId`, `name`, `compose`, `env`, `files` (`[{"path", "content", "executable"}]`), `createdAt`, `updatedAt`, `updatedBy`, `deployedAt`. Below admin, `compose` and `env` are empty, `files` is `[]` and `filesVisible` is `false`.
+- **Get** returns `{"stack", "summary", "filesVisible", "moves", "rollbackPoint"}`. `stack` has `id`, `hostId`, `name`, `compose`, `env`, `files` (`[{"path", "content", "executable"}]`), `createdAt`, `updatedAt`, `updatedBy`, `deployedAt`, and `rolledBackTo` while the stack runs a rollback (when the point it went back to was recorded). `rollbackPoint` is the newest rollback point, `{"id", "createdAt", "trigger", "createdBy", "services"}` (`services` is a count), or `null`. Below admin, `compose` and `env` are empty, `files` is `[]` and `filesVisible` is `false`.
 - **Actions:** `pull` pulls newer images, then deploys (with `build:` services: `build --pull`, `pull --ignore-buildable`, `up -d`). `deploy` writes the files and runs `up -d --remove-orphans` (adding `--build` when a service builds its image). The first deploy of a project taken over from outside TainerHub needs an admin and a body `{"ack": "..."}` from the takeover check.
 - **Create** body: `hostId`, `name` (lowercase letters, digits, `-`, `_`; up to 63), `compose` (up to 256 KB), `env` (up to 64 KB), `files` (optional: up to 30 `{"path", "content", "executable"}`, each up to 256 KB of UTF-8 text, 2 MB together; `path` relative with `/` between folders, letters, digits, `.`, `_`, `-`, at most 4 parts and 200 characters), `deploy` (bool), `adopt` (bool: take over a running project of that name), `ack`. Returns `{"stack", "jobId"?, "deployError"?}`. `409` if the name is taken on that host or belongs to a project started elsewhere (unless `adopt`).
 - **Update** body: `compose`, `env`, `files` (leave it out to keep the saved files; `[]` removes them all), `updatedAt` (the `updatedAt` you loaded; `409` if someone saved since), `deploy`, `ack`. The name can't change. Returns `{"stack", "jobId"?, "deployError"?}`.
+- **Rollback points** are recorded right before each `deploy`, `pull`, automatic update and rollback (`trigger`: `deploy`, `pull`, `auto`, `rollback`), while the stack has containers; the last 5 per stack are kept. Each job's output says whether one was recorded.
+- **Rollback preview** returns `{"point": {"id", "createdAt", "trigger", "createdBy"}, "services": [{"service", "current", "previous", "same"}], "rolledBackTo", "composeChanged", "currentError"?}`. `current` and `previous` are `{"ref", "imageId", "digest", "created"}` (`current` is `null` for a service that isn't running). `composeChanged` is true when the compose file was deployed again since the point (a rollback changes images only).
+- **Rollback** runs `up -d --remove-orphans` with an extra compose file that pins each recorded service to its old image (`pull_policy: never`; nothing is pulled or built). It fails before changing anything when an old image is no longer on the host. Afterwards the stack is pinned: `start`, `stop`, `restart` and `down` keep the old images until the next `deploy` or `pull`, which returns it to the latest images and clears `rolledBackTo`. The stack's files and deployed version don't change, so `pending` stays as it was.
 - **Delete** query: `volumes=1` also deletes its named volumes; `forget=1` only forgets the stack and leaves the host alone (`204`).
 - **Takeover check** body: `hostId`, `name`, `compose`, `env`. Returns `{"issues": [{"key", "level", "title", "detail", "fix"}], "ack", "blocked", "workingDir", "dir", "running"}`.
 - **Move** body: `hostId`, `outside`. `409` if the stack has undeployed changes, or with `{"error", "report"}` if the check finds blockers.
@@ -280,18 +285,18 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 
 | Method | Path | Role | Token | Notes |
 | --- | --- | --- | --- | --- |
-| GET | `/api/hosts/{id}/images` | viewer | yes | `[{"id", "tags", "size", "created", "usedBy"}]` |
+| GET | `/api/hosts/{id}/images` | viewer | yes | `[{"id", "tags", "size", "created", "usedBy", "keptFor"?}]`; `keptFor` names the stacks the image is kept for, to roll back to. |
 | GET | `/api/hosts/{id}/volumes` | viewer | yes | `[{"name", "driver", "mountpoint", "created", "project", "usedBy"}]` |
 | GET | `/api/hosts/{id}/networks` | viewer | yes | `[{"id", "name", "driver", "scope", "internal", "builtin", "project", "usedBy"}]` |
 | POST | `/api/hosts/{id}/images/pull` | operator | yes | Body: `ref` (`nginx:1.27`, `ghcr.io/org/app:tag`). |
-| DELETE | `/api/hosts/{id}/images/{rid}` | operator | yes | Remove an image. |
+| DELETE | `/api/hosts/{id}/images/{rid}` | operator | yes | Remove an image. One kept for a stack's rollback is refused (`502` with the reason) unless `?force=1`, which needs an admin. |
 | DELETE | `/api/hosts/{id}/networks/{rid}` | operator | yes | Remove a network. |
 | POST | `/api/hosts/{id}/images/prune` | operator | yes | Dangling images; `?all=1` for every unused image. |
 | POST | `/api/hosts/{id}/networks/prune` | operator | yes | Unused networks. |
 | DELETE | `/api/hosts/{id}/volumes/{rid}` | admin | yes | Remove a volume (its data is gone). |
 | POST | `/api/hosts/{id}/volumes/prune` | admin | yes | Unused anonymous volumes; `?all=1` for named ones too. |
 
-Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. Removes answer `204`.
+Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. Removes answer `204`. Neither prune removes images kept for a stack's rollback (tagged `tainerhub-rollback/…`).
 
 ### Updates and Docker Engine
 
@@ -317,12 +322,12 @@ Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. 
 | PUT | `/api/auto-updates/settings` | admin | **no** | Change the window. Body: `enabled`, `days`, `time`, `timeZone`, `maxMinutes`. Returns the same as GET. |
 | POST | `/api/auto-updates/run` | admin | **no** | Run now (even while paused). `202 {"runId"}`; `409 {"error", "runId"}` while a run is going. |
 | GET | `/api/auto-updates/runs/latest` | admin | yes | `{"run"}`: the current or last run since the hub started, or `null`. |
-| PUT | `/api/stacks/{sid}/auto-update` | admin | **no** | Opt a managed stack in or out. Body: `{"enabled": true\|false}`. |
+| PUT | `/api/stacks/{sid}/auto-update` | admin | **no** | Opt a managed stack in or out. Body: `{"enabled": true\|false, "autoRollback": true\|false}` (`autoRollback` optional). Returns `{"enabled", "autoRollback"}`. |
 | PUT | `/api/hosts/{id}/containers/{name}/auto-update` | admin | **no** | Opt a standalone container in or out, by name. Body: `{"enabled": true\|false}`. |
 
 - **Settings:** `enabled` (false pauses every scheduled window), `days` (`mon` … `sun`, at least one), `time` (`HH:MM`, 24-hour), `timeZone` (an IANA name like `Europe/Berlin`; empty for the hub's local time), `maxMinutes` (15 to 720; default 120). The default is every day at 03:00 for 2 hours. `400` with the reason when something is invalid.
-- **Target:** `id`, `kind` (`stack` or `container`), `stackId`, `stackName`, `containerName`, `hostId`, `hostName`, `enabledBy`, `createdAt`, `lastRunAt`, `lastResult` (`ok`, `failed`, `skipped`, or empty before the first run), `lastError` (the error, or why it was skipped).
-- **Run:** `id`, `trigger` (`window` or `manual`), `startedBy`, `startedAt`, `deadline`, `finishedAt`, `running`, `error`, `outcomes`: `[{"targetId", "kind", "name", "stackId", "hostId", "host", "result", "reason", "images", "oldImage", "newImage", "jobId", "at"}]`.
+- **Target:** `id`, `kind` (`stack` or `container`), `stackId`, `stackName`, `containerName`, `hostId`, `hostName`, `enabledBy`, `createdAt`, `lastRunAt`, `lastResult` (`ok`, `rolled_back`, `failed`, `skipped`, or empty before the first run), `lastError` (the error, or why it was skipped), `autoRollback` (stacks: roll back right away when the update fails; on by default).
+- **Run:** `id`, `trigger` (`window` or `manual`), `startedBy`, `startedAt`, `deadline`, `finishedAt`, `running`, `error`, `outcomes`: `[{"targetId", "kind", "name", "stackId", "hostId", "host", "result", "reason", "images", "oldImage", "newImage", "jobId", "rollbackJobId", "at"}]`. `result` is `rolled_back` when a stack's failed update was rolled back automatically (`rollbackJobId` is the rollback's job) or a container's recreate put the old container back; a rollback that failed leaves `failed` with `rollback failed: …` in `reason`.
 - **Opting in** a container needs its host online: `404` if there's no container of that name, `409` if it belongs to a compose project (opt its stack in instead) or is one of TainerHub's own, `400` if its image is pinned by digest, `503` if the host is offline. Opting out always works. A stack that is TainerHub's own project is refused with `409`.
 - All changes need a recent sign-in (`403 {"reauth": true}` otherwise) and refuse API tokens.
 

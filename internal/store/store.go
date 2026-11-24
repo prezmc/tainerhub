@@ -662,6 +662,9 @@ type Stack struct {
 	UpdatedBy    string      `json:"updatedBy"`
 	DeployedAt   *time.Time  `json:"deployedAt"`
 	DeployedHash string      `json:"-"`
+	// RolledBackTo is set while the stack runs a rollback: when the rollback
+	// point it went back to was recorded.
+	RolledBackTo *time.Time `json:"rolledBackTo,omitempty"`
 }
 
 // StackFile is one of a stack's extra files. Content is UTF-8 text.
@@ -671,12 +674,12 @@ type StackFile struct {
 	Executable bool   `json:"executable,omitempty"`
 }
 
-const stackCols = `id::text, host_id::text, name, compose, env, files, created_at, updated_at, updated_by, deployed_at, deployed_hash`
+const stackCols = `id::text, host_id::text, name, compose, env, files, created_at, updated_at, updated_by, deployed_at, deployed_hash, rolled_back_to`
 
 func scanStack(row pgx.Row) (Stack, error) {
 	var st Stack
 	var files []byte
-	err := row.Scan(&st.ID, &st.HostID, &st.Name, &st.Compose, &st.Env, &files, &st.CreatedAt, &st.UpdatedAt, &st.UpdatedBy, &st.DeployedAt, &st.DeployedHash)
+	err := row.Scan(&st.ID, &st.HostID, &st.Name, &st.Compose, &st.Env, &files, &st.CreatedAt, &st.UpdatedAt, &st.UpdatedBy, &st.DeployedAt, &st.DeployedHash, &st.RolledBackTo)
 	if err == nil {
 		err = json.Unmarshal(files, &st.Files)
 	}
@@ -1056,7 +1059,9 @@ func (s *Store) CommitMove(ctx context.Context, moveID, stackID, toHost, hash st
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after commit
-	tag, err := tx.Exec(ctx, `UPDATE stacks SET host_id = $2::uuid, deployed_at = now(), deployed_hash = $3 WHERE id = $1::uuid`, stackID, toHost, hash)
+	// The new host runs the newest images, and the old host's rollback
+	// points name images that aren't there.
+	tag, err := tx.Exec(ctx, `UPDATE stacks SET host_id = $2::uuid, deployed_at = now(), deployed_hash = $3, rolled_back_to = NULL WHERE id = $1::uuid`, stackID, toHost, hash)
 	if isUniqueViolation(err) {
 		return ErrConflict
 	}
@@ -1065,6 +1070,9 @@ func (s *Store) CommitMove(ctx context.Context, moveID, stackID, toHost, hash st
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM stack_rollback_points WHERE stack_id = $1::uuid`, stackID); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE stack_moves SET state = 'done', bytes = $2, leftovers = $3, finished_at = now() WHERE id = $1::uuid`,

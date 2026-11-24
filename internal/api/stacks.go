@@ -161,7 +161,7 @@ func (s *Server) loadStack(w http.ResponseWriter, r *http.Request) (store.Stack,
 		jsonErr(w, http.StatusNotFound, "stack not found")
 		return store.Stack{}, false
 	}
-	st, err := s.Store.GetStack(r.Context(), id)
+	st, err := s.aus().GetStack(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			jsonErr(w, http.StatusNotFound, "stack not found")
@@ -203,7 +203,14 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 	if moves == nil {
 		moves = []store.StackMove{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"stack": st, "summary": sum, "filesVisible": canView, "moves": moves})
+	// The newest rollback point, so the page knows whether Roll back can run.
+	var point any
+	if p, err := s.aus().LatestRollbackPoint(r.Context(), st.ID); err == nil {
+		point = map[string]any{"id": p.ID, "createdAt": p.CreatedAt, "trigger": p.Trigger, "createdBy": p.CreatedBy, "services": len(p.Services)}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		s.Log.Warn("latest rollback point", "stack", st.Name, "err", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stack": st, "summary": sum, "filesVisible": canView, "moves": moves, "rollbackPoint": point})
 }
 
 type stackInput struct {
@@ -494,6 +501,23 @@ func (s *Server) startStackJob(r *http.Request, st store.Stack, action string, p
 // startStackJobAs is startStackJob for a given actor (automatic updates
 // start jobs without a request).
 func (s *Server) startStackJobAs(st store.Stack, action string, pull, volumes bool, actor jobActor) (*job, error) {
+	return s.launchStackJob(st, action, stackJobOpts{pull: pull, volumes: volumes}, actor)
+}
+
+// stackJobOpts are a stack job's options.
+type stackJobOpts struct {
+	pull, volumes bool
+	// rollback is the point a StackRollback goes back to.
+	rollback *store.RollbackPoint
+}
+
+// launchStackJob starts any stack job. Deploys and rollbacks first record
+// a rollback point (what the services run now; see rollback.go).
+func (s *Server) launchStackJob(st store.Stack, action string, opts stackJobOpts, actor jobActor) (*job, error) {
+	pull, volumes := opts.pull, opts.volumes
+	if action == wire.StackRollback && (opts.rollback == nil || len(opts.rollback.Services) == 0) {
+		return nil, errNoRollbackPoint
+	}
 	a := s.Reg.Get(st.HostID)
 	if a == nil {
 		return nil, registry.ErrOffline
@@ -504,6 +528,8 @@ func (s *Server) startStackJobAs(st store.Stack, action string, pull, volumes bo
 		return nil, errors.New("stacks aren't set up on this host: " + hello.Stacks.Error)
 	} else if action == wire.StackDeploy && len(st.Files) > 0 && !hello.Stacks.Files {
 		return nil, errors.New("this host's agent is too old for stacks with extra files (such as a Dockerfile); update it to the latest tainerhub-agent image")
+	} else if action == wire.StackRollback && !hello.Stacks.Rollback {
+		return nil, errors.New("this host's agent can't roll back stacks; update it to the latest tainerhub-agent image")
 	}
 	j, ok := s.jobs.start(&job{StackID: st.ID, Stack: st.Name, HostID: st.HostID, Host: a.Name, Action: actionLabel(action, pull), Actor: actor.Name})
 	if !ok {
@@ -514,6 +540,12 @@ func (s *Server) startStackJobAs(st store.Stack, action string, pull, volumes bo
 	if action == wire.StackDeploy {
 		cmd.Compose, cmd.Env, cmd.Files = st.Compose, st.Env, wireFiles(st.Files)
 		hash = stackHash(st)
+	}
+	if action == wire.StackRollback {
+		cmd.Rollback = rollbackServices(*opts.rollback)
+	}
+	if action == wire.StackDeploy || action == wire.StackRollback {
+		j.point = s.recordRollbackPoint(a, st, rollbackTrigger(action, pull, actor), actor, j)
 	}
 	sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	ch, err := a.Stack(sendCtx, cmd)
@@ -553,11 +585,23 @@ func (s *Server) startStackJobAs(st store.Stack, action string, pull, volumes bo
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if action == wire.StackRollback && !strings.Contains(final, wire.RollbackUnchanged) {
+			// Even a failed rollback may have pinned the stack on the host
+			// (its override file stays until the next deploy).
+			at := opts.rollback.CreatedAt
+			if err := db.SetStackRolledBack(ctx, st.ID, &at); err != nil {
+				s.Log.Warn("mark stack rolled back", "err", err)
+			}
+		}
 		if final == "" {
 			switch action {
 			case wire.StackDeploy:
 				if err := db.MarkStackDeployed(ctx, st.ID, hash); err != nil {
 					s.Log.Warn("mark stack deployed", "err", err)
+				}
+				// The agent removed the rollback override: newest images again.
+				if err := db.SetStackRolledBack(ctx, st.ID, nil); err != nil {
+					s.Log.Warn("clear stack rollback", "err", err)
 				}
 			case wire.StackRemove:
 				if err := db.DeleteStack(ctx, st.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -575,10 +619,14 @@ func (s *Server) startStackJobAs(st store.Stack, action string, pull, volumes bo
 		if volumes {
 			detail["volumes"] = true
 		}
+		if opts.rollback != nil {
+			detail["to"] = opts.rollback.CreatedAt
+			detail["images"] = pointImages(*opts.rollback)
+		}
 		if final != "" {
 			detail["error"] = final
 		}
-		e := store.AuditEntry{Actor: actor.Audit, UserID: actor.UserID, Action: "stack." + j.Action, Target: a.Name + "/" + st.Name, IP: actor.IP}
+		e := store.AuditEntry{Actor: actor.Audit, UserID: actor.UserID, Action: auditStackAction(j.Action), Target: a.Name + "/" + st.Name, IP: actor.IP}
 		e.Detail, _ = json.Marshal(detail)
 		s.writeAudit(ctx, e)
 		j.finish(final)

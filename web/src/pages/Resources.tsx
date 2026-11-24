@@ -6,6 +6,7 @@ import { loadPref, savePref, useFleet } from '../fleet'
 import { Button, Card, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { RegistryAuthHint } from '../registries'
+import { displayTag, isRollbackTag } from '../rollback'
 
 type Tab = 'images' | 'volumes' | 'networks'
 type Row<T> = T & { host: Host }
@@ -153,6 +154,18 @@ function UsedBy({ names }: { names: string[] }) {
   )
 }
 
+/** An image TainerHub keeps (tagged tainerhub-rollback/…) so a stack can be rolled back to it. */
+function KeptBadge({ stacks }: { stacks: string[] }) {
+  return (
+    <span
+      title="TainerHub's prunes leave this image so the stack can roll back to it. A docker image prune -a run outside TainerHub can still remove it."
+      className="rounded-[2px] bg-cyan-400/10 px-1.5 py-[3px] font-mono text-[10.5px] font-medium uppercase leading-none tracking-wider text-cyan-200 ring-1 ring-cyan-400/25"
+    >
+      kept for rollback of {stacks.join(', ')}
+    </span>
+  )
+}
+
 function Table({ head, children, empty, loading }: { head: string[]; children: React.ReactNode; empty: boolean; loading: boolean }) {
   return (
     <Card className="overflow-hidden">
@@ -187,12 +200,14 @@ function ImagesTable({ rows, q, loading }: { rows: Row<ImageRes>[]; q: string; l
   const total = list.reduce((a, r) => a + r.size, 0)
   const unused = list.filter((r) => r.usedBy.length === 0).reduce((a, r) => a + r.size, 0)
   const operator = can(me.user, 'operator')
+  const admin = can(me.user, 'admin')
   return (
     <>
       <Summary items={[`${list.length} images`, `${size(total)} on disk`, `${size(unused)} unused`]} />
       <Table head={['Image', 'Host', 'Size', 'Created', 'Used by', '']} empty={list.length === 0} loading={loading}>
         {list.map((r) => {
-          const tag = r.tags[0]
+          const tag = displayTag(r.tags)
+          const kept = r.keptFor ?? []
           return (
             <tr key={r.host.id + r.id} className="transition hover:bg-white/[0.03]">
               <td className="px-5 py-3">
@@ -206,12 +221,15 @@ function ImagesTable({ rows, q, loading }: { rows: Row<ImageRes>[]; q: string; l
               <td className="mono px-5 py-3 text-ink-100/80">{size(r.size)}</td>
               <td className="px-5 py-3 text-ink-100/60">{timeAgo(new Date(r.created * 1000).toISOString())}</td>
               <td className="px-5 py-3">
-                <UsedBy names={r.usedBy} />
+                <span className="flex flex-wrap items-center gap-1">
+                  <UsedBy names={r.usedBy} />
+                  {kept.length > 0 && <KeptBadge stacks={kept} />}
+                </span>
               </td>
               <td className="px-5 py-3">
                 {operator && (
                   <div className="flex justify-end gap-0.5">
-                    {tag && (
+                    {tag && !isRollbackTag(tag) && (
                       <IconButton
                         icon={RefreshCw}
                         label={`Pull ${tag} again (update)`}
@@ -228,12 +246,31 @@ function ImagesTable({ rows, q, loading }: { rows: Row<ImageRes>[]; q: string; l
                     )}
                     <IconButton
                       icon={Trash2}
-                      label={r.usedBy.length ? 'In use: remove its containers first' : 'Remove image'}
+                      label={
+                        r.usedBy.length
+                          ? 'In use: remove its containers first'
+                          : kept.length && !admin
+                            ? `Kept so ${kept.join(', ')} can be rolled back: only an admin can remove it`
+                            : 'Remove image'
+                      }
                       tone="bad"
-                      disabled={r.usedBy.length > 0}
+                      disabled={r.usedBy.length > 0 || (kept.length > 0 && !admin)}
                       onClick={async () => {
+                        const path = `/api/hosts/${r.host.id}/images/${encodeURIComponent(r.id)}`
+                        if (kept.length > 0) {
+                          if (
+                            await confirm({
+                              title: `Remove an image kept for rollback?`,
+                              body: `TainerHub keeps ${tag ?? 'this image'} on ${r.host.name} so ${kept.join(', ')} can be rolled back to it. After removing it, rolling back fails with "the previous image is gone".`,
+                              confirm: 'Remove anyway',
+                              danger: true,
+                            })
+                          )
+                            m.mutate({ path: path + '?force=1', method: 'DELETE', done: () => `Image removed from ${r.host.name}` })
+                          return
+                        }
                         if (await confirm({ title: `Remove ${tag ?? 'this image'}?`, body: `Deletes the image from ${r.host.name}. It can be pulled again later.`, confirm: 'Remove', danger: true }))
-                          m.mutate({ path: `/api/hosts/${r.host.id}/images/${encodeURIComponent(r.id)}`, method: 'DELETE', done: () => `Image removed from ${r.host.name}` })
+                          m.mutate({ path, method: 'DELETE', done: () => `Image removed from ${r.host.name}` })
                       }}
                     />
                   </div>

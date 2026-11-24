@@ -65,6 +65,7 @@ func main() {
 			WorkDir:    filepath.Join(dataDir, "compose"),
 			CheckMount: docker.CheckSameMount,
 			OwnProject: docker.OwnProject,
+			Images:     docker,
 		},
 		Log: log,
 	}

@@ -316,6 +316,8 @@ export interface ImageRes {
   size: number
   created: number
   usedBy: string[]
+  /** Stacks this image is kept for, to roll back to (a tainerhub-rollback/ tag). */
+  keptFor?: string[]
 }
 export interface VolumeRes {
   name: string
@@ -391,6 +393,35 @@ export interface Stack {
   updatedAt: string
   updatedBy: string
   deployedAt: string | null
+  /** Set while the stack runs a rollback: when the rollback point it went back to was recorded. */
+  rolledBackTo?: string | null
+}
+
+/** A stack's newest rollback point (what its services ran right before the last deploy, update or rollback). */
+export interface RollbackPointSummary {
+  id: string
+  createdAt: string
+  trigger: RollbackTrigger
+  createdBy: string
+  services: number
+}
+
+export type RollbackTrigger = 'deploy' | 'pull' | 'auto' | 'rollback'
+
+export interface RollbackImage {
+  ref: string
+  imageId: string
+  digest?: string
+  created?: string
+}
+
+/** GET /api/stacks/{id}/rollback */
+export interface RollbackPreview {
+  point: { id: string; createdAt: string; trigger: RollbackTrigger; createdBy: string }
+  services: { service: string; current: RollbackImage | null; previous: RollbackImage; same: boolean }[]
+  rolledBackTo: string | null
+  composeChanged: boolean
+  currentError?: string
 }
 
 export interface StackDetail {
@@ -400,6 +431,8 @@ export interface StackDetail {
   filesVisible: boolean
   /** Recent moves to other hosts, newest first. */
   moves: StackMove[]
+  /** The newest rollback point; null when there is nothing to roll back to. */
+  rollbackPoint: RollbackPointSummary | null
 }
 
 export interface StackMove {

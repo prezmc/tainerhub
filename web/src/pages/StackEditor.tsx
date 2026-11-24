@@ -10,6 +10,7 @@ import { useMe } from './AppLayout'
 import { HostSelect, useDefaultHost } from '../placement'
 import { MoveSection } from './MoveStack'
 import { AutoUpdateToggle } from '../autoupdatesui'
+import { RollbackButton, RolledBackBanner } from '../rollbackui'
 import { SourceNote, TakeoverPanel, takeoverReady, useTakeoverCheck, useTakeoverSource } from '../takeover'
 import {
   composeBuilds,
@@ -278,14 +279,16 @@ export function StackPage() {
             <StackStatusBadge s={s} />
             {s.pending && d.stack.deployedAt && <Badge tone="warn">changes not deployed</Badge>}
             {s.autoUpdate && <Badge tone="info">auto updates</Badge>}
+            {d.stack.rolledBackTo && <Badge tone="warn">rolled back</Badge>}
             <span className="text-ink-100/50">{d.stack.deployedAt ? `Deployed ${timeAgo(d.stack.deployedAt)}` : 'Never deployed'}</span>
           </span>
         }
       >
-        {operator && <LifecycleButtons s={s} takeover={takeover} />}
+        {operator && <LifecycleButtons d={d} s={s} takeover={takeover} />}
       </PageHeader>
 
       <div className="space-y-6">
+        <RolledBackBanner d={d} s={s} operator={operator} />
         {takeover && admin && <TakeoverDeploy d={d} s={s} />}
         <StackContainers s={s} />
         {admin && s.managed && <AutoUpdateToggle stackId={d.stack.id} hostId={d.stack.hostId} name={d.stack.name} />}
@@ -297,7 +300,7 @@ export function StackPage() {
   )
 }
 
-function LifecycleButtons({ s, takeover }: { s: StackSummary; takeover: boolean }) {
+function LifecycleButtons({ d, s, takeover }: { d: StackDetail; s: StackSummary; takeover: boolean }) {
   const { run, pending } = useStackAction()
   const openJob = useOpenJob()
   if (s.job) {
@@ -322,6 +325,7 @@ function LifecycleButtons({ s, takeover }: { s: StackSummary; takeover: boolean 
       {s.running > 0 && btn('stop', 'Stop', Square, 'ghost')}
       {has && s.running < s.containers && btn('start', 'Start', Play, 'ghost')}
       {has && btn('down', 'Down', ArrowDownToLine, 'ghost')}
+      {!takeover && <RollbackButton d={d} s={s} disabled={!!pending} />}
       {!takeover && btn('pull', 'Pull & redeploy', Download)}
       {!takeover && btn('deploy', 'Deploy', RefreshCw, 'primary')}
     </div>

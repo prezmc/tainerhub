@@ -180,7 +180,7 @@ The "update" badge on *containers* comes from a separate check: the hub has each
 
 ## A stack or container wasn't updated automatically
 
-Look at **Settings → Automatic updates**: each opted-in target shows its last result, and **Recent automatic updates** lists the last run's outcome for each, with the reason. Every update tried is also in the **Audit** log (`update.auto_applied`, `update.auto_failed`). The usual reasons:
+Look at **Settings → Automatic updates**: each opted-in target shows its last result, and **Recent automatic updates** lists the last run's outcome for each, with the reason. Every update tried is also in the **Audit** log (`update.auto_applied`, `update.auto_rolled_back`, `update.auto_failed`). The usual reasons:
 
 | What you see | Why |
 | --- | --- |
@@ -192,8 +192,16 @@ Look at **Settings → Automatic updates**: each opted-in target shows its last 
 | "it has saved changes that haven't been deployed" | Deploy (or discard) the edits yourself first: Pull & redeploy would deploy them too. |
 | "the window ended first" | Earlier updates used up the window. Make it longer under Settings. |
 | "the update check failed" | The host couldn't reach the registry. With a private image, check its login under **Settings → Container registries**. |
-| failed: "not running and healthy 2m0s after the update" | The new version didn't come up. Check the container's logs; for a stack, roll back by pinning the previous tag and deploying. |
+| failed: "not running and healthy 2m0s after the update" | The new version didn't come up. Check the container's logs. For a stack with automatic rollback off, use **Roll back** on its page. |
+| rolled back: "the update failed (…), so the previous images were put back" | The new version didn't come up, and the stack went back to its old images. Fix the cause, then use **Return to latest** on the stack's page. |
+| "it runs a rollback: use Return to latest on its page first" | The stack was rolled back (by hand or after a failed update); automatic updates leave it alone until it returns to the latest images. |
 | Nothing ran at all | The window is paused (the switch at the top of the card), or the hub was stopped through the whole window (missed windows aren't caught up). Check the days, time and time zone, or use **Run now**. |
+
+## Rollback says "the previous image is gone"
+
+A rollback needs the images the stack ran before. TainerHub keeps them by tagging them `tainerhub-rollback/<stack>:<service>`, and its own prunes leave them alone, but a `docker image prune -a` (or `docker rmi`) run on the host outside TainerHub removes them like any unused image. The rollback then stops before changing anything, and names the services whose image is missing.
+
+To go back anyway, pin the old version in the compose file (`image: app:1.4.2` instead of `app:1`) and deploy. To keep it from happening, prune from TainerHub's **Resources** page rather than with `docker image prune -a`; `docker images 'tainerhub-rollback/*'` lists the images TainerHub keeps.
 
 ## High CPU on a server
 

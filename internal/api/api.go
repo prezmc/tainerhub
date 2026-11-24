@@ -140,6 +140,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/remove-with-volumes", s.need("admin", s.removeWithVolumes))
 	// stack lifecycle on definitions an admin has saved
 	mux.Handle("POST /api/stacks/{sid}/{action}", s.need("operator", s.stackAction))
+	mux.Handle("GET /api/stacks/{sid}/rollback", s.need("viewer", s.getRollback))
+	mux.Handle("POST /api/stacks/{sid}/rollback", s.need("operator", s.rollbackStack))
 	mux.Handle("POST /api/stacks/takeover-check", s.need("admin", s.checkTakeover))
 	mux.Handle("GET /api/stacks/takeover-source", s.need("admin", s.takeoverSource))
 	mux.Handle("GET /api/stacks/{sid}/move", s.need("admin", s.moveCheck))
@@ -1068,7 +1070,18 @@ func (s *Server) listResources(kind string) http.HandlerFunc {
 func (s *Server) removeResource(kind string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid := r.PathValue("rid")
-		s.runOp(w, r, wire.Operation{Kind: kind, Target: rid}, rid)
+		op := wire.Operation{Kind: kind, Target: rid}
+		// An image kept for a stack's rollback is refused by the agent;
+		// ?force=1 removes it anyway, and only an admin may (the stack can
+		// no longer roll back to it).
+		if kind == wire.OpImageRemove && r.URL.Query().Get("force") == "1" {
+			if roleRank[userFrom(r).Role] < roleRank["admin"] {
+				jsonErr(w, http.StatusForbidden, "only an admin can remove an image kept for a stack's rollback")
+				return
+			}
+			op.Arg = wire.ImageRemoveForce
+		}
+		s.runOp(w, r, op, rid)
 	}
 }
 

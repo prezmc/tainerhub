@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/prezmc/tainerhub/internal/store"
 )
 
 // A job is a long-running stack operation. It runs on the hub independently
@@ -30,6 +32,10 @@ type job struct {
 	err      string
 	finished time.Time
 	changed  chan struct{} // closed and replaced on every update
+
+	// point is the rollback point recorded right before this job (deploys
+	// and rollbacks; nil if none was).
+	point *store.RollbackPoint
 }
 
 const (
