@@ -59,7 +59,7 @@ export function NewContainerPage() {
   const tags = useQuery({
     queryKey: ['hub-tags', image],
     queryFn: () => api<Tag[]>(`/api/dockerhub/tags?repo=${encodeURIComponent(image)}`),
-    enabled: isHubImage,
+    enabled: isHubImage && !/[:@]/.test(image), // no tag lookup once a tag is typed
     staleTime: 5 * 60_000,
     retry: false,
   })
@@ -87,7 +87,10 @@ export function NewContainerPage() {
     if (id !== hostId) patchAdv({ networks: [] })
   }
 
-  const fullImage = image ? `${image}:${tag || 'latest'}` : ''
+  // A tag or digest typed into the full name wins over the Version field, so
+  // "nginx:1.27-alpine" doesn't become "nginx:1.27-alpine:latest".
+  const typedTag = image.includes('@') || (image.split('/').pop() ?? '').includes(':')
+  const fullImage = image ? (typedTag ? image : `${image}:${tag || 'latest'}`) : ''
   const spec = { name, image: fullImage, restart, ports, env, vols, adv }
   const compose = useMemo(() => (image ? composeFor(spec) : ''), [image, tag, name, restart, ports, env, vols, adv]) // eslint-disable-line react-hooks/exhaustive-deps
   const host = hosts.find((h) => h.id === hostId)
@@ -241,7 +244,7 @@ export function NewContainerPage() {
                 list="tag-options"
                 value={tag}
                 onChange={(e) => setTag(e.target.value.trim())}
-                disabled={!image}
+                disabled={!image || typedTag}
                 className="mono w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none focus:ring-lime-400/60"
               />
               <datalist id="tag-options">
@@ -250,7 +253,13 @@ export function NewContainerPage() {
                 ))}
               </datalist>
               <span className="mt-1.5 block text-xs text-ink-100/50">
-                {tags.isFetching ? 'Loading versions…' : tags.data ? `${tags.data.length} recent versions to pick from` : 'Usually “latest” or a version number.'}
+                {typedTag
+                  ? 'Taken from the image name you typed.'
+                  : tags.isFetching
+                    ? 'Loading versions…'
+                    : tags.data
+                      ? `${tags.data.length} recent versions to pick from`
+                      : 'Usually “latest” or a version number.'}
               </span>
             </label>
             <div>
