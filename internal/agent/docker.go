@@ -59,6 +59,9 @@ type SocketDocker struct {
 	cpuMu   sync.Mutex
 	lastCPU map[string]cpuSample // container ID -> previous stats sample
 
+	cfgMu     sync.Mutex
+	cfgImages map[string]string // container ID -> image name it was created with (see configImage)
+
 	cg        *cgroupStats // reads stats from kernel files when the host's cgroups are mounted
 	useDocker atomic.Bool  // the hub asked for stats from Docker even so
 
@@ -227,8 +230,20 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 	if err := d.getJSON(ctx, "/containers/json", url.Values{"all": {"1"}}, &raw); err != nil {
 		return nil, err
 	}
+	live := make(map[string]bool, len(raw))
+	defer func() { d.forgetConfigImages(live) }()
 	out := make([]wire.Container, 0, len(raw))
 	for _, r := range raw {
+		live[r.ID] = true
+		// Once a newer image takes over the tag (another container pulled
+		// it), Docker lists this container's image as a bare ID. Use the name
+		// it was created from instead, so it still shows as nginx:1.27 and
+		// update checks and automatic updates still recognise it.
+		if looksLikeImageID(r.Image) {
+			if ref := d.configImage(ctx, r.ID); ref != "" {
+				r.Image = ref
+			}
+		}
 		name := r.ID[:min(12, len(r.ID))]
 		if len(r.Names) > 0 {
 			name = strings.TrimPrefix(r.Names[0], "/")
@@ -505,4 +520,56 @@ func sameHostPath(source, dir string) bool {
 	}
 	s := strings.TrimPrefix(source, "/host_mnt")
 	return s == dir || s == "/private"+dir || strings.TrimPrefix(s, "/private") == dir
+}
+
+// looksLikeImageID reports whether a container list's Image field is an image
+// ID ("sha256:…" or bare hex) rather than the name it was created from.
+func looksLikeImageID(s string) bool {
+	h := strings.TrimPrefix(s, "sha256:")
+	if len(h) != 12 && len(h) != 64 {
+		return false
+	}
+	for _, c := range h {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// configImage is the image reference a container was created with
+// (Config.Image), cached per container: it never changes for a container.
+func (d *SocketDocker) configImage(ctx context.Context, id string) string {
+	d.cfgMu.Lock()
+	ref, ok := d.cfgImages[id]
+	d.cfgMu.Unlock()
+	if ok {
+		return ref
+	}
+	var insp struct{ Config struct{ Image string } }
+	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/json", nil, &insp); err != nil {
+		return ""
+	}
+	ref = insp.Config.Image
+	if looksLikeImageID(ref) {
+		ref = "" // really created from an ID: nothing better to show
+	}
+	d.cfgMu.Lock()
+	if d.cfgImages == nil {
+		d.cfgImages = map[string]string{}
+	}
+	d.cfgImages[id] = ref
+	d.cfgMu.Unlock()
+	return ref
+}
+
+// forgetConfigImages drops cached names of containers that no longer exist.
+func (d *SocketDocker) forgetConfigImages(live map[string]bool) {
+	d.cfgMu.Lock()
+	defer d.cfgMu.Unlock()
+	for id := range d.cfgImages {
+		if !live[id] {
+			delete(d.cfgImages, id)
+		}
+	}
 }
