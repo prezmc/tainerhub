@@ -340,6 +340,18 @@ Each entry: `{"id", "at", "userId", "actor", "action", "target", "detail", "ip"}
 
 Both changes answer `409` when the address is set by `TAINERHUB_PUBLIC_URL`. See [HTTPS and passkeys](https-and-passkeys.md).
 
+#### Container registries
+
+| Method | Path | Role | Token | Notes |
+| --- | --- | --- | --- | --- |
+| GET | `/api/registries` | admin | yes | Saved logins: `id`, `registry`, `username`, `passwordSet`, `createdBy`, `createdAt`, `updatedAt`, `lastUsedAt`. Passwords are never returned. |
+| POST | `/api/registries` | admin | **no** | Add a login. Body: `registry` (e.g. `ghcr.io`, `myregistry.lan:5000`), `username`, `password`. Needs a recent sign-in. |
+| PUT | `/api/registries/{id}` | admin | **no** | Change `username` and/or `password` (empty keeps the saved one). Needs a recent sign-in. |
+| DELETE | `/api/registries/{id}` | admin | **no** | Remove a login. Needs a recent sign-in. |
+| POST | `/api/registries/{id}/test` | admin | **no** | Log in from a host to check it. Body: optional `hostId`. `{"ok", "host", "status"}` or an error. |
+
+See [Private registries](features.md#private-registries).
+
 ### Account
 
 | Method | Path | Role | Token | Notes |

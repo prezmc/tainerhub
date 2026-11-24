@@ -40,7 +40,7 @@ Start, stop, restart, update and remove containers on any host from one list. Gr
 </td>
 <td width="50%" valign="top">
 <h3>Run new containers from Docker Hub</h3>
-<p>Search Docker Hub, pick a version, add ports, variables and volumes, and deploy. TainerHub suggests the host with the most room.</p>
+<p>Search Docker Hub or use a private registry, then set ports, variables and volumes, plus networks, labels, limits, devices, health checks and more. TainerHub suggests the host with the most room and shows the compose file before it deploys.</p>
 <img src="docs/images/new-container.png" width="420" alt="The New container page: Docker Hub search results and settings, with the host nas marked as suggested">
 </td>
 </tr>

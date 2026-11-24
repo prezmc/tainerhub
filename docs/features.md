@@ -155,10 +155,20 @@ Only admins can open terminals, because a shell in a container sees everything i
 
 Admins can click **New container** on the Containers page to run an image from Docker Hub without writing a compose file:
 
-1. **Image.** Search Docker Hub, for example `nginx`, `plex` or `uptime-kuma`, or type an image name such as `ghcr.io/home-assistant/home-assistant`. Then pick a **Version (tag)**.
+1. **Image.** Search Docker Hub, for example `nginx`, `plex` or `uptime-kuma`, or type an image name such as `ghcr.io/home-assistant/home-assistant`. Then pick a **Version (tag)**, or include it in the name you type (`...:stable`). Images from private registries work once their login is saved under Settings → Container registries.
 2. **Settings.** Pick the **Host**, a **Name** and a **Restart** policy (`unless-stopped` by default). Hosts are listed with their recent CPU and memory use, and the one with the most room is marked **★ suggested** and chosen for you. Add **Ports** (host port, container port, tcp or udp), **Environment variables** and **Volumes**. A volume source can be a volume name like `data`, a host folder like `/srv/app`, or `./config` inside the stack's folder.
-3. Open **Show the compose file this creates** if you want to see what will run.
-4. Click **Deploy**.
+3. **Advanced** (optional, collapsed until you need it):
+   - **Networking:** network mode (default, host or none), join existing networks on the host or create a new one, hostname, extra hosts (`host-gateway` reaches the Docker host) and DNS servers.
+   - **Labels:** for example Traefik's `traefik.enable=true` and router rules.
+   - **Command & runtime:** command and entrypoint overrides (quotes are respected), working directory, user (`1000:1000`), an init process, a read-only root filesystem, a stop grace period and the time zone.
+   - **Resources:** memory and CPU limits, shared memory, devices (like `/dev/dri`) and all NVIDIA GPUs.
+   - **Health check:** the image's own, a custom command with its timings, or none.
+   - **Security:** add or drop Linux capabilities, no-new-privileges, and privileged mode (full root access to the host; it asks you to confirm).
+   - **Logging:** cap the log size, for example 10 MB × 3 files.
+   - **Env file:** paste `KEY=value` lines; they're saved as the stack's `.env`.
+4. Check the **Compose file** preview: it's exactly what will be deployed. Click **Deploy**.
+
+<img src="images/new-container-advanced.png" width="900" alt="The New container page with the Networking and Resources sections open and the compose preview">
 
 The container runs as a one-service stack with the name you chose. You can edit, redeploy or update it later from **Stacks**.
 
@@ -289,6 +299,8 @@ TainerHub won't let a stack take the name of the compose project it runs in itse
 - `.env` is stored in plain text in the hub's database. Protect and back up the database like the hub's `/data` volume.
 
 ### Private registries
+
+<img src="images/registries.png" width="760" alt="Settings: the Container registries card with one saved login">
 
 Admins save logins under **Settings → Container registries**: the registry's address (`ghcr.io`, `registry.gitlab.com`, `docker.io`, `myregistry.lan:5000`), a username and a password or access token. For GHCR, use a personal access token with `read:packages`. A Docker Hub login also lifts Docker Hub's anonymous pull rate limits.
 
