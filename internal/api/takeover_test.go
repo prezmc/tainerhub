@@ -124,8 +124,9 @@ func TestTakeoverReportCleanAndBlocked(t *testing.T) {
 	}
 	build := clean
 	build.Services = append(build.Services, wire.StackService{Name: "api", Build: true})
-	if !buildTakeoverReport(build, "").Blocked {
-		t.Error("build: not blocked")
+	// Builds work now, from the stack's files: confirm, don't block.
+	if rep := buildTakeoverReport(build, ""); rep.Blocked || issue(rep, "build:api") == nil || issue(rep, "build:api").Level != levelConfirm {
+		t.Errorf("build: %+v", rep)
 	}
 }
 

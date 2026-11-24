@@ -127,6 +127,9 @@ type StackSupport struct {
 	Dir            string `json:"dir"`
 	ComposeVersion string `json:"compose_version,omitempty"`
 	Error          string `json:"error,omitempty"`
+	// Files: the agent writes a stack's extra files (Dockerfile, scripts,
+	// config) next to its compose file. Older agents would silently drop them.
+	Files bool `json:"files,omitempty"`
 }
 
 type Container struct {
@@ -377,6 +380,10 @@ type StackCommand struct {
 	Env     string `json:"env,omitempty"`     // deploy only: contents of .env
 	Pull    bool   `json:"pull,omitempty"`    // deploy: pull newer images first
 	Volumes bool   `json:"volumes,omitempty"` // down / remove: also delete named volumes
+	// Files are the stack's other files (deploy only), written next to the
+	// compose file. Files from an earlier deploy that aren't listed any more
+	// are removed.
+	Files []StackFile `json:"files,omitempty"`
 	// Auth are logins for the private registries the compose file's images
 	// come from (deploy only). Used for this one command, never stored.
 	Auth []RegistryAuth `json:"auth,omitempty"`
@@ -418,6 +425,12 @@ func ValidStackCommand(c StackCommand) error {
 	}
 	if len(c.Auth) > 0 && c.Action != StackDeploy {
 		return errors.New("only a deploy pulls images: registry logins aren't allowed here")
+	}
+	if len(c.Files) > 0 && c.Action != StackDeploy {
+		return errors.New("only a deploy writes stack files")
+	}
+	if err := ValidStackFiles(c.Files); err != nil {
+		return err
 	}
 	return ValidRegistryAuth(c.Auth)
 }

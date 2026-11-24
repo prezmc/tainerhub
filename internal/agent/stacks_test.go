@@ -28,7 +28,10 @@ f=""; prev=""
 for a in "$@"; do [ "$prev" = "--file" ] && f="$a"; prev="$a"; done
 case "$*" in
   *"version --short"*) echo "5.8.0"; exit 0 ;;
-  *"config --quiet"*) if grep -q INVALID "$f"; then echo "yaml: line 1: did not find expected key" >&2; exit 15; fi; exit 0 ;;
+  *"config --format json"*)
+    if grep -q INVALID "$f"; then echo "yaml: line 1: did not find expected key" >&2; exit 15; fi
+    if grep -q "build:" "$f"; then echo '{"services":{"web":{"build":{"context":"."}}}}'; else echo '{"services":{"web":{"image":"nginx"}}}'; fi
+    exit 0 ;;
 esac
 echo "fake compose ok"
 `
@@ -79,7 +82,7 @@ func TestStackDeployLifecycle(t *testing.T) {
 	}
 	c := calls(t, logs)
 	last3 := strings.Join(c[len(c)-3:], "\n")
-	for _, want := range []string{"config --quiet", " pull", "up --detach --remove-orphans"} {
+	for _, want := range []string{"config --format json", " pull", "up --detach --remove-orphans"} {
 		if !strings.Contains(last3, want) {
 			t.Fatalf("expected %q among calls:\n%s", want, last3)
 		}

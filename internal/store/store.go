@@ -651,24 +651,48 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) 
 // ---------------- stacks ----------------
 
 type Stack struct {
-	ID           string     `json:"id"`
-	HostID       string     `json:"hostId"`
-	Name         string     `json:"name"`
-	Compose      string     `json:"compose"`
-	Env          string     `json:"env"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
-	UpdatedBy    string     `json:"updatedBy"`
-	DeployedAt   *time.Time `json:"deployedAt"`
-	DeployedHash string     `json:"-"`
+	ID           string      `json:"id"`
+	HostID       string      `json:"hostId"`
+	Name         string      `json:"name"`
+	Compose      string      `json:"compose"`
+	Env          string      `json:"env"`
+	Files        []StackFile `json:"files"` // other files: Dockerfile, scripts, config
+	CreatedAt    time.Time   `json:"createdAt"`
+	UpdatedAt    time.Time   `json:"updatedAt"`
+	UpdatedBy    string      `json:"updatedBy"`
+	DeployedAt   *time.Time  `json:"deployedAt"`
+	DeployedHash string      `json:"-"`
 }
 
-const stackCols = `id::text, host_id::text, name, compose, env, created_at, updated_at, updated_by, deployed_at, deployed_hash`
+// StackFile is one of a stack's extra files. Content is UTF-8 text.
+type StackFile struct {
+	Path       string `json:"path"`
+	Content    string `json:"content"`
+	Executable bool   `json:"executable,omitempty"`
+}
+
+const stackCols = `id::text, host_id::text, name, compose, env, files, created_at, updated_at, updated_by, deployed_at, deployed_hash`
 
 func scanStack(row pgx.Row) (Stack, error) {
 	var st Stack
-	err := row.Scan(&st.ID, &st.HostID, &st.Name, &st.Compose, &st.Env, &st.CreatedAt, &st.UpdatedAt, &st.UpdatedBy, &st.DeployedAt, &st.DeployedHash)
+	var files []byte
+	err := row.Scan(&st.ID, &st.HostID, &st.Name, &st.Compose, &st.Env, &files, &st.CreatedAt, &st.UpdatedAt, &st.UpdatedBy, &st.DeployedAt, &st.DeployedHash)
+	if err == nil {
+		err = json.Unmarshal(files, &st.Files)
+	}
+	if st.Files == nil {
+		st.Files = []StackFile{}
+	}
 	return st, notFound(err)
+}
+
+// filesJSON is the files column's value; never null.
+func filesJSON(files []StackFile) []byte {
+	if files == nil {
+		files = []StackFile{}
+	}
+	b, _ := json.Marshal(files)
+	return b
 }
 
 func (s *Store) ListStacks(ctx context.Context) ([]Stack, error) {
@@ -695,8 +719,8 @@ func (s *Store) GetStack(ctx context.Context, id string) (Stack, error) {
 // CreateStack returns ErrConflict if the host already has a stack with that name.
 func (s *Store) CreateStack(ctx context.Context, st Stack) (Stack, error) {
 	out, err := scanStack(s.db.QueryRow(ctx,
-		`INSERT INTO stacks (host_id, name, compose, env, updated_by) VALUES ($1::uuid, $2, $3, $4, $5) RETURNING `+stackCols,
-		st.HostID, st.Name, st.Compose, st.Env, st.UpdatedBy))
+		`INSERT INTO stacks (host_id, name, compose, env, files, updated_by) VALUES ($1::uuid, $2, $3, $4, $6::jsonb, $5) RETURNING `+stackCols,
+		st.HostID, st.Name, st.Compose, st.Env, st.UpdatedBy, filesJSON(st.Files)))
 	if isUniqueViolation(err) {
 		return Stack{}, ErrConflict
 	}
@@ -709,11 +733,11 @@ var ErrStale = errors.New("stack was changed by someone else")
 // UpdateStack saves new contents if the stack still has the updated_at the
 // caller loaded (optimistic locking), so two editors can't silently
 // overwrite each other.
-func (s *Store) UpdateStack(ctx context.Context, id, compose, env, by string, loadedAt time.Time) (Stack, error) {
+func (s *Store) UpdateStack(ctx context.Context, id, compose, env string, files []StackFile, by string, loadedAt time.Time) (Stack, error) {
 	st, err := scanStack(s.db.QueryRow(ctx,
-		`UPDATE stacks SET compose = $2, env = $3, updated_by = $4, updated_at = now()
+		`UPDATE stacks SET compose = $2, env = $3, files = $6::jsonb, updated_by = $4, updated_at = now()
 		 WHERE id = $1::uuid AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', $5::timestamptz) RETURNING `+stackCols,
-		id, compose, env, by, loadedAt))
+		id, compose, env, by, loadedAt, filesJSON(files)))
 	if errors.Is(err, ErrNotFound) {
 		if _, gerr := s.GetStack(ctx, id); gerr == nil {
 			return Stack{}, ErrStale

@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -41,11 +39,6 @@ type stackSummary struct {
 	DeployedAt *time.Time `json:"deployedAt,omitempty"`
 	Pending    bool       `json:"pending"` // saved changes that haven't been deployed
 	Job        *jobRef    `json:"job,omitempty"`
-}
-
-func stackHash(compose, env string) string {
-	h := sha256.Sum256([]byte(compose + "\x00" + env))
-	return hex.EncodeToString(h[:])
 }
 
 func summarize(sum *stackSummary, cs []wire.Container) {
@@ -112,7 +105,7 @@ func (s *Server) stackSummaries(ctx context.Context) ([]stackSummary, error) {
 		sum := stackSummary{
 			ID: st.ID, Name: st.Name, HostID: st.HostID, HostName: hostName[st.HostID], Managed: true, Online: online,
 			UpdatedAt: &updated, UpdatedBy: st.UpdatedBy, DeployedAt: st.DeployedAt,
-			Pending: st.DeployedHash != stackHash(st.Compose, st.Env),
+			Pending: st.DeployedHash != stackHash(st),
 		}
 		if j, ok := jobs[st.ID]; ok {
 			sum.Job = &j
@@ -185,10 +178,11 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 			sum = x
 		}
 	}
-	// Compose files and .env often hold passwords, like container env values.
+	// Compose files, .env and the other files often hold passwords, like
+	// container env values.
 	canView := roleRank[userFrom(r).Role] >= roleRank["admin"]
 	if !canView {
-		st.Compose, st.Env = "", ""
+		hideStackFiles(&st)
 	}
 	moves, err := s.Store.StackMoves(r.Context(), st.ID, 5)
 	if err != nil {
@@ -210,6 +204,9 @@ type stackInput struct {
 	Deploy    bool      `json:"deploy"`    // deploy right after saving
 	Adopt     bool      `json:"adopt"`     // take over a compose project already running on the host
 	Ack       string    `json:"ack"`       // confirms the takeover check's findings (first deploy of a taken-over project)
+	// Files are the stack's other files. Left out (null) on an update, the
+	// saved ones stay as they are.
+	Files *[]store.StackFile `json:"files"`
 }
 
 func (in *stackInput) validate() error {
@@ -226,12 +223,23 @@ func (in *stackInput) validate() error {
 	if len(in.Env) > wire.MaxEnvBytes {
 		return errors.New(".env is too large (max 64 KB)")
 	}
+	if in.Files != nil {
+		return wire.ValidStackFiles(wireFiles(*in.Files))
+	}
 	return nil
+}
+
+// files is the input's files, or keep when it has none.
+func (in *stackInput) files(keep []store.StackFile) []store.StackFile {
+	if in.Files == nil {
+		return keep
+	}
+	return *in.Files
 }
 
 func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 	var in stackInput
-	if !readJSONLimit(w, r, &in, 1<<20) {
+	if !readJSONLimit(w, r, &in, maxStackBody) {
 		return
 	}
 	if err := in.validate(); err != nil {
@@ -279,7 +287,7 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userFrom(r)
-	st, err := s.Store.CreateStack(r.Context(), store.Stack{HostID: h.ID, Name: in.Name, Compose: in.Compose, Env: in.Env, UpdatedBy: u.Username})
+	st, err := s.Store.CreateStack(r.Context(), store.Stack{HostID: h.ID, Name: in.Name, Compose: in.Compose, Env: in.Env, Files: in.files(nil), UpdatedBy: u.Username})
 	if errors.Is(err, store.ErrConflict) {
 		jsonErr(w, http.StatusConflict, "this host already has a stack called "+in.Name)
 		return
@@ -288,9 +296,12 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	details := map[string]string{"host": h.Name}
+	details := map[string]any{"host": h.Name}
 	if in.Adopt {
 		details["adopted"] = "yes"
+	}
+	if len(st.Files) > 0 {
+		details["files"] = filePaths(st.Files)
 	}
 	s.record(r, &u, "stack.created", h.Name+"/"+st.Name, details)
 	res := map[string]any{"stack": st}
@@ -329,7 +340,7 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in stackInput
-	if !readJSONLimit(w, r, &in, 1<<20) {
+	if !readJSONLimit(w, r, &in, maxStackBody) {
 		return
 	}
 	in.Name = st.Name // names are fixed: renaming would orphan the running project
@@ -341,7 +352,8 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userFrom(r)
-	st, err := s.Store.UpdateStack(r.Context(), st.ID, in.Compose, in.Env, u.Username, in.UpdatedAt)
+	before := st.Files
+	st, err := s.Store.UpdateStack(r.Context(), st.ID, in.Compose, in.Env, in.files(st.Files), u.Username, in.UpdatedAt)
 	if errors.Is(err, store.ErrStale) {
 		jsonErr(w, http.StatusConflict, "someone else saved this stack after you opened it; reload to see their changes")
 		return
@@ -350,7 +362,11 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 		s.notFoundOr(w, err)
 		return
 	}
-	s.record(r, &u, "stack.updated", s.hostName(r.Context(), st.HostID)+"/"+st.Name, nil)
+	var details map[string]any
+	if changed := changedFiles(before, st.Files); len(changed) > 0 {
+		details = map[string]any{"files": changed}
+	}
+	s.record(r, &u, "stack.updated", s.hostName(r.Context(), st.HostID)+"/"+st.Name, details)
 	res := map[string]any{"stack": st}
 	if in.Deploy {
 		if j, err := s.startStackJob(r, st, wire.StackDeploy, false, false); err != nil {
@@ -450,6 +466,8 @@ func (s *Server) startStackJob(r *http.Request, st store.Stack, action string, p
 		return nil, errors.New("this host's agent is too old for stacks; update it to the latest tainerhub-agent image")
 	} else if hello.Stacks.Error != "" {
 		return nil, errors.New("stacks aren't set up on this host: " + hello.Stacks.Error)
+	} else if action == wire.StackDeploy && len(st.Files) > 0 && !hello.Stacks.Files {
+		return nil, errors.New("this host's agent is too old for stacks with extra files (such as a Dockerfile); update it to the latest tainerhub-agent image")
 	}
 	u := userFrom(r)
 	j, ok := s.jobs.start(&job{StackID: st.ID, Stack: st.Name, HostID: st.HostID, Host: a.Name, Action: actionLabel(action, pull), Actor: u.Username})
@@ -459,8 +477,8 @@ func (s *Server) startStackJob(r *http.Request, st store.Stack, action string, p
 	cmd := wire.StackCommand{Action: action, Name: st.Name, Pull: pull, Volumes: volumes}
 	hash := ""
 	if action == wire.StackDeploy {
-		cmd.Compose, cmd.Env = st.Compose, st.Env
-		hash = stackHash(st.Compose, st.Env)
+		cmd.Compose, cmd.Env, cmd.Files = st.Compose, st.Env, wireFiles(st.Files)
+		hash = stackHash(st)
 	}
 	sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	ch, err := a.Stack(sendCtx, cmd)

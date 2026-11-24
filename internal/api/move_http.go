@@ -151,7 +151,7 @@ func (s *Server) startMove(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "choose a host")
 		return
 	}
-	if st.DeployedHash != stackHash(st.Compose, st.Env) {
+	if st.DeployedHash != stackHash(st) {
 		jsonErr(w, http.StatusConflict, "this stack has saved changes that aren't deployed; deploy them first, so what moves is what runs")
 		return
 	}

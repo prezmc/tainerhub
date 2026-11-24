@@ -68,7 +68,7 @@ func scanStackDir(dir string) (files int, size int64, partial bool) {
 	}
 	for _, e := range ents {
 		n := e.Name()
-		if n == composeFile || n == envFile || n == stagingDir || strings.HasPrefix(n, incomingPrefix) {
+		if n == composeFile || n == envFile || n == stagingDir || n == manifestFile || strings.HasPrefix(n, incomingPrefix) {
 			continue
 		}
 		files++

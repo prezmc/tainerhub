@@ -64,8 +64,8 @@ func buildTakeoverReport(p wire.StackPreview, compose string) takeoverReport {
 	for _, s := range p.Services {
 		newSvc[s.Name] = true
 		if s.Build {
-			add(takeoverIssue{Key: "build:" + s.Name, Level: levelBlock, Title: fmt.Sprintf("Service %s builds its image", s.Name),
-				Detail: "TainerHub stacks can't build images. Build and push it to a registry, then use image: instead."})
+			add(takeoverIssue{Key: "build:" + s.Name, Level: levelConfirm, Title: fmt.Sprintf("Service %s builds its image", s.Name),
+				Detail: "TainerHub builds it from the stack's own files. Add its Dockerfile and everything the build copies as files of the stack (Add file in the editor) before deploying, or the build fails."})
 		}
 	}
 	mounts := map[string]wire.StackMount{} // service + target -> new mount

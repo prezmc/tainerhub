@@ -1,4 +1,5 @@
 import type { PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
+import type { StackFile } from './stackfiles'
 
 // The WebAuthn helpers are only needed during a passkey ceremony: load them then.
 const webauthn = () => import('@simplewebauthn/browser')
@@ -372,12 +373,16 @@ export interface StackSummary {
   job?: { id: string; action: string }
 }
 
+export type { StackFile }
+
 export interface Stack {
   id: string
   hostId: string
   name: string
   compose: string
   env: string
+  /** Other files written next to compose.yaml (Dockerfile, scripts, config). Empty below admin. */
+  files: StackFile[]
   createdAt: string
   updatedAt: string
   updatedBy: string

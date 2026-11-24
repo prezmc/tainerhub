@@ -305,6 +305,12 @@ func TestImagesToPull(t *testing.T) {
 		"deploy": {&wire.Command{Stack: &wire.StackCommand{Action: wire.StackDeploy, Name: "s",
 			Compose: "services:\n  a:\n    image: ${REG}/a\n  b:\n    image: nginx\n", Env: "REG=registry.gitlab.com/g"}},
 			[]string{"registry.gitlab.com/g/a", "nginx"}},
+		"deploy with build": {&wire.Command{Stack: &wire.StackCommand{Action: wire.StackDeploy, Name: "s",
+			Compose: "services:\n  a:\n    build: .\n", Files: []wire.StackFile{
+				{Path: "Dockerfile", Content: []byte("ARG BASE=ghcr.io/org/base:1\nFROM ${BASE} AS b\nFROM b\n")},
+				{Path: "app.conf", Content: []byte("FROM quay.io/not/an-image\n")},
+			}}},
+			[]string{"ghcr.io/org/base:1"}},
 		"stop (no pull)": {&wire.Command{Stack: &wire.StackCommand{Action: wire.StackStop, Name: "s"}}, nil},
 	} {
 		got := imagesToPull(st, c.cmd)

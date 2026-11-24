@@ -379,8 +379,9 @@ func imagesToPull(st registry.Status, cmd *wire.Command) []string {
 		}
 	case cmd.Stack != nil:
 		if c := cmd.Stack; c.Action == wire.StackDeploy && len(c.Auth) == 0 {
-			// `up` pulls missing images even without Pull set.
-			return regcred.ComposeImages(c.Compose, c.Env)
+			// `up` pulls missing images even without Pull set, and a build
+			// pulls its Dockerfiles' base images.
+			return append(regcred.ComposeImages(c.Compose, c.Env), regcred.BuildImages(c.Compose, c.Env, c.Files)...)
 		}
 	}
 	return nil

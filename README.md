@@ -111,7 +111,7 @@ Agents read container CPU and memory from the kernel's cgroup files instead of a
 - **Each agent** keeps one long-lived HTTP/2 connection out to port 7443, secured with mutual TLS, and talks to Docker through the socket on its server. It accepts only a fixed list of operations, not raw Docker API calls.
 - **Port 7443 must reach the hub directly.** A reverse proxy would end the TLS connection and strip the agents' certificates. Agents trust the hub by its pinned private CA, not by hostname, so they can use an IP, a LAN name or a VPN address.
 - **The hub's own server** is managed by an agent in the hub's compose file. That agent is also how TainerHub updates itself.
-- **Stacks** are stored in Postgres. On deploy, the agent writes `compose.yaml` and `.env` to `/opt/tainerhub/stacks/<name>/` and runs the `docker compose` binary shipped in its image.
+- **Stacks** are stored in Postgres. On deploy, the agent writes `compose.yaml`, `.env` and the stack's other files (a Dockerfile, scripts, config) to `/opt/tainerhub/stacks/<name>/` and runs the `docker compose` binary shipped in its image.
 
 The proxy is optional. Without it, you open `http://<hub IP>:8585` on your LAN.
 
@@ -170,7 +170,7 @@ To add more servers, go to **Hosts → Add host** and paste the command it gives
 
 TainerHub is early software. Each green build of `main` is published as `ghcr.io/prezmc/tainerhub:latest` and `ghcr.io/prezmc/tainerhub-agent:latest`, for `linux/amd64` and `linux/arm64`.
 
-Not there yet: `build:` sections in stacks, metrics history and alerts.
+Not there yet: metrics history and alerts.
 
 ## Development
 

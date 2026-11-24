@@ -197,14 +197,31 @@ Admins: **Stacks → New stack**.
 
 Limits: the compose file can be up to 256 KB and `.env` up to 64 KB.
 
+### Other files: Dockerfiles, scripts, config
+
+A stack can carry more files than `compose.yaml` and `.env`: a `Dockerfile`, an `entrypoint.sh`, an `nginx.conf`, a `requirements.txt`. Click **Add file** next to the editor's tabs, type a name (folders are fine: `conf/nginx.conf`) or start from a template (**Dockerfile**, **entrypoint.sh**, **Empty file**). Each file gets its own tab, with **Rename**, **Delete** and an **Executable** box for scripts.
+
+The files are stored in TainerHub's database with the stack and written next to `compose.yaml` on every deploy, so `build: .`, `COPY entrypoint.sh /` and `./nginx.conf:/etc/nginx/nginx.conf:ro` work as they would in a folder of your own. TainerHub keeps a list of the files it wrote (`.tainerhub-files`): a file you delete from the stack is removed from the host on the next deploy, while anything else in the folder, such as data, is never touched. TainerHub refuses to write through a symbolic link.
+
+Limits: up to 30 files, each up to 256 KB and 2 MB together, text only (UTF-8). Names use letters, digits, `.`, `_` and `-`, at most 3 folders deep; `compose.yaml`, `.env` and names starting with `.tainerhub` are taken.
+
+### Building images
+
+When a service has a `build:` section, **Deploy** runs `docker compose up -d --build`, which rebuilds what changed (the build cache keeps that quick). **Pull & redeploy** runs `docker compose build --pull` (newer base images), then `docker compose pull --ignore-buildable` for the other services, then `up -d`. The build log streams into the same drawer as any deploy.
+
+- Builds use Docker's classic builder (the agent image has no buildx). Plain Dockerfiles work; BuildKit-only syntax such as `RUN --mount=...` or `COPY --link` doesn't.
+- Private base images (`FROM ghcr.io/you/base`) get the login saved under Settings → Container registries, like `image:` lines. TainerHub reads the `FROM` lines of files named `Dockerfile`, `*.Dockerfile` or `Dockerfile.*`, or named by `dockerfile:` in the compose file, filling in `ARG` defaults.
+- A Git repository works as a build context: `build: https://github.com/org/repo.git#main` (or `context:` with that URL). Docker fetches it on the host; private repositories aren't supported.
+- Images built on the host have no registry digest, so they never show an "update available" badge. Use **Pull & redeploy** to rebuild on newer base images.
+
 ### Deploying and running stacks
 
 On a stack's page, operators and admins have:
 
 | Button | What it does |
 | --- | --- |
-| **Deploy** | Runs `docker compose up -d` with the saved files. |
-| **Pull & redeploy** | Pulls newer images, then redeploys. This is how you update a stack's containers. |
+| **Deploy** | Runs `docker compose up -d` with the saved files (with `--build` when a service builds its image). |
+| **Pull & redeploy** | Pulls newer images (and rebuilds on newer base images), then redeploys. This is how you update a stack's containers. |
 | **Restart**, **Stop**, **Start** | Act on the stack's containers. |
 | **Down** | Runs `docker compose down`: stops and removes the stack's containers. |
 
@@ -214,11 +231,11 @@ The same actions are in the `…` menu on the Stacks list.
 
 Output streams live into a drawer at the bottom of the screen. A deploy keeps running if you close the tab or the connection drops. Click **View progress** to reopen it. The result goes into the audit log.
 
-When a stack is deployed, the agent writes `compose.yaml` and `.env` to `/opt/tainerhub/stacks/<name>/` on the host and runs the `docker compose` binary that ships inside the agent image. Relative paths such as `./data` in your compose file point into that folder.
+When a stack is deployed, the agent writes `compose.yaml`, `.env` and the stack's other files to `/opt/tainerhub/stacks/<name>/` on the host and runs the `docker compose` binary that ships inside the agent image. Relative paths such as `./data` in your compose file point into that folder.
 
 ### Editing a stack
 
-Admins see the compose file and `.env` on the stack's page, in two tabs. The editor shows who last edited it and how many lines you've changed.
+Admins see the compose file, `.env` and the stack's other files on the stack's page, one tab each. The editor shows who last edited it and how many lines you've changed.
 
 - **Save** keeps your changes without deploying. The stack then shows **changes not deployed**.
 - **Save & deploy** saves and deploys at once.
@@ -226,13 +243,13 @@ Admins see the compose file and `.env` on the stack's page, in two tabs. The edi
 
 Every deploy checks the new file with `docker compose config` first, so an invalid file never replaces a working one. If two admins edit the same stack at once, the second save is refused with a message to reload, instead of overwriting the first.
 
-Operators and viewers don't see the compose file or `.env`. They often hold passwords, and a compose file can mount the host's disks or run privileged containers. Writing one amounts to root on that host, so only admins can create, edit or delete stacks.
+Operators and viewers don't see the compose file, `.env` or the other files. They often hold passwords, and a compose file can mount the host's disks or run privileged containers. Writing one amounts to root on that host, so only admins can create, edit or delete stacks.
 
 ### Deleting a stack
 
 Admins: open the stack and click **Delete…** at the bottom. Type the stack's name to confirm, then choose:
 
-- **Delete stack**: runs `docker compose down` on the host and removes `compose.yaml` and `.env`. Tick **Also delete its named volumes** to delete those too; their data is gone for good. Anything else in the stack's folder, such as bind-mounted data, is left in place.
+- **Delete stack**: runs `docker compose down` on the host and removes `compose.yaml`, `.env` and the files TainerHub wrote. Tick **Also delete its named volumes** to delete those too; their data is gone for good. Anything else in the stack's folder, such as bind-mounted data, is left in place.
 - **Remove from TainerHub only**: forgets the stack without touching the host. Use this for a host that no longer exists.
 
 ### Moving a stack to another host
@@ -244,7 +261,7 @@ The move:
 1. Pulls the stack's images on the new host while the stack still runs. An image that doesn't exist for that host's CPU type stops the move here, before anything changes.
 2. Stops the stack on the old host. **It's down from here** until it runs on the new one; the dialog estimates for how long.
 3. Copies its named volumes and its folder (`/opt/tainerhub/stacks/<name>/`, which holds relative bind mounts such as `./data`) to the new host. The data goes through the hub; owners and permissions are kept.
-4. Deploys it on the new host and waits until every container that ran before runs and is healthy.
+4. Deploys it on the new host, with the stack's files from TainerHub's database, and waits until every container that ran before runs and is healthy. A service that builds its image is built there during this step (its image isn't pulled in step 1), so the downtime includes the build.
 5. Makes the new host the stack's host and removes the old containers. **The old copy of the data stays on the old host** as a backup: the stack's page shows it, with **Delete old copy**.
 
 If any step from 2 on fails, TainerHub removes what reached the new host and starts the stack on the old one again. The job's output shows each step.
@@ -282,7 +299,8 @@ While you edit, a **takeover check** compares the file with what the running con
 - **Services missing from the file**: their containers would be removed.
 - **Several compose files**: the project was started with an override file, say, which must be merged into the one you paste. (Not asked when TainerHub read and merged them itself.)
 - **Variables that aren't set**: TainerHub runs compose with only the pasted `.env`, not your shell's variables.
-- **Problems that stop the deploy**: a `build:` section, or a file compose rejects from the new folder (such as a relative `env_file` that isn't there).
+- **Services that build their image**: TainerHub builds them from the stack's own files, so add the Dockerfile and what it copies with **Add file** first.
+- **Problems that stop the deploy**: a file compose rejects from the new folder (such as a relative `env_file` that isn't there).
 
 **Save & deploy** stays disabled until there are no blocking problems and you tick that you've dealt with the rest. Changing the files runs the check again and asks again. If you save without deploying, the stack's page shows the same check, with **Deploy and take over**. Only admins can do that first deploy.
 
@@ -294,7 +312,7 @@ TainerHub won't let a stack take the name of the compose project it runs in itse
 
 ### Stack limits
 
-- `build:` sections aren't supported. Use images from a registry.
+- Builds use Docker's classic builder: no BuildKit-only Dockerfile syntax, and no private Git repositories as build contexts.
 - Private images need a login saved under Settings → Container registries (see below).
 - `.env` is stored in plain text in the hub's database. Protect and back up the database like the hub's `/data` volume.
 

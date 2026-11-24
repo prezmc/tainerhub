@@ -254,7 +254,7 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 | GET | `/api/stacks/{sid}` | viewer | yes | One managed stack. |
 | POST | `/api/stacks/{sid}/{action}` | operator | yes | `deploy`, `pull`, `start`, `stop`, `restart`, `down`. `202 {"jobId"}`. |
 | POST | `/api/stacks` | admin | yes | Create (and optionally deploy). `201`. |
-| PUT | `/api/stacks/{sid}` | admin | yes | Save the compose file and `.env`. |
+| PUT | `/api/stacks/{sid}` | admin | yes | Save the compose file, `.env` and other files. |
 | DELETE | `/api/stacks/{sid}` | admin | yes | Remove: `compose down`, then delete its files. `202 {"jobId"}`. |
 | GET | `/api/stacks/{sid}/move` | admin | yes | Check a move. Query: `host=<target id>`. |
 | POST | `/api/stacks/{sid}/move` | admin | yes | Start a move: `202 {"jobId", "moveId"}`. |
@@ -266,10 +266,10 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 | GET | `/api/dockerhub/tags` | admin | yes | Query: `repo` (`nginx`, `linuxserver/plex`). `[{"name", "updated", "size"}]`. |
 
 - **Stack summary** (list): `id` (empty for projects TainerHub doesn't manage), `name`, `hostId`, `hostName`, `managed`, `tainerhub` (TainerHub's own project), `online`, `status` (`running`, `partial`, `stopped`, `down`, `not deployed`, `unknown`), `containers`, `running`, `unhealthy`, `updatedAt`, `updatedBy`, `deployedAt`, `pending` (saved changes not yet deployed), `job` (`{"id", "action"}` while one runs).
-- **Get** returns `{"stack", "summary", "filesVisible", "moves"}`. `stack` has `id`, `hostId`, `name`, `compose`, `env`, `createdAt`, `updatedAt`, `updatedBy`, `deployedAt`. Below admin, `compose` and `env` are empty and `filesVisible` is `false`.
-- **Actions:** `pull` pulls newer images, then deploys. `deploy` writes the files and runs `up -d --remove-orphans`. The first deploy of a project taken over from outside TainerHub needs an admin and a body `{"ack": "..."}` from the takeover check.
-- **Create** body: `hostId`, `name` (lowercase letters, digits, `-`, `_`; up to 63), `compose` (up to 256 KB), `env` (up to 64 KB), `deploy` (bool), `adopt` (bool: take over a running project of that name), `ack`. Returns `{"stack", "jobId"?, "deployError"?}`. `409` if the name is taken on that host or belongs to a project started elsewhere (unless `adopt`).
-- **Update** body: `compose`, `env`, `updatedAt` (the `updatedAt` you loaded; `409` if someone saved since), `deploy`, `ack`. The name can't change. Returns `{"stack", "jobId"?, "deployError"?}`.
+- **Get** returns `{"stack", "summary", "filesVisible", "moves"}`. `stack` has `id`, `hostId`, `name`, `compose`, `env`, `files` (`[{"path", "content", "executable"}]`), `createdAt`, `updatedAt`, `updatedBy`, `deployedAt`. Below admin, `compose` and `env` are empty, `files` is `[]` and `filesVisible` is `false`.
+- **Actions:** `pull` pulls newer images, then deploys (with `build:` services: `build --pull`, `pull --ignore-buildable`, `up -d`). `deploy` writes the files and runs `up -d --remove-orphans` (adding `--build` when a service builds its image). The first deploy of a project taken over from outside TainerHub needs an admin and a body `{"ack": "..."}` from the takeover check.
+- **Create** body: `hostId`, `name` (lowercase letters, digits, `-`, `_`; up to 63), `compose` (up to 256 KB), `env` (up to 64 KB), `files` (optional: up to 30 `{"path", "content", "executable"}`, each up to 256 KB of UTF-8 text, 2 MB together; `path` relative with `/` between folders, letters, digits, `.`, `_`, `-`, at most 4 parts and 200 characters), `deploy` (bool), `adopt` (bool: take over a running project of that name), `ack`. Returns `{"stack", "jobId"?, "deployError"?}`. `409` if the name is taken on that host or belongs to a project started elsewhere (unless `adopt`).
+- **Update** body: `compose`, `env`, `files` (leave it out to keep the saved files; `[]` removes them all), `updatedAt` (the `updatedAt` you loaded; `409` if someone saved since), `deploy`, `ack`. The name can't change. Returns `{"stack", "jobId"?, "deployError"?}`.
 - **Delete** query: `volumes=1` also deletes its named volumes; `forget=1` only forgets the stack and leaves the host alone (`204`).
 - **Takeover check** body: `hostId`, `name`, `compose`, `env`. Returns `{"issues": [{"key", "level", "title", "detail", "fix"}], "ack", "blocked", "workingDir", "dir", "running"}`.
 - **Move** body: `hostId`, `outside`. `409` if the stack has undeployed changes, or with `{"error", "report"}` if the check finds blockers.

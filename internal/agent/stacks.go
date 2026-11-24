@@ -3,9 +3,11 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +21,8 @@ import (
 
 // Stack files inside each stack's folder. The folder itself may also hold the
 // stack's own data (relative bind mounts such as ./data), so the agent only
-// ever writes, replaces or deletes these two files.
+// ever writes, replaces or deletes these two files and the extra files its
+// manifest lists (see stackfiles.go).
 const (
 	composeFile = "compose.yaml"
 	envFile     = ".env"
@@ -52,7 +55,7 @@ type StackRunner struct {
 // Probe checks the compose binary and the stacks folder. The result is sent
 // to the hub in Hello so the UI can explain what is missing.
 func (r *StackRunner) Probe(ctx context.Context) wire.StackSupport {
-	sup := wire.StackSupport{Dir: r.Dir}
+	sup := wire.StackSupport{Dir: r.Dir, Files: true}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var out bytes.Buffer
@@ -176,15 +179,16 @@ func (r *StackRunner) Run(ctx context.Context, c wire.StackCommand, out io.Write
 	}
 	switch c.Action {
 	case wire.StackDeploy:
-		if err := run.writeFiles(ctx, c, dir, out); err != nil {
+		build, err := run.writeFiles(ctx, c, dir, out)
+		if err != nil {
 			return err
 		}
-		if c.Pull {
-			if err := run.compose(ctx, c.Name, dir, out, "pull"); err != nil {
+		for _, args := range deployCommands(c.Pull, build) {
+			if err := run.compose(ctx, c.Name, dir, out, args...); err != nil {
 				return err
 			}
 		}
-		return run.compose(ctx, c.Name, dir, out, "up", "--detach", "--remove-orphans")
+		return nil
 	case wire.StackStart, wire.StackStop, wire.StackRestart:
 		if !deployed {
 			return errors.New("this stack has not been deployed on this host yet")
@@ -206,6 +210,7 @@ func (r *StackRunner) Run(ctx context.Context, c wire.StackCommand, out io.Write
 				return err
 			}
 		}
+		removeAllManaged(dir, out)
 		_ = os.RemoveAll(filepath.Join(dir, stagingDir))
 		// Only removes the folder when empty: anything left is the stack's own data.
 		if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -224,34 +229,101 @@ func downArgs(c wire.StackCommand) []string {
 	return args
 }
 
+// deployCommands are the compose commands a deploy runs. With build:
+// services, a plain deploy rebuilds what changed (the build cache keeps
+// that quick); pull & redeploy also pulls newer base images for the builds,
+// and pulls only the images that aren't built here (compose would fail
+// trying to pull a name that only exists locally).
+func deployCommands(pull, build bool) [][]string {
+	var cmds [][]string
+	switch {
+	case pull && build:
+		cmds = append(cmds, []string{"build", "--pull"}, []string{"pull", "--ignore-buildable"})
+	case pull:
+		cmds = append(cmds, []string{"pull"})
+	}
+	up := []string{"up", "--detach", "--remove-orphans"}
+	if build && !pull {
+		up = append(up, "--build")
+	}
+	return append(cmds, up)
+}
+
 // writeFiles validates the new compose file and .env with `compose config`
-// in a staging folder, then moves them into place. A file that fails
-// validation never replaces a working one.
-func (cr composeRunner) writeFiles(ctx context.Context, c wire.StackCommand, dir string, out io.Writer) error {
+// in a staging folder, then moves them into place along with the stack's
+// extra files. A file that fails validation never replaces a working one.
+// It reports whether any service builds its image.
+func (cr composeRunner) writeFiles(ctx context.Context, c wire.StackCommand, dir string, out io.Writer) (build bool, err error) {
+	// The stack folder must be a real folder: writing through a symlink
+	// could put files anywhere on the host.
+	if st, err := os.Lstat(dir); err == nil && st.Mode()&fs.ModeSymlink != 0 {
+		return false, errSymlink{dir}
+	}
 	staging := filepath.Join(dir, stagingDir)
-	if err := os.MkdirAll(staging, 0o700); err != nil {
-		return err
+	_ = os.RemoveAll(staging) // left over from an interrupted deploy (RemoveAll doesn't follow a symlink)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return false, err
+	}
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		return false, err
 	}
 	defer os.RemoveAll(staging)
-	if err := os.WriteFile(filepath.Join(staging, composeFile), []byte(c.Compose), 0o600); err != nil {
-		return err
+	if err := writeNoFollow(filepath.Join(staging, composeFile), []byte(c.Compose), 0o600); err != nil {
+		return false, err
 	}
-	if err := os.WriteFile(filepath.Join(staging, envFile), []byte(c.Env), 0o600); err != nil {
-		return err
+	if err := writeNoFollow(filepath.Join(staging, envFile), []byte(c.Env), 0o600); err != nil {
+		return false, err
+	}
+	if err := stageFiles(staging, c.Files); err != nil {
+		return false, err
 	}
 	fmt.Fprintln(out, "Checking the compose file…")
-	err := cr.run(ctx, out, "--project-name", c.Name,
+	// The resolved file (stdout) holds .env's values, so it's read here
+	// and never shown; errors (stderr) go to the job output.
+	var resolved bytes.Buffer
+	err = cr.runSplit(ctx, &resolved, out, "--project-name", c.Name,
 		"--file", filepath.Join(staging, composeFile),
 		"--project-directory", dir,
 		"--env-file", filepath.Join(staging, envFile),
-		"config", "--quiet")
+		"config", "--format", "json")
 	if err != nil {
-		return fmt.Errorf("compose file is not valid: %w", err)
+		return false, fmt.Errorf("compose file is not valid: %w", err)
+	}
+	build = composeBuilds(resolved.Bytes())
+	if len(c.Files) > 0 {
+		fmt.Fprintf(out, "Writing %d stack file(s)…\n", len(c.Files))
+	}
+	old := readManifest(dir)
+	if err := placeFiles(staging, dir, c.Files); err != nil {
+		return false, err
 	}
 	if err := os.Rename(filepath.Join(staging, composeFile), filepath.Join(dir, composeFile)); err != nil {
-		return err
+		return false, err
 	}
-	return os.Rename(filepath.Join(staging, envFile), filepath.Join(dir, envFile))
+	if err := os.Rename(filepath.Join(staging, envFile), filepath.Join(dir, envFile)); err != nil {
+		return false, err
+	}
+	removeStale(dir, old, c.Files, out)
+	return build, nil
+}
+
+// composeBuilds reports whether a resolved compose file (`config --format
+// json`) has a service with a build: section.
+func composeBuilds(resolved []byte) bool {
+	var cfg struct {
+		Services map[string]struct {
+			Build json.RawMessage `json:"build"`
+		} `json:"services"`
+	}
+	if json.Unmarshal(resolved, &cfg) != nil {
+		return false
+	}
+	for _, s := range cfg.Services {
+		if len(s.Build) > 0 && string(s.Build) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // composeRunner runs compose for one stack command, with that command's
@@ -267,12 +339,17 @@ func (cr composeRunner) compose(ctx context.Context, name, dir string, out io.Wr
 }
 
 func (cr composeRunner) run(ctx context.Context, out io.Writer, args ...string) error {
+	return cr.runSplit(ctx, out, out, args...)
+}
+
+// runSplit is run with compose's stdout and stderr kept apart.
+func (cr composeRunner) runSplit(ctx context.Context, stdout, out io.Writer, args ...string) error {
 	r := cr.r
 	fmt.Fprintf(out, "$ docker compose %s\n", strings.Join(redactArgs(args, r.Dir), " "))
 	cmd := exec.CommandContext(ctx, r.Bin, args...)
 	cmd.Env = r.envWith(cr.dockerConfig)
 	cmd.Dir = r.Dir
-	cmd.Stdout, cmd.Stderr = out, out
+	cmd.Stdout, cmd.Stderr = stdout, out
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 20 * time.Second
 	err := cmd.Run()

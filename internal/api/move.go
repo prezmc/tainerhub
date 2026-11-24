@@ -18,10 +18,12 @@ import (
 //
 //  1. Check (no downtime): both hosts can copy data, the target has the
 //     room, ports and names free, and pulls the stack's images now so that
-//     downtime is only the copy.
+//     downtime is only the copy. Images built from the stack's files are
+//     built on the target by its deploy.
 //  2. Stop the stack on the source (containers kept, for a quick rollback).
 //  3. Copy its volumes and stack folder through the hub.
-//  4. Deploy on the target and wait until what ran before runs and is healthy.
+//  4. Deploy on the target (with the stack's files, from the hub) and wait
+//     until what ran before runs and is healthy.
 //  5. Make the target the stack's host, then remove the containers on the
 //     source. Its data stays there as a backup until an admin deletes it.
 //
@@ -141,10 +143,12 @@ func checkMove(ctx context.Context, env moveEnv, st store.Stack, to string, stac
 	// Services.
 	images := map[string]bool{}
 	for _, svc := range src.Services {
-		if svc.Build {
-			block("Service %s builds its image, which TainerHub stacks don't support.", svc.Name)
-		}
-		if svc.Image != "" {
+		switch {
+		case svc.Build:
+			// Its image only exists where it was built: the deploy on the
+			// target builds it again from the stack's files (kept on the hub).
+			warn("Service %s builds its image: it's built again on %s during the deploy, so the downtime includes the build.", svc.Name, toName)
+		case svc.Image != "":
 			images[svc.Image] = true
 		}
 		if svc.HostNetwork {
@@ -327,7 +331,7 @@ func (m *mover) run(ctx context.Context) (err error) {
 
 	// 3. Deploy on the target and wait for it.
 	m.say("Deploying on %s…", toName)
-	if err := m.env.stack(ctx, to, wire.StackCommand{Action: wire.StackDeploy, Name: m.st.Name, Compose: m.st.Compose, Env: m.st.Env}, m.out); err != nil {
+	if err := m.env.stack(ctx, to, wire.StackCommand{Action: wire.StackDeploy, Name: m.st.Name, Compose: m.st.Compose, Env: m.st.Env, Files: wireFiles(m.st.Files)}, m.out); err != nil {
 		return m.rollback(ctx, fmt.Errorf("deploy on %s: %w", toName, err))
 	}
 	if err := m.waitHealthy(ctx); err != nil {
@@ -343,7 +347,7 @@ func (m *mover) run(ctx context.Context) (err error) {
 			left.Dir = it.Name
 		}
 	}
-	if err := m.rec.commit(ctx, stackHash(m.st.Compose, m.st.Env), m.bytes, left); err != nil {
+	if err := m.rec.commit(ctx, stackHash(m.st), m.bytes, left); err != nil {
 		return m.rollback(ctx, fmt.Errorf("save the move: %w", err))
 	}
 	m.say("%s now runs on %s.", m.st.Name, toName)

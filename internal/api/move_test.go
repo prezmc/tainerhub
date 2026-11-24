@@ -30,8 +30,9 @@ type fakeEnv struct {
 	volumes map[string][]wire.Volume     // by host
 	disk    map[string]int64
 	calls   []string
-	failOn  map[string]error // call -> error
-	healthy bool             // the target's containers come up healthy after deploy
+	deploys []wire.StackCommand // deploy commands sent, by order
+	failOn  map[string]error    // call -> error
+	healthy bool                // the target's containers come up healthy after deploy
 }
 
 func newFakeEnv() *fakeEnv {
@@ -107,6 +108,11 @@ func (f *fakeEnv) stack(_ context.Context, id string, c wire.StackCommand, out i
 	fmt.Fprintf(out, "compose %s\n", c.Action)
 	if err := f.call(fmt.Sprintf("%s stack %s", who, c.Action)); err != nil {
 		return err
+	}
+	if c.Action == wire.StackDeploy {
+		f.mu.Lock()
+		f.deploys = append(f.deploys, c)
+		f.mu.Unlock()
 	}
 	if id == hostB && c.Action == wire.StackDeploy {
 		status := "Up 1 second"
@@ -209,11 +215,6 @@ func TestCheckMoveBlockers(t *testing.T) {
 		{"old agent", func(f *fakeEnv) { f.hellos[hostB].Transfer = false }, "too old"},
 		{"no room", func(f *fakeEnv) { f.disk[hostB] = 1 << 20 }, "doesn't have the room"},
 		{"not deployed", func(f *fakeEnv) { i := f.inspect[hostA]; i.Deployed = false; f.inspect[hostA] = i }, "isn't deployed"},
-		{"build", func(f *fakeEnv) {
-			i := f.inspect[hostA]
-			i.Services = append(i.Services, wire.StackService{Name: "x", Build: true})
-			f.inspect[hostA] = i
-		}, "builds its image"},
 		{"external missing", func(f *fakeEnv) {
 			i := f.inspect[hostA]
 			i.Volumes = append(i.Volumes, wire.StackVolume{Name: "shared", External: true, Exists: true})
@@ -350,5 +351,42 @@ func TestCopyLimitAndSizes(t *testing.T) {
 	}
 	if humanBytes(1536) != "1.5 KB" || humanBytes(5<<30) != "5.0 GB" || humanBytes(12) != "12 B" {
 		t.Errorf("%s %s %s", humanBytes(1536), humanBytes(5<<30), humanBytes(12))
+	}
+}
+
+// A stack that builds its image moves: its files go with the deploy on the
+// target (from the hub, not the copied folder), and the built image isn't
+// pulled there first.
+func TestMoveBuildStackCarriesFiles(t *testing.T) {
+	env := newFakeEnv()
+	i := env.inspect[hostA]
+	i.Services = append(i.Services, wire.StackService{Name: "api", Image: "app-api", Build: true})
+	env.inspect[hostA] = i
+	st := appStack
+	st.Compose = "services:\n  api:\n    build: .\n"
+	st.Files = []store.StackFile{{Path: "Dockerfile", Content: "FROM alpine\n"}, {Path: "run.sh", Content: "#!/bin/sh\n", Executable: true}}
+
+	rep := checkMove(context.Background(), env, st, hostB, nil)
+	if len(rep.Blockers) != 0 {
+		t.Fatalf("blocked: %v", rep.Blockers)
+	}
+	if strings.Contains(strings.Join(rep.Images, ","), "app-api") {
+		t.Errorf("a built image would be pulled: %v", rep.Images)
+	}
+	if !strings.Contains(strings.Join(rep.Warnings, " "), "built again on beta") {
+		t.Errorf("warnings: %v", rep.Warnings)
+	}
+	rec := &fakeRec{}
+	var out strings.Builder
+	m := &mover{env: env, rec: rec, out: &out, st: st, rep: rep, health: 200 * time.Millisecond, stable: 0, poll: 10 * time.Millisecond}
+	if err := m.run(context.Background()); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if len(env.deploys) != 1 {
+		t.Fatalf("deploys: %d", len(env.deploys))
+	}
+	got := env.deploys[0].Files
+	if len(got) != 2 || got[0].Path != "Dockerfile" || string(got[0].Content) != "FROM alpine\n" || !got[1].Executable {
+		t.Errorf("files sent to the target: %+v", got)
 	}
 }
