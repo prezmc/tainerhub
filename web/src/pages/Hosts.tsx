@@ -103,7 +103,7 @@ export function HostsPage() {
           Add a host to get a one-time join token and a ready-made compose file for its agent.
         </EmptyState>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {hosts.data?.map((h) => (
             <HostCard
               key={h.id}

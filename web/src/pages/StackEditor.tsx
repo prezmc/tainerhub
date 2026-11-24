@@ -111,7 +111,7 @@ export function NewStackPage() {
       <BackLink />
       <PageHeader title={adopting ? `Manage ${search.name}` : 'New stack'} subtitle="A compose file that TainerHub deploys to one host." />
       <form
-        className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]"
+        className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_340px]"
         onSubmit={(e) => {
           e.preventDefault()
           setError(null)

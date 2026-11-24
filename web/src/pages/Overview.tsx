@@ -55,7 +55,7 @@ export function OverviewPage() {
         </div>
       </section>
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,2.3fr)_minmax(320px,1fr)]">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,2.3fr)_minmax(320px,1fr)]">
         <Card className="p-5 sm:p-6">
           <div className="mb-5 flex flex-wrap items-center gap-2">
             <h2 className="mr-auto font-display text-xl font-bold text-white">Fleet map</h2>
@@ -76,7 +76,7 @@ export function OverviewPage() {
               </button>
             ))}
           </div>
-          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
             {hosts.map((h) => (
               <Rack key={h.id} host={h} containers={containers.filter((c) => c.hostId === h.id)} sort={sort} />
             ))}

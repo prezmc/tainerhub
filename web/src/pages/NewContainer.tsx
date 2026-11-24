@@ -150,7 +150,7 @@ export function NewContainerPage() {
       </Link>
       <PageHeader title="New container" subtitle="Find an image on Docker Hub, set it up, and run it on one of your hosts." />
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         {/* ---- image ---- */}
         <Card className="p-5">
           <h2 className="mb-3 font-display text-lg font-bold text-white">1. Image</h2>
@@ -223,7 +223,7 @@ export function NewContainerPage() {
         {/* ---- settings ---- */}
         <Card className={cx('space-y-5 p-5', !image && 'opacity-50')}>
           <h2 className="font-display text-lg font-bold text-white">2. Settings</h2>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Version (tag)</span>
               <input

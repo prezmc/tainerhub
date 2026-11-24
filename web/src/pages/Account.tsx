@@ -238,7 +238,7 @@ function PasswordCard({ hasPassword, onReauth }: { hasPassword: boolean; onReaut
         </div>
       </div>
       <form
-        className="grid gap-3 sm:grid-cols-3"
+        className="grid grid-cols-1 gap-3 sm:grid-cols-3"
         onSubmit={(e) => {
           e.preventDefault()
           if (next !== again) {
