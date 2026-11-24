@@ -523,6 +523,16 @@ func ownProjectOf(st registry.Status) string {
 	return ""
 }
 
+// containerNewer says whether container c runs an older image than the
+// registry's: the fresh check's answer for that container (it may be behind
+// even when the tag on disk is current), else the answer for its image.
+func containerNewer(c wire.Container, upd wire.ImageUpdates) bool {
+	if v, ok := upd.Containers[c.ID]; ok {
+		return v
+	}
+	return newer(c.Image, upd, c.UpdateAvailable)
+}
+
 // newer says whether ref has a newer image: the fresh check's answer, or
 // (when the check couldn't tell, e.g. the registry didn't answer) the
 // host's last known answer.
@@ -557,7 +567,7 @@ func planContainer(name string, st registry.Status, upd wire.ImageUpdates) (*wir
 		return nil, nil, "it now belongs to the compose project " + c.Project + ", which updates as a stack"
 	case !updateableRef(c.Image):
 		return nil, nil, "it uses a pinned image (by digest or ID)"
-	case !newer(c.Image, upd, c.UpdateAvailable):
+	case !containerNewer(*c, upd):
 		return nil, nil, "already up to date"
 	}
 	return c, []string{c.Image}, ""
@@ -595,22 +605,26 @@ func planStack(stack store.Stack, st registry.Status, upd wire.ImageUpdates, job
 		// on purpose; Pull & redeploy would undo that.
 		return nil, "it runs a rollback: use Return to latest on its page first"
 	}
+	// An image counts when any of the stack's containers runs an older one
+	// than the registry's; images only the compose file names (services not
+	// running) go by the image's own answer.
 	seen := map[string]bool{}
 	var refs []string
-	add := func(ref string, known bool) {
-		if seen[ref] || !updateableRef(ref) {
-			return
-		}
-		seen[ref] = true
-		if newer(ref, upd, known) {
-			refs = append(refs, ref)
+	for _, c := range cs {
+		if updateableRef(c.Image) && !seen[c.Image] && containerNewer(c, upd) {
+			seen[c.Image] = true
+			refs = append(refs, c.Image)
 		}
 	}
+	running := map[string]bool{}
 	for _, c := range cs {
-		add(c.Image, c.UpdateAvailable)
+		running[c.Image] = true
 	}
 	for _, ref := range composeImages(stack.Compose) {
-		add(ref, false)
+		if updateableRef(ref) && !seen[ref] && !running[ref] && newer(ref, upd, false) {
+			seen[ref] = true
+			refs = append(refs, ref)
+		}
 	}
 	sort.Strings(refs)
 	if len(refs) == 0 {

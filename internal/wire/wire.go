@@ -139,8 +139,9 @@ type Container struct {
 	ID      string            `json:"id"`
 	Name    string            `json:"name"`
 	Image   string            `json:"image"`
-	State   string            `json:"state"`  // running, exited, paused, restarting, created, dead
-	Status  string            `json:"status"` // human text, e.g. "Up 3 hours (healthy)"
+	ImageID string            `json:"imageId,omitempty"` // the image it runs (sha256:…)
+	State   string            `json:"state"`             // running, exited, paused, restarting, created, dead
+	Status  string            `json:"status"`            // human text, e.g. "Up 3 hours (healthy)"
 	Created int64             `json:"created"`
 	Project string            `json:"project,omitempty"` // compose project label
 	Ports   []string          `json:"ports,omitempty"`
@@ -152,8 +153,9 @@ type Container struct {
 	Mem      int64   `json:"mem,omitempty"`       // bytes, excluding page cache
 	MemLimit int64   `json:"mem_limit,omitempty"` // bytes
 
-	// UpdateAvailable: the registry has a newer image for this container's
-	// tag (checked every few hours; see OpImagesCheckUpdates).
+	// UpdateAvailable: the registry's image for this container's tag (as of
+	// the last check, every few hours; see OpImagesCheckUpdates) isn't the
+	// image this container runs.
 	UpdateAvailable bool `json:"update,omitempty"`
 }
 
@@ -993,8 +995,13 @@ type ImageUpdates struct {
 	Checked int64             `json:"checked"` // unix seconds
 	Images  map[string]bool   `json:"images"`
 	Errors  map[string]string `json:"errors,omitempty"`
-	// Remote is the registry's digest for each image found newer. The
-	// agent keeps it to tell when a container already runs that image.
+	// Containers says, per container ID, whether the image that container
+	// runs differs from the registry's: a container can be behind even when
+	// the tag on disk is current (another stack, or a plain pull, fetched it).
+	// Missing from older agents; then Images is all there is.
+	Containers map[string]bool `json:"containers,omitempty"`
+	// Remote is the registry's digest for each image checked. The agent
+	// keeps it to compare each container's image with.
 	Remote map[string]string `json:"-"`
 }
 

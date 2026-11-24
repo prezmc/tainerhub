@@ -175,6 +175,17 @@ func TestPlanStack(t *testing.T) {
 	if refs, skip := planStack(build, st, wire.ImageUpdates{Images: map[string]bool{"postgres:16": true}}, false); skip != "" || len(refs) != 1 {
 		t.Fatalf("builds with a pulled update: %v %q", refs, skip)
 	}
+	// The tag on disk is current (another stack pulled it), but this
+	// stack's container still runs the old image: it has an update.
+	shared := registry.Status{Containers: []wire.Container{{ID: "c9", Name: "app-app-1", Image: "app:1", Project: "app"}}}
+	behind := wire.ImageUpdates{Images: map[string]bool{"app:1": false, "redis:7": false}, Containers: map[string]bool{"c9": true}}
+	if refs, skip := planStack(app, shared, behind, false); skip != "" || strings.Join(refs, ",") != "app:1" {
+		t.Fatalf("container behind a current tag: %v %q", refs, skip)
+	}
+	current := wire.ImageUpdates{Images: map[string]bool{"app:1": true, "redis:7": false}, Containers: map[string]bool{"c9": false}}
+	if _, skip := planStack(app, shared, current, false); skip != "already up to date" {
+		t.Fatalf("container already on the registry's image: %q", skip)
+	}
 	own := deployedStack("tainerhub", "services:\n  hub:\n    image: tainerhub:latest\n")
 	if _, skip := planStack(own, st, upd, false); !strings.Contains(skip, "TainerHub's own") {
 		t.Fatalf("own project: %q", skip)

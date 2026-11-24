@@ -271,6 +271,7 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			ID:      r.ID,
 			Name:    name,
 			Image:   r.Image,
+			ImageID: r.ImageID,
 			State:   r.State,
 			Status:  r.Status,
 			Created: r.Created,

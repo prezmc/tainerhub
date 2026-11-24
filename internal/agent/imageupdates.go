@@ -57,13 +57,44 @@ func (d *SocketDocker) checkUpdates(ctx context.Context, auths []wire.RegistryAu
 				return
 			}
 			res.Images[ref] = newer
-			if newer {
-				res.Remote[ref] = remote
-			}
+			res.Remote[ref] = remote
 		}(ref)
 	}
 	wg.Wait()
+	// Then each container against the image it runs: one that runs an older
+	// image than the tag on disk is behind too.
+	res.Containers = map[string]bool{}
+	behind := map[string]bool{} // image ID + digest -> image lacks the digest
+	for _, c := range cs {
+		digest, ok := res.Remote[c.Image]
+		if !ok || c.ImageID == "" {
+			continue
+		}
+		key := c.ImageID + "|" + digest
+		b, known := behind[key]
+		if !known {
+			runs, err := d.imageHasDigest(ctx, c.ImageID, digest)
+			if err != nil {
+				continue // can't tell for this one: the tag's answer stands
+			}
+			b = !runs
+			behind[key] = b
+		}
+		res.Containers[c.ID] = b
+		if b {
+			res.Images[c.Image] = true
+		}
+	}
 	return res, nil
+}
+
+// imageHasDigest says whether image id is the registry image with digest.
+func (d *SocketDocker) imageHasDigest(ctx context.Context, id, digest string) (bool, error) {
+	var img struct{ RepoDigests []string }
+	if err := d.getJSON(ctx, "/images/"+url.PathEscape(id)+"/json", nil, &img); err != nil {
+		return false, err
+	}
+	return hasDigest(img.RepoDigests, digest), nil
 }
 
 // newerImage reports whether the registry's image for ref differs from the
@@ -104,8 +135,8 @@ func hasDigest(repoDigests []string, digest string) bool {
 // updateCache keeps the last check's results across reconnects.
 type updateCache struct {
 	mu      sync.Mutex
-	results map[string]bool   // image name -> the registry has a newer image
-	remote  map[string]string // image name -> the registry's digest, when newer
+	results map[string]bool   // image name -> some container or the tag is behind the registry
+	remote  map[string]string // image name -> the registry's digest
 	// runs remembers, per image ID and digest, whether that image is the
 	// registry's newer one (the answer never changes for an image ID).
 	runs map[string]bool
@@ -121,7 +152,7 @@ func (u *updateCache) set(r wire.ImageUpdates) {
 	remote := make(map[string]string, len(r.Remote))
 	for ref, newer := range r.Images {
 		next[ref] = newer
-		if newer && r.Remote[ref] != "" {
+		if r.Remote[ref] != "" {
 			remote[ref] = r.Remote[ref]
 		}
 	}
@@ -147,25 +178,25 @@ func (u *updateCache) has(ref string) bool {
 	return n
 }
 
-// updateFor says whether a container on image imageID (named ref) has an
-// update. The last check found the registry's image for ref newer; once the
-// container runs that image (after Pull & redeploy, a recreate or an
-// automatic update) it's up to date, without waiting for the next check.
+// updateFor says whether a container on image imageID (named ref) is behind
+// the registry: whether the image it runs is the registry's image for ref,
+// as of the last check. So the badge goes as soon as the container runs the
+// new image (Pull & redeploy, a recreate, an automatic update), and stays on
+// a container left on an old image even when the tag on disk is current.
 func (d *SocketDocker) updateFor(ctx context.Context, ref, imageID string) bool {
 	newer, digest := d.updates.newer(ref)
-	if !newer || digest == "" || imageID == "" {
-		return newer
+	if digest == "" || imageID == "" {
+		return newer // no digest (the check failed for it): the last answer
 	}
 	key := imageID + "|" + digest
 	d.updates.mu.Lock()
 	runs, known := d.updates.runs[key]
 	d.updates.mu.Unlock()
 	if !known {
-		var img struct{ RepoDigests []string }
-		if err := d.getJSON(ctx, "/images/"+url.PathEscape(imageID)+"/json", nil, &img); err != nil {
-			return true // can't tell: keep the check's answer
+		var err error
+		if runs, err = d.imageHasDigest(ctx, imageID, digest); err != nil {
+			return newer // can't tell: keep the check's answer
 		}
-		runs = hasDigest(img.RepoDigests, digest)
 		d.updates.mu.Lock()
 		if d.updates.runs != nil {
 			d.updates.runs[key] = runs
