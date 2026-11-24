@@ -178,8 +178,10 @@ func TestTokenRateLimited(t *testing.T) {
 	if _, _, err := s.Authenticate(bearerRequest("thp_wrong")); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("after the limit: %v, want ErrRateLimited", err)
 	}
-	if _, _, err := s.Authenticate(bearerRequest(good)); !errors.Is(err, ErrRateLimited) {
-		t.Fatalf("good token from a limited IP: %v, want ErrRateLimited", err)
+	// A valid token still works from the limited address: only bad attempts
+	// are limited, so nobody sharing the address can lock out real scripts.
+	if _, _, err := s.Authenticate(bearerRequest(good)); err != nil {
+		t.Fatalf("good token from a limited IP: %v, want it accepted", err)
 	}
 }
 

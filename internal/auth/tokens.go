@@ -99,19 +99,17 @@ func (s *Service) Authenticate(r *http.Request) (store.User, *TokenInfo, error) 
 // have 256 bits anyway, but this also stops a misconfigured script from
 // hammering the database).
 //
-// Unlike password sign-in it checks the limit first and only records a
-// failure after the fact, rather than reserving a slot up front: a script
-// making many parallel calls with a good token would otherwise use up the
-// slots and be refused. A few parallel bad guesses may slip past the limit
-// at once; that can't matter against a 256-bit token.
+// The limit only applies to bad tokens: a valid token always works, even
+// from an address that has been sending bad ones. Behind Docker's port
+// forwarding every client can share one address, and a 256-bit token can't
+// be guessed anyway, so blocking good tokens would only let anyone lock out
+// everyone's scripts. Bad attempts are counted, and once over the limit they
+// get 429 instead of 401.
 func (s *Service) userFromToken(r *http.Request, tok string) (store.User, *TokenInfo, error) {
 	ip := s.ClientIP(r)
-	if s.Limiter != nil && !s.Limiter.Allow(ip) {
-		return store.User{}, nil, ErrRateLimited
-	}
 	fail := func() (store.User, *TokenInfo, error) {
-		if s.Limiter != nil {
-			s.Limiter.Reserve(ip)
+		if s.Limiter != nil && !s.Limiter.Reserve(ip) {
+			return store.User{}, nil, ErrRateLimited
 		}
 		return store.User{}, nil, ErrBadToken
 	}
