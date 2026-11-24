@@ -23,16 +23,15 @@ const (
 
 // fakeEnv is two hosts that do what a move asks, recording each call.
 type fakeEnv struct {
-	mu       sync.Mutex
-	hellos   map[string]*wire.Hello
-	ctrs     map[string][]wire.Container
-	inspect  map[string]wire.StackInspect // by host
-	volumes  map[string][]wire.Volume     // by host
-	disk     map[string]int64
-	calls    []string
-	failOn   map[string]error // call -> error
-	healthy  bool             // the target's containers come up healthy after deploy
-	onDeploy func()
+	mu      sync.Mutex
+	hellos  map[string]*wire.Hello
+	ctrs    map[string][]wire.Container
+	inspect map[string]wire.StackInspect // by host
+	volumes map[string][]wire.Volume     // by host
+	disk    map[string]int64
+	calls   []string
+	failOn  map[string]error // call -> error
+	healthy bool             // the target's containers come up healthy after deploy
 }
 
 func newFakeEnv() *fakeEnv {
@@ -155,7 +154,7 @@ func (r *fakeRec) fail(_ context.Context, e string, _ int64, l *store.MoveLeftov
 
 var appStack = store.Stack{ID: "s1", HostID: hostA, Name: "app", Compose: "services: {}", Env: ""}
 
-func runMove(t *testing.T, env *fakeEnv) (*fakeRec, error, string) {
+func runMove(t *testing.T, env *fakeEnv) (*fakeRec, string, error) {
 	t.Helper()
 	rep := checkMove(context.Background(), env, appStack, hostB, nil)
 	if len(rep.Blockers) > 0 {
@@ -165,7 +164,7 @@ func runMove(t *testing.T, env *fakeEnv) (*fakeRec, error, string) {
 	var out strings.Builder
 	m := &mover{env: env, rec: rec, out: &out, st: appStack, rep: rep, health: 200 * time.Millisecond, stable: 0, poll: 10 * time.Millisecond}
 	err := m.run(context.Background())
-	return rec, err, out.String()
+	return rec, out.String(), err
 }
 
 func TestCheckMove(t *testing.T) {
@@ -249,7 +248,7 @@ func TestCheckMoveBlockers(t *testing.T) {
 
 func TestMoveSucceeds(t *testing.T) {
 	env := newFakeEnv()
-	rec, err, out := runMove(t, env)
+	rec, out, err := runMove(t, env)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -277,7 +276,7 @@ func TestMoveSucceeds(t *testing.T) {
 func TestMoveFailsBeforeStopping(t *testing.T) {
 	env := newFakeEnv()
 	env.failOn["B image.pull postgres:17"] = errors.New("no matching manifest for linux/arm64")
-	rec, err, out := runMove(t, env)
+	rec, out, err := runMove(t, env)
 	if err == nil || !strings.Contains(err.Error(), "no matching manifest") {
 		t.Fatalf("err = %v", err)
 	}
@@ -295,7 +294,7 @@ func TestMoveRollsBack(t *testing.T) {
 	t.Run("copy fails", func(t *testing.T) {
 		env := newFakeEnv()
 		env.failOn["copy stackdir app"] = errors.New("the transfer stalled")
-		rec, err, _ := runMove(t, env)
+		rec, _, err := runMove(t, env)
 		if err == nil || rec.committed {
 			t.Fatalf("err %v committed %v", err, rec.committed)
 		}
@@ -311,7 +310,7 @@ func TestMoveRollsBack(t *testing.T) {
 	t.Run("unhealthy", func(t *testing.T) {
 		env := newFakeEnv()
 		env.healthy = false
-		rec, err, _ := runMove(t, env)
+		rec, _, err := runMove(t, env)
 		if err == nil || !strings.Contains(err.Error(), "app-web-1 is unhealthy") {
 			t.Fatalf("err = %v", err)
 		}
@@ -323,7 +322,7 @@ func TestMoveRollsBack(t *testing.T) {
 		env := newFakeEnv()
 		env.healthy = false
 		env.failOn["B stack.remove_dir app"] = errors.New("permission denied")
-		rec, _, out := runMove(t, env)
+		rec, out, _ := runMove(t, env)
 		if rec.left == nil || rec.left.HostID != hostB || rec.left.Dir != "app" || len(rec.left.Volumes) != 0 {
 			t.Errorf("leftovers %+v", rec.left)
 		}
@@ -335,7 +334,7 @@ func TestMoveRollsBack(t *testing.T) {
 		env := newFakeEnv()
 		env.failOn["copy volume app_db"] = errors.New("boom")
 		env.failOn["A stack start"] = errors.New("no such image")
-		_, err, out := runMove(t, env)
+		_, out, err := runMove(t, env)
 		if err == nil || !strings.Contains(err.Error(), "starting it again on alpha failed") || !strings.Contains(out, "COULDN'T START IT AGAIN") {
 			t.Errorf("err %v\n%s", err, out)
 		}

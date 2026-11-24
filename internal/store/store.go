@@ -583,6 +583,24 @@ func (s *Store) Audit(ctx context.Context, e AuditEntry) error {
 	return err
 }
 
+// PurgeAudit deletes audit entries older than before and reports how many.
+// It works in small batches (found through the audit_log_at index) so a
+// large backlog never holds one long lock on the table.
+func (s *Store) PurgeAudit(ctx context.Context, before time.Time) (int64, error) {
+	const batch = 5000
+	var total int64
+	for {
+		tag, err := s.db.Exec(ctx, `DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE at < $1 LIMIT $2)`, before, batch)
+		if err != nil {
+			return total, err
+		}
+		total += tag.RowsAffected()
+		if tag.RowsAffected() < batch {
+			return total, nil
+		}
+	}
+}
+
 func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
 	rows, err := s.db.Query(ctx, `SELECT id, at, user_id::text, actor, action, target, detail, ip FROM audit_log ORDER BY at DESC LIMIT $1`, limit)
 	if err != nil {

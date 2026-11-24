@@ -120,7 +120,7 @@ func (r *fakeCtrRec) fail(_ context.Context, e string, _ int64, l *store.MoveLef
 	return nil
 }
 
-func runCtrMove(t *testing.T, env *fakeCtrEnv) (*fakeCtrRec, error, string) {
+func runCtrMove(t *testing.T, env *fakeCtrEnv) (*fakeCtrRec, string, error) {
 	t.Helper()
 	rep := checkContainerMove(context.Background(), env, hostA, "web", hostB)
 	if len(rep.Blockers) > 0 {
@@ -130,7 +130,7 @@ func runCtrMove(t *testing.T, env *fakeCtrEnv) (*fakeCtrRec, error, string) {
 	var out strings.Builder
 	m := &ctrMover{env: env, rec: rec, out: &out, rep: rep, health: 200 * time.Millisecond, stable: 0, poll: 10 * time.Millisecond}
 	err := m.run(context.Background())
-	return rec, err, out.String()
+	return rec, out.String(), err
 }
 
 func TestCheckContainerMove(t *testing.T) {
@@ -217,7 +217,7 @@ func TestCheckContainerMoveBlockers(t *testing.T) {
 func TestContainerMoveSucceeds(t *testing.T) {
 	env := newFakeCtrEnv()
 	env.exp.Volumes[0].UsedBy = []string{"backup"} // shared: stays on the source, not a leftover
-	rec, err, out := runCtrMove(t, env)
+	rec, out, err := runCtrMove(t, env)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -253,7 +253,7 @@ func TestContainerMoveStopped(t *testing.T) {
 	env.exp.Running = false
 	env.exp.Volumes = nil
 	env.failOn["A remove web-id"] = errors.New("busy")
-	rec, err, out := runCtrMove(t, env)
+	rec, out, err := runCtrMove(t, env)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -270,7 +270,7 @@ func TestContainerMoveStopped(t *testing.T) {
 func TestContainerMoveFailsBeforeStopping(t *testing.T) {
 	env := newFakeCtrEnv()
 	env.failOn["B image.pull nginx:1"] = errors.New("no matching manifest for linux/arm64")
-	rec, err, out := runCtrMove(t, env)
+	rec, out, err := runCtrMove(t, env)
 	if err == nil || !strings.Contains(err.Error(), "no matching manifest") {
 		t.Fatalf("err = %v", err)
 	}
@@ -283,7 +283,7 @@ func TestContainerMoveRollsBack(t *testing.T) {
 	t.Run("copy fails", func(t *testing.T) {
 		env := newFakeCtrEnv()
 		env.failOn["copy volume "+anonVol] = errors.New("the transfer stalled")
-		rec, err, _ := runCtrMove(t, env)
+		rec, _, err := runCtrMove(t, env)
 		if err == nil || rec.committed {
 			t.Fatalf("err %v done %v", err, rec.committed)
 		}
@@ -299,7 +299,7 @@ func TestContainerMoveRollsBack(t *testing.T) {
 	t.Run("unhealthy", func(t *testing.T) {
 		env := newFakeCtrEnv()
 		env.healthy = false
-		rec, err, _ := runCtrMove(t, env)
+		rec, _, err := runCtrMove(t, env)
 		if err == nil || !strings.Contains(err.Error(), "web is unhealthy") {
 			t.Fatalf("err = %v", err)
 		}
@@ -312,7 +312,7 @@ func TestContainerMoveRollsBack(t *testing.T) {
 	t.Run("create fails", func(t *testing.T) {
 		env := newFakeCtrEnv()
 		env.failOn["B container.create web start=true"] = errors.New("invalid mount config")
-		_, err, _ := runCtrMove(t, env)
+		_, _, err := runCtrMove(t, env)
 		if err == nil || !strings.Contains(err.Error(), "invalid mount config") {
 			t.Fatalf("err = %v", err)
 		}
@@ -330,7 +330,7 @@ func TestContainerMoveRollsBack(t *testing.T) {
 		env.healthy = false
 		env.failOn["B volume.remove web_data"] = errors.New("volume is in use")
 		env.failOn["B remove web"] = errors.New("no response")
-		rec, _, out := runCtrMove(t, env)
+		rec, out, _ := runCtrMove(t, env)
 		if rec.left == nil || rec.left.HostID != hostB || rec.left.Container != "web" || strings.Join(rec.left.Volumes, ",") != "web_data" {
 			t.Errorf("leftovers %+v", rec.left)
 		}
@@ -342,7 +342,7 @@ func TestContainerMoveRollsBack(t *testing.T) {
 		env := newFakeCtrEnv()
 		env.failOn["copy volume web_data"] = errors.New("stalled")
 		env.failOn["B volume.remove web_data"] = errors.New("docker: get web_data: no such volume")
-		rec, _, out := runCtrMove(t, env)
+		rec, out, _ := runCtrMove(t, env)
 		if rec.left != nil || strings.Contains(out, "Couldn't remove") {
 			t.Errorf("leftovers %+v\n%s", rec.left, out)
 		}
@@ -351,7 +351,7 @@ func TestContainerMoveRollsBack(t *testing.T) {
 		env := newFakeCtrEnv()
 		env.failOn["copy volume web_data"] = errors.New("boom")
 		env.failOn["A start web-id"] = errors.New("port already allocated")
-		_, err, out := runCtrMove(t, env)
+		_, out, err := runCtrMove(t, env)
 		if err == nil || !strings.Contains(err.Error(), "starting it again on alpha failed") || !strings.Contains(out, "COULDN'T START IT AGAIN") {
 			t.Errorf("err %v\n%s", err, out)
 		}
@@ -360,7 +360,7 @@ func TestContainerMoveRollsBack(t *testing.T) {
 		env := newFakeCtrEnv()
 		env.exp.Running = false
 		env.failOn["copy volume web_data"] = errors.New("boom")
-		_, err, out := runCtrMove(t, env)
+		_, out, err := runCtrMove(t, env)
 		if err == nil || strings.Contains(strings.Join(env.calls, "|"), "A start") || !strings.Contains(out, "(stopped)") {
 			t.Errorf("err %v calls %v\n%s", err, env.calls, out)
 		}

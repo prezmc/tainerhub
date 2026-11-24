@@ -114,6 +114,8 @@ TAINERHUB_DATABASE_URL=postgres://... TAINERHUB_DATA_DIR=./data ./bin/tainerhub
 
 Add `TAINERHUB_PUBLIC_URL=http://localhost:8585` to try passkeys, which work on `http://localhost` without HTTPS.
 
+The hub deletes audit log entries older than `TAINERHUB_AUDIT_RETENTION_DAYS` (default `365`; `0` keeps them forever).
+
 Set `TAINERHUB_PPROF_ADDR=127.0.0.1:6060` on the hub or an agent to serve Go's profiler there (`go tool pprof http://127.0.0.1:6060/debug/pprof/profile`). Inside a container, see [Troubleshooting: profiling](docs/troubleshooting.md#profiling-with-pprof).
 
 CI runs `govulncheck`, `npm audit` and a Trivy image scan on every push; images are published with an SBOM and provenance, and `:latest` only moves after the scan passes. See [Security: supply chain](docs/security.md#supply-chain).

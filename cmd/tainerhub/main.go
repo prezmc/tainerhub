@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,6 +41,9 @@ type config struct {
 	DatabaseURL string
 	DBPassword  string
 	Trusted     []netip.Prefix
+	// AuditRetention is how long audit log entries are kept; 0 keeps them
+	// forever.
+	AuditRetention time.Duration
 }
 
 func loadConfig() (config, error) {
@@ -61,6 +65,11 @@ func loadConfig() (config, error) {
 	c.AgentListen = envOr("TAINERHUB_AGENT_LISTEN", ":7443")
 	c.AgentAddr = os.Getenv("TAINERHUB_AGENT_ADDR") // optional: default is chosen per request
 	c.DataDir = envOr("TAINERHUB_DATA_DIR", "/data")
+	days, err := strconv.Atoi(envOr("TAINERHUB_AUDIT_RETENTION_DAYS", "365"))
+	if err != nil || days < 0 {
+		return c, fmt.Errorf("TAINERHUB_AUDIT_RETENTION_DAYS must be a whole number of days (0 keeps the audit log forever), got %q", os.Getenv("TAINERHUB_AUDIT_RETENTION_DAYS"))
+	}
+	c.AuditRetention = time.Duration(days) * 24 * time.Hour
 	c.DatabaseURL = os.Getenv("TAINERHUB_DATABASE_URL")
 	if c.DatabaseURL == "" {
 		return c, errors.New("TAINERHUB_DATABASE_URL is required, e.g. postgres://tainerhub@postgres:5432/tainerhub")
@@ -197,6 +206,7 @@ func run(log *slog.Logger) error {
 	}
 	go authSvc.RunSetupTokenLoop(ctx)
 	go authSvc.RunSessionJanitor(ctx)
+	go runAuditJanitor(ctx, st, cfg.AuditRetention, log)
 
 	apiSrv := &api.Server{Store: st, Auth: authSvc, Reg: reg, CA: ca, Log: log.With("component", "api"), AgentAddr: cfg.AgentAddr, Web: web.Dist(), DataDir: cfg.DataDir,
 		HTTPS: api.HTTPSConfig{EnvPublicURL: cfg.PublicURL, EnvTrusted: cfg.Trusted, HTTPPort: httpPort(cfg.HTTPAddr)}}
@@ -222,6 +232,13 @@ func run(log *slog.Logger) error {
 	// before it runs out on a hub that stays up that long.
 	gwSrv.TLSConfig.Certificates = nil
 	gwSrv.TLSConfig.GetCertificate = ca.RenewingServerCert(srvCert, cfg.AgentSANs, 30*24*time.Hour)
+	// Every request's context derives from this one, so cancelling it at
+	// shutdown ends long-lived streams promptly.
+	reqCtx, cancelRequests := context.WithCancel(context.Background())
+	defer cancelRequests()
+	baseCtx := func(net.Listener) context.Context { return reqCtx }
+	httpSrv.BaseContext = baseCtx
+	gwSrv.BaseContext = baseCtx
 
 	errc := make(chan error, 2)
 	go func() {
@@ -241,6 +258,10 @@ func run(log *slog.Logger) error {
 		}
 	}
 	log.Info("shutting down")
+	// Shutdown only waits for requests to finish; event streams and agent
+	// streams never do on their own, so end them first instead of sitting
+	// out the whole timeout.
+	cancelRequests()
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(sctx)

@@ -106,3 +106,53 @@ func TestFleetFeedSharedAcrossSubscribers(t *testing.T) {
 	awaitAll("connect")
 	check("connect", 3, 4)
 }
+
+// The periodic safety-net re-read publishes at most once per period, and
+// only when the payload actually changed.
+func TestFleetFeedPeriodicRefreshSkipsIdenticalFrames(t *testing.T) {
+	reg := registry.New()
+	var lists atomic.Int32
+	f := newFleetFeed(reg,
+		func(context.Context) ([]store.Host, error) {
+			lists.Add(1)
+			return []store.Host{{ID: "h1", Name: "one"}}, nil
+		},
+		func(hs []store.Host) any { return map[string]any{"hosts": hs} })
+	f.debounce = time.Millisecond
+	f.maxAge = 40 * time.Millisecond
+
+	release := f.subscribe()
+	defer release()
+	deadline := time.After(5 * time.Second)
+	first, next := f.current()
+	for first == nil {
+		select {
+		case <-next:
+		case <-deadline:
+			t.Fatal("no first frame")
+		}
+		first, next = f.current()
+	}
+
+	time.Sleep(10 * f.maxAge) // ~10 periodic re-reads
+	if frame, _ := f.current(); &frame[0] != &first[0] {
+		t.Fatal("an identical payload was republished")
+	}
+	select {
+	case <-next:
+		t.Fatal("streams were woken for an unchanged frame")
+	default:
+	}
+	// One host read per period, not two (the timeout used to poke as well).
+	if l := lists.Load(); l > 15 || l < 3 {
+		t.Fatalf("ListHosts=%d over ~10 periods", l)
+	}
+
+	// A second subscriber joining a running producer gets the current frame
+	// right away.
+	release2 := f.subscribe()
+	defer release2()
+	if frame, _ := f.current(); frame == nil {
+		t.Fatal("new subscriber got no frame")
+	}
+}

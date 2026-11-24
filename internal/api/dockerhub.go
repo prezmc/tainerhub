@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -64,6 +63,13 @@ func (c *hubCache) put(key string, data any) {
 	c.m[key] = hubCacheEntry{at: time.Now(), data: data}
 }
 
+// hubStatusError is shown to users as is, so it reads as a sentence with
+// "Docker Hub" capitalized rather than following Go's lowercase convention
+// for error strings.
+type hubStatusError string
+
+func (e hubStatusError) Error() string { return "Docker Hub answered " + string(e) }
+
 var hubClient = &http.Client{Timeout: 10 * time.Second}
 
 func hubGet(ctx context.Context, path string, q url.Values, v any) error {
@@ -86,7 +92,7 @@ func hubGet(ctx context.Context, path string, q url.Values, v any) error {
 		return errNotOnHub
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Docker Hub answered %s", resp.Status)
+		return hubStatusError(resp.Status)
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(v)
 }

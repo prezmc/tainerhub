@@ -33,14 +33,20 @@ type job struct {
 
 const (
 	maxJobOutput = 1 << 20
-	jobKeep      = time.Hour // finished jobs stay readable this long
+	// Once output passes maxJobOutput it's cut back to jobOutputKeep, so the
+	// copy happens once per 256 KiB of new output rather than on every write.
+	jobOutputKeep = 768 << 10
+	jobKeep       = time.Hour // finished jobs stay readable this long
 )
 
 func (j *job) append(b []byte) {
 	j.mu.Lock()
 	j.out = append(j.out, b...)
-	if over := len(j.out) - maxJobOutput; over > 0 {
-		j.out = append([]byte(nil), j.out[over:]...)
+	if len(j.out) > maxJobOutput {
+		over := len(j.out) - jobOutputKeep
+		// Slide the tail to the front in place; readers keep absolute
+		// offsets, so only dropped needs to move with it.
+		j.out = j.out[:copy(j.out, j.out[over:])]
 		j.dropped += over
 	}
 	j.wake()

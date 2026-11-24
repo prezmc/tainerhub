@@ -60,7 +60,7 @@ func TestJobOutputReplayAndTrim(t *testing.T) {
 	// output beyond the cap is trimmed from the front; offsets stay absolute
 	j.append([]byte(strings.Repeat("x", maxJobOutput)))
 	data, next, _, _, _ = j.read(0)
-	if len(data) != maxJobOutput || next != 11+maxJobOutput {
+	if len(data) != jobOutputKeep || next != 11+maxJobOutput {
 		t.Fatalf("after trim: len=%d next=%d", len(data), next)
 	}
 

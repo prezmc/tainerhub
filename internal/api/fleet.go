@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -82,13 +83,17 @@ func (f *fleetFeed) current() ([]byte, <-chan struct{}) {
 // hostsChanged marks the cached host rows out of date (a host was added,
 // renamed, removed or touched by its agent) and pushes a fresh update.
 func (f *fleetFeed) hostsChanged() {
-	f.mu.Lock()
-	f.stale = true
-	f.mu.Unlock()
+	f.markStale()
 	select {
 	case f.poke <- struct{}{}:
 	default:
 	}
+}
+
+func (f *fleetFeed) markStale() {
+	f.mu.Lock()
+	f.stale = true
+	f.mu.Unlock()
 }
 
 func (f *fleetFeed) run(ctx context.Context) {
@@ -104,7 +109,9 @@ func (f *fleetFeed) run(ctx context.Context) {
 		case <-changed:
 		case <-f.poke:
 		case <-time.After(wait):
-			f.hostsChanged()
+			// The loop is about to publish anyway; poking as well would
+			// queue a second, back-to-back publish.
+			f.markStale()
 		}
 		// Coalesce bursts (e.g. a compose stack starting) into one update.
 		select {
@@ -128,6 +135,13 @@ func (f *fleetFeed) publish(ctx context.Context) bool {
 	}
 	frame := fmt.Appendf(nil, "event: fleet\ndata: %s\n\n", b)
 	f.mu.Lock()
+	// Nothing changed (e.g. the periodic re-read): don't wake every stream to
+	// resend the same bytes. A new first subscriber clears frame, so it
+	// always gets one; later subscribers read the current frame directly.
+	if bytes.Equal(frame, f.frame) {
+		f.mu.Unlock()
+		return true
+	}
 	f.frame = frame
 	close(f.next)
 	f.next = make(chan struct{})
