@@ -52,7 +52,12 @@ type Server struct {
 	https        httpsState        // HTTPS setup tests
 	statsMu      sync.Mutex        // serializes stats source changes (one settings row)
 	fleetOnce    sync.Once
-	fleet        *fleetFeed // shared /api/events producer (see fleet.go)
+	fleet        *fleetFeed      // shared /api/events producer (see fleet.go)
+	logStreams   logStreamCounts // open log streams per user (see streams.go)
+
+	// Test hooks; nil uses s.Auth.
+	whoami     func(*http.Request) (store.User, error)
+	freshCheck func(*http.Request) error
 }
 
 var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
@@ -92,7 +97,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/events", s.need("viewer", s.events))
 	mux.Handle("GET /api/hosts", s.need("viewer", s.hosts))
 	mux.Handle("GET /api/placement", s.need("viewer", s.placement))
-	mux.Handle("GET /api/hosts/{id}/containers/{cid}/logs", s.need("viewer", s.logs))
+	mux.Handle("GET /api/hosts/{id}/containers/{cid}/logs", s.stream("viewer", s.logs))
 
 	mux.Handle("GET /api/hosts/{id}/containers/{cid}", s.need("viewer", s.inspect))
 	for _, kind := range []string{"images", "volumes", "networks"} {
@@ -100,7 +105,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux.Handle("GET /api/stacks", s.need("viewer", s.listStacks))
 	mux.Handle("GET /api/stacks/{sid}", s.need("viewer", s.getStack))
-	mux.Handle("GET /api/jobs/{jid}", s.need("viewer", s.jobStream))
+	mux.Handle("GET /api/jobs/{jid}", s.stream("viewer", s.jobStream))
 
 	// operators
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/{action}", s.need("operator", s.containerAction))
@@ -158,7 +163,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/settings/https", s.need("admin", s.httpsDisable))
 	// terminals: admin-only (a shell sees everything in the container)
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/exec", s.need("admin", s.execOpen))
-	mux.Handle("GET /api/exec/{sid}", s.need("admin", s.execStream))
+	mux.Handle("GET /api/exec/{sid}", s.stream("admin", s.execStream)) // ends if no longer admin
 	mux.Handle("POST /api/exec/{sid}/input", s.need("admin", s.execInput))
 	mux.Handle("POST /api/exec/{sid}/resize", s.need("admin", s.execResize))
 	mux.Handle("DELETE /api/exec/{sid}", s.need("admin", s.execClose))
@@ -197,7 +202,7 @@ func (s *Server) secure(next http.Handler) http.Handler {
 				jsonErr(w, http.StatusForbidden, "missing request header")
 				return
 			}
-			if o := r.Header.Get("Origin"); o != "" && !sameOrigin(o, origin, r) {
+			if o := r.Header.Get("Origin"); o != "" && !sameOrigin(o, origin, r, s.AgentAddr) {
 				jsonErr(w, http.StatusForbidden, "cross-origin request refused")
 				return
 			}
@@ -210,12 +215,72 @@ func (s *Server) secure(next http.Handler) http.Handler {
 // public URL, or the very host the request was sent to (e.g. the hub's LAN
 // address, which keeps working after HTTPS is set up). Either way a page on
 // another site can't make the request.
-func sameOrigin(o, configured string, r *http.Request) bool {
+//
+// "Origin equals Host" alone doesn't stop DNS rebinding, where an attacker's
+// name (evil.example) is made to resolve to the hub: the browser then sends
+// Origin and Host both as evil.example. So once a public URL is configured,
+// the Host must also be a name the hub knows (the public URL's host or one
+// in known), an IP literal, or a local-only name that public DNS can't hand
+// to an attacker (localhost, single-label names like "nas", and suffixes
+// such as .lan, .local, .home.arpa, .internal). Without a public URL there
+// is no list of the hub's names to check against, and plain-HTTP installs
+// are often reached by arbitrary internal names, so only Origin == Host is
+// required there; rebinding still gets no session, since cookies are bound
+// to the real host name.
+func sameOrigin(o, configured string, r *http.Request, known ...string) bool {
 	if configured != "" && o == configured {
 		return true
 	}
 	u, err := url.Parse(o)
-	return err == nil && u.Host != "" && strings.EqualFold(u.Host, r.Host)
+	if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) {
+		return false
+	}
+	if configured == "" {
+		return true
+	}
+	host := hostOnly(r.Host)
+	if c, err := url.Parse(configured); err == nil && strings.EqualFold(host, c.Hostname()) {
+		return true
+	}
+	for _, k := range known {
+		if k != "" && strings.EqualFold(host, hostOnly(k)) {
+			return true
+		}
+	}
+	return localOnlyHost(host)
+}
+
+// hostOnly strips the port (and IPv6 brackets) from a host[:port].
+func hostOnly(hp string) string {
+	if h, _, err := net.SplitHostPort(hp); err == nil {
+		return h
+	}
+	return strings.Trim(hp, "[]")
+}
+
+// localSuffixes are name suffixes that public DNS doesn't answer, so an
+// attacker can't point one at the hub from the internet.
+var localSuffixes = []string{".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".localhost", ".intranet", ".corp", ".private"}
+
+// localOnlyHost reports whether host is an IP literal or a name only a local
+// resolver could have answered (see sameOrigin).
+func localOnlyHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	if h == "localhost" || !strings.Contains(h, ".") {
+		return true
+	}
+	for _, s := range localSuffixes {
+		if strings.HasSuffix(h, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) need(role string, fn http.HandlerFunc) http.Handler {
@@ -420,7 +485,11 @@ func reauthErr(w http.ResponseWriter) {
 // fresh checks that the caller signed in recently, answering 403 if not.
 // Used for changes that would give a stolen session lasting access.
 func (s *Server) fresh(w http.ResponseWriter, r *http.Request) bool {
-	err := s.Auth.RequireFreshSignIn(r)
+	check := s.freshCheck
+	if check == nil {
+		check = s.Auth.RequireFreshSignIn
+	}
+	err := check(r)
 	switch {
 	case err == nil:
 		return true
@@ -617,6 +686,10 @@ func (s *Server) hostViewsFrom(hs []store.Host) []hostView {
 }
 
 func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
+	// A join token enrolls a machine that stays trusted: needs a fresh sign-in.
+	if !s.fresh(w, r) {
+		return
+	}
 	var in struct{ Name, AgentAddr string }
 	if !readJSON(w, r, &in) {
 		return
@@ -655,6 +728,10 @@ func (s *Server) newHostToken(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !validUUID(id) { // a malformed id would fail the ::uuid cast with a 500
 		jsonErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	// A join token enrolls a machine that stays trusted: needs a fresh sign-in.
+	if !s.fresh(w, r) {
 		return
 	}
 	h, err := s.Store.GetHost(r.Context(), id)
@@ -1104,6 +1181,12 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		tail = 300
 	}
 	follow := r.URL.Query().Get("follow") != "0"
+	u := userFrom(r)
+	if !s.logStreams.acquire(u.ID, a.HostID) {
+		jsonErr(w, http.StatusTooManyRequests, fmt.Sprintf("you have too many log streams open (at most %d per host, %d in all); close some and retry", maxLogStreamsPerHost, maxLogStreamsPerUser))
+		return
+	}
+	defer s.logStreams.release(u.ID, a.HostID)
 	ch, stop, err := a.Logs(r.Context(), wire.LogsRequest{ContainerID: r.PathValue("cid"), Tail: tail, Follow: follow})
 	if errors.Is(err, registry.ErrTooManyLogs) {
 		jsonErr(w, http.StatusTooManyRequests, err.Error())

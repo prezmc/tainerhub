@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"container/list"
 	"crypto/rand"
 	"crypto/subtle"
 	"math/big"
@@ -86,15 +87,34 @@ func normalizeCode(s string) string {
 // requests can't all slip past the check; a successful one gives its slot
 // back. IPv6 clients are counted per /64, since one host usually controls a
 // whole /64 and could otherwise rotate addresses freely.
+//
+// Memory is bounded and every call is O(1) amortized, even under a flood
+// from many addresses: clients are kept in a list ordered by their latest
+// attempt, so expired ones are always at the front and cleanup only touches
+// entries it removes (no scan of the whole table under the lock). Past
+// maxKeys clients the least recently active one is dropped.
 type Limiter struct {
-	mu     sync.Mutex
-	max    int
-	window time.Duration
-	fails  map[string][]time.Time
+	mu      sync.Mutex
+	max     int
+	window  time.Duration
+	maxKeys int
+	fails   map[string]*limitEntry
+	order   list.List // of *limitEntry, oldest latest-attempt first
+	now     func() time.Time
 }
 
+type limitEntry struct {
+	key     string
+	times   []time.Time // attempts in the window, oldest first
+	touched time.Time   // latest Reserve: its place in order
+	elem    *list.Element
+}
+
+// defaultLimiterKeys bounds the clients a Limiter tracks (a few MB at most).
+const defaultLimiterKeys = 50000
+
 func NewLimiter(max int, window time.Duration) *Limiter {
-	return &Limiter{max: max, window: window, fails: map[string][]time.Time{}}
+	return &Limiter{max: max, window: window, maxKeys: defaultLimiterKeys, fails: map[string]*limitEntry{}, now: time.Now}
 }
 
 // limitKey groups IPv6 addresses by their /64; anything else is used as is.
@@ -114,26 +134,47 @@ func limitKey(ip string) string {
 	return p.String()
 }
 
-func (l *Limiter) prune(key string, now time.Time) []time.Time {
-	ts := l.fails[key]
+func (l *Limiter) remove(e *limitEntry) {
+	l.order.Remove(e.elem)
+	delete(l.fails, e.key)
+}
+
+// sweep drops clients whose latest attempt has left the window. They sit at
+// the front of order, so this stops at the first live one.
+func (l *Limiter) sweep(now time.Time) {
+	for f := l.order.Front(); f != nil; f = l.order.Front() {
+		e := f.Value.(*limitEntry)
+		if now.Sub(e.touched) <= l.window {
+			return
+		}
+		l.remove(e)
+	}
+}
+
+// prune drops key's expired attempts and returns its entry (nil if none left).
+func (l *Limiter) prune(key string, now time.Time) *limitEntry {
+	e := l.fails[key]
+	if e == nil {
+		return nil
+	}
 	i := 0
-	for i < len(ts) && now.Sub(ts[i]) > l.window {
+	for i < len(e.times) && now.Sub(e.times[i]) > l.window {
 		i++
 	}
-	ts = ts[i:]
-	if len(ts) == 0 {
-		delete(l.fails, key)
-	} else {
-		l.fails[key] = ts
+	e.times = e.times[i:]
+	if len(e.times) == 0 {
+		l.remove(e)
+		return nil
 	}
-	return ts
+	return e
 }
 
 // Allow reports whether ip has attempts left, without using one.
 func (l *Limiter) Allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return len(l.prune(limitKey(ip), time.Now())) < l.max
+	e := l.prune(limitKey(ip), l.now())
+	return e == nil || len(e.times) < l.max
 }
 
 // Reserve uses one attempt for ip if any are left, in one step, and reports
@@ -141,17 +182,26 @@ func (l *Limiter) Allow(ip string) bool {
 func (l *Limiter) Reserve(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	key, now := limitKey(ip), time.Now()
-	if len(l.fails) > 50000 { // bound memory under a distributed flood
-		for k := range l.fails {
-			l.prune(k, now)
-		}
-	}
-	ts := l.prune(key, now)
-	if len(ts) >= l.max {
+	key, now := limitKey(ip), l.now()
+	l.sweep(now)
+	e := l.prune(key, now)
+	if e != nil && len(e.times) >= l.max {
 		return false
 	}
-	l.fails[key] = append(ts, now)
+	if e == nil {
+		// Bound memory under a distributed flood: forget the client whose
+		// latest attempt is oldest.
+		for len(l.fails) >= l.maxKeys && l.order.Len() > 0 {
+			l.remove(l.order.Front().Value.(*limitEntry))
+		}
+		e = &limitEntry{key: key}
+		e.elem = l.order.PushBack(e)
+		l.fails[key] = e
+	} else {
+		l.order.MoveToBack(e.elem)
+	}
+	e.times = append(e.times, now)
+	e.touched = now
 	return true
 }
 
@@ -159,14 +209,14 @@ func (l *Limiter) Reserve(ip string) bool {
 func (l *Limiter) Release(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	key := limitKey(ip)
-	ts := l.prune(key, time.Now())
-	if len(ts) == 0 {
+	e := l.prune(limitKey(ip), l.now())
+	if e == nil {
 		return
 	}
-	if len(ts) == 1 {
-		delete(l.fails, key)
+	if len(e.times) == 1 {
+		l.remove(e)
 		return
 	}
-	l.fails[key] = ts[:len(ts)-1]
+	// The entry keeps its place in order; at worst it is swept a little later.
+	e.times = e.times[:len(e.times)-1]
 }

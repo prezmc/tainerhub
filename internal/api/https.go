@@ -346,6 +346,10 @@ func (s *Server) httpsEnable(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusConflict, "the address is set by TAINERHUB_PUBLIC_URL in the hub's compose file; change it there")
 		return
 	}
+	// The hub's address decides where passkeys and cookies are valid.
+	if !s.fresh(w, r) {
+		return
+	}
 	var in struct {
 		URL     string
 		Trusted string // comma-separated IPs or CIDRs
@@ -396,6 +400,9 @@ func (s *Server) httpsEnable(w http.ResponseWriter, r *http.Request) {
 func (s *Server) httpsDisable(w http.ResponseWriter, r *http.Request) {
 	if s.HTTPS.EnvPublicURL != nil {
 		jsonErr(w, http.StatusConflict, "the address is set by TAINERHUB_PUBLIC_URL in the hub's compose file; change it there")
+		return
+	}
+	if !s.fresh(w, r) {
 		return
 	}
 	_ = s.Store.DeleteSetting(r.Context(), settingPublicURL)

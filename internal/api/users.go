@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +45,10 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
+	// An invite is lasting access: a stolen session must not mint them.
+	if !s.fresh(w, r) {
+		return
+	}
 	var in struct{ Role, Note string }
 	if !readJSON(w, r, &in) {
 		return
@@ -103,6 +108,9 @@ func (s *Server) manageTarget(w http.ResponseWriter, r *http.Request) (store.Use
 }
 
 func (s *Server) setRole(w http.ResponseWriter, r *http.Request) {
+	if !s.fresh(w, r) {
+		return
+	}
 	t, ok := s.manageTarget(w, r)
 	if !ok {
 		return
@@ -116,8 +124,8 @@ func (s *Server) setRole(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "pick a role: viewer, operator or admin (no higher than your own)")
 		return
 	}
-	if err := s.Store.SetUserRole(r.Context(), t.ID, in.Role); err != nil {
-		s.notFoundOr(w, err)
+	if err := s.Store.SetUserRole(r.Context(), t.ID, t.Role, in.Role, invitesRevokedFor(in.Role)); err != nil {
+		s.userChangeFailed(w, err)
 		return
 	}
 	s.record(r, &me, "user.role_changed", t.Username, map[string]string{"from": t.Role, "to": in.Role})
@@ -125,17 +133,45 @@ func (s *Server) setRole(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
+	if !s.fresh(w, r) {
+		return
+	}
 	t, ok := s.manageTarget(w, r)
 	if !ok {
 		return
 	}
-	if err := s.Store.DeleteUser(r.Context(), t.ID); err != nil {
-		s.notFoundOr(w, err)
+	if err := s.Store.DeleteUser(r.Context(), t.ID, t.Role); err != nil {
+		s.userChangeFailed(w, err)
 		return
 	}
 	me := userFrom(r)
 	s.record(r, &me, "user.removed", t.Username, map[string]string{"role": t.Role})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// invitesRevokedFor lists the roles of pending invites a user moved to role
+// loses: those ranked above the new role, or all of them once the user is no
+// longer an admin (only admins may invite at all).
+func invitesRevokedFor(role string) []string {
+	var out []string
+	for r := range assignable {
+		if roleRank[r] > roleRank[role] || roleRank[role] < roleRank["admin"] {
+			out = append(out, r)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// userChangeFailed answers a failed role change or removal. ErrChanged means
+// the user's role changed after manageTarget checked it, so that permission
+// check no longer holds: refuse rather than act on stale data.
+func (s *Server) userChangeFailed(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrChanged) {
+		jsonErr(w, http.StatusConflict, "this user's role just changed; reload and try again")
+		return
+	}
+	s.notFoundOr(w, err)
 }
 
 // ---- public: the invite page ----

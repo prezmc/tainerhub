@@ -82,6 +82,7 @@ type Service struct {
 // uses.
 type authStore interface {
 	UserByUsername(ctx context.Context, username string) (store.User, error)
+	UseRecoveryCode(ctx context.Context, userID string, hash []byte) (bool, error)
 	InviteRole(ctx context.Context, tokenHash []byte) (string, error)
 	AcceptInvite(ctx context.Context, tokenHash []byte, u store.User, recoveryHashes [][]byte) (store.User, error)
 	CreateSession(ctx context.Context, tokenHash []byte, userID string, expires time.Time, ip, ua string) error
@@ -576,6 +577,10 @@ func (rateLimitedError) Is(target error) bool { return target == ErrRateLimited 
 // errTooManyBegins: one client started too many passkey sign-ins.
 var errTooManyBegins error = rateLimitedError{"too many sign-in attempts; wait a minute and try again"}
 
+// noUserID is a well-formed user ID that no account has (IDs are random v4
+// UUIDs), used for the timing-equalising lookup below.
+const noUserID = "00000000-0000-0000-0000-000000000000"
+
 // LoginWithRecoveryCode signs in with a single-use code. Each code works once.
 func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, username, code string) (store.User, error) {
 	ip := s.ClientIP(r)
@@ -589,16 +594,19 @@ func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, 
 		}
 	}()
 	fail := errors.New("username or recovery code is wrong")
-	u, err := s.Store.UserByUsername(r.Context(), strings.TrimSpace(username))
-	if err != nil {
-		failed = true
-		return store.User{}, fail
+	u, err := s.st().UserByUsername(r.Context(), strings.TrimSpace(username))
+	known := err == nil
+	id := u.ID
+	if !known {
+		// Run the same code lookup for an unknown name (against an ID no user
+		// has), so the response time doesn't reveal which usernames exist.
+		id = noUserID
 	}
-	ok, err := s.Store.UseRecoveryCode(r.Context(), u.ID, Hash(normalizeCode(code)))
-	if err != nil {
+	ok, err := s.st().UseRecoveryCode(r.Context(), id, Hash(normalizeCode(code)))
+	if err != nil && known {
 		return store.User{}, err
 	}
-	if !ok {
+	if !known || !ok {
 		failed = true
 		return store.User{}, fail
 	}
