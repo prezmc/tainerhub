@@ -69,6 +69,9 @@ type Service struct {
 	setupExp   time.Time
 
 	Limiter *Limiter
+	// TokenLimiter counts bad API tokens separately, so a script with a
+	// mistyped token can't lock people out of signing in from that address.
+	TokenLimiter *Limiter
 	// beginLimiter caps how fast one client can start passkey ceremonies, so
 	// a single source can't fill the ceremony table and lock others out.
 	beginLimiter *Limiter
@@ -122,7 +125,7 @@ type webConfig struct {
 // New builds the auth service. publicURL may be nil: then only passwords and
 // recovery codes work.
 func New(st *store.Store, publicURL *url.URL, trusted []netip.Prefix, log *slog.Logger) (*Service, error) {
-	s := &Service{Store: st, Log: log, ceremonies: map[string]*ceremony{}, Limiter: NewLimiter(10, 15*time.Minute), beginLimiter: NewLimiter(beginPerMinute, time.Minute)}
+	s := &Service{Store: st, Log: log, ceremonies: map[string]*ceremony{}, Limiter: NewLimiter(10, 15*time.Minute), TokenLimiter: NewLimiter(20, 15*time.Minute), beginLimiter: NewLimiter(beginPerMinute, time.Minute)}
 	if err := s.Reconfigure(publicURL, trusted); err != nil {
 		return nil, err
 	}

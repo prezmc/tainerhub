@@ -108,7 +108,7 @@ func (s *Service) Authenticate(r *http.Request) (store.User, *TokenInfo, error) 
 func (s *Service) userFromToken(r *http.Request, tok string) (store.User, *TokenInfo, error) {
 	ip := s.ClientIP(r)
 	fail := func() (store.User, *TokenInfo, error) {
-		if s.Limiter != nil && !s.Limiter.Reserve(ip) {
+		if s.TokenLimiter != nil && !s.TokenLimiter.Reserve(ip) {
 			return store.User{}, nil, ErrRateLimited
 		}
 		return store.User{}, nil, ErrBadToken

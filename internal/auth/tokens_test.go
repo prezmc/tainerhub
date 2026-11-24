@@ -222,3 +222,16 @@ func TestTokenContext(t *testing.T) {
 		t.Fatalf("TokenFrom = %+v", got)
 	}
 }
+
+// Bad tokens have their own limit: they don't stop people signing in with a
+// password from the same address.
+func TestBadTokensDontBlockSignIn(t *testing.T) {
+	f := &fakeStore{}
+	s := testService(f, 3)
+	for i := 0; i < 5; i++ {
+		_, _, _ = s.Authenticate(bearerRequest("thp_wrong"))
+	}
+	if !s.Limiter.Allow("192.0.2.20") {
+		t.Fatal("bad API tokens used up the sign-in limit")
+	}
+}

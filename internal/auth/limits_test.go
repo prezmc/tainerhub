@@ -73,7 +73,7 @@ func (f *fakeStore) SetPasswordAndRevoke(ctx context.Context, userID, hash strin
 }
 
 func testService(f *fakeStore, max int) *Service {
-	return &Service{db: f, Limiter: NewLimiter(max, time.Minute), ceremonies: map[string]*ceremony{}}
+	return &Service{db: f, Limiter: NewLimiter(max, time.Minute), TokenLimiter: NewLimiter(max, time.Minute), ceremonies: map[string]*ceremony{}}
 }
 
 func signedInRequest(body string) *http.Request {
