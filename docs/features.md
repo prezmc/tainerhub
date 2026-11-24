@@ -281,12 +281,16 @@ When a stack is deployed, the agent writes `compose.yaml`, `.env` and the stack'
 
 Right before every **Deploy**, **Pull & redeploy**, automatic update and rollback, TainerHub records which image each of the stack's services runs: the image name, its ID and its registry digest. That's a rollback point; each stack keeps its last 5. Nothing is recorded while the stack isn't running (there's nothing to go back to), and the job's output says whether a point was recorded.
 
+<img src="images/rollback-preview.png" width="900" alt="The Roll back preview: for each service, the image it runs now and the image it goes back to, with when the point was recorded">
+
 **Roll back** on the stack's page (operators and admins) opens a preview: for each service, the image it runs now and the one it would go back to, with when and before what the point was recorded. Confirming runs a job like a deploy, with its output in the drawer:
 
 1. The agent checks that every old image is still on the host. If one is gone, the rollback stops before changing anything.
 2. It pins each service to its old image with an extra compose file, `.tainerhub-rollback.yaml` in the stack's folder (with `pull_policy: never`), and runs `docker compose up -d --remove-orphans` with it. Nothing is pulled or built, and the stack's own files, `.env` and its deployed version don't change: a rolled-back stack doesn't show **changes not deployed**. A service the compose file no longer has is skipped.
 
 The stack then stays **pinned**: the page shows *Running the images from &lt;time&gt; (rolled back)*, and **Restart**, **Stop**, **Start** and **Down** keep using the old images, so containers never flip back by surprise. **Return to latest** on that banner runs **Pull & redeploy**; any deploy runs without the pin and removes it once it worked. Rolling back again goes back one more step: to what ran before the rollback, which undoes it. The audit log records each rollback as `stack.rolled_back`, with the images.
+
+<img src="images/stack-rolled-back.png" width="900" alt="A rolled-back stack: the Rolled back badge and a banner saying which images it runs, with Return to latest">
 
 **Keeping the old images.** A rollback needs the old images, so the agent tags the newest point's images `tainerhub-rollback/<stack>:<service>` (and a rolled-back stack's images `tainerhub-rollback/<stack>/pinned:<service>`). TainerHub's own prunes leave those images alone, and Resources shows them as **kept for rollback of &lt;stack&gt;**; only an admin can remove one, after a warning. Deleting the stack drops its tags. A `docker image prune -a` run outside TainerHub doesn't know about them and can still remove the images; the next rollback then fails with "the previous image is gone" and changes nothing.
 
