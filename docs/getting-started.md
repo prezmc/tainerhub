@@ -115,6 +115,8 @@ The hub's own server shows up under **Hosts** a few seconds after the hub starts
 3. Check **Hub address for agents**. It is pre-filled with the address you opened TainerHub on, port 7443, for example `192.168.1.10:7443`. Change it if the new server should reach the hub by another IP or name. This must be the hub itself, never a reverse proxy.
 4. Click **Create join token**.
 
+Creating a join token needs a sign-in from the last 10 minutes. If yours is older, TainerHub asks you to **Sign in again** first and then brings you back.
+
 <img src="images/add-host.png" width="900" alt="The Add a host dialog">
 
 TainerHub shows a one-line command. Paste it into a terminal on the new server, as root or a user in the `docker` group:
@@ -257,9 +259,24 @@ cd ~/tainerhub && docker compose down -v    # stop it and delete all its data
 
 `down -v` deletes the database, the hub's certificate authority and the database password. There is no undo. Every agent would have to enroll again with a new hub.
 
+## Next: automate with the API
+
+Everything the UI does goes through a JSON API, and scripts can use it with an API token:
+
+1. Open the account menu → **Account & sign-in** → **API tokens**.
+2. Name the token, pick its **Access** (**viewer** is enough to read) and when it **Expires**, and click **Create**.
+3. Copy the token. It's shown once. The dialog includes a `curl` command to try it:
+
+```bash
+curl -H "Authorization: Bearer thp_..." http://192.168.1.10:8585/api/hosts
+```
+
+The [API guide](api.md) has every endpoint and ready-to-use recipes.
+
 ## Next steps
 
-- [Features](features.md): a tour of every page.
+- [Features](features.md): a tour of every page, including the phone layout.
+- [API](api.md): API tokens, every endpoint, and recipes.
 - [HTTPS and passkeys](https-and-passkeys.md): put TainerHub behind Nginx Proxy Manager.
 - [Security](security.md): how TainerHub protects your servers, and a hardening checklist.
 - [Troubleshooting](troubleshooting.md): common problems and fixes.

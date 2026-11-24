@@ -87,6 +87,8 @@ Then click **Turn on HTTPS**. It applies straight away, with no restart:
 
 You have 15 minutes after a passing test to turn it on. After that, test again.
 
+Turning HTTPS on or off needs a sign-in from the last 10 minutes. If yours is older, a **Sign in again to continue** dialog opens; sign in, and you come back to Settings.
+
 If the test didn't fully pass, the button is **Turn on anyway** instead. It asks you to confirm, because browsers may refuse passkeys on that address until the certificate is fixed.
 
 ## Step 5: Add passkeys

@@ -4,6 +4,8 @@ A tour of every page in TainerHub. The menu across the top has **Overview**, **C
 
 What you can do on each page depends on your role. See [Users and roles](#users-and-roles) for the full table.
 
+Scripts and tools can do the same through the API, with an [API token](#api-tokens). On a phone, see [Phone layout](#phone-layout).
+
 The dot next to the search box shows the live connection to the hub. Green means updates are arriving. Amber means the page is reconnecting.
 
 ## Overview
@@ -135,6 +137,8 @@ Press `Esc` to close the panel.
 
 Everyone, including viewers, can read logs. Press `Esc` to close the drawer.
 
+Each person can have up to 4 log streams open per host and 8 in all, across tabs and scripts. The next one fails with "you have too many log streams open"; close a logs drawer or a tab you no longer need. All users together can have up to 16 open per host.
+
 ### Terminal
 
 <img src="images/terminal.png" width="900" alt="A terminal into a container">
@@ -147,10 +151,12 @@ Only admins can open terminals, because a shell in a container sees everything i
 
 ### New container
 
-Admins can click **New container** to run an image from Docker Hub without writing a compose file:
+<img src="images/new-container.png" width="900" alt="The New container page: Docker Hub search results on the left, settings on the right with the host nas marked as suggested">
+
+Admins can click **New container** on the Containers page to run an image from Docker Hub without writing a compose file:
 
 1. **Image.** Search Docker Hub, for example `nginx`, `plex` or `uptime-kuma`, or type an image name such as `ghcr.io/home-assistant/home-assistant`. Then pick a **Version (tag)**.
-2. **Settings.** Pick the **Host**, a **Name** and a **Restart** policy (`unless-stopped` by default). Add **Ports** (host port, container port, tcp or udp), **Environment variables** and **Volumes**. A volume source can be a volume name like `data`, a host folder like `/srv/app`, or `./config` inside the stack's folder.
+2. **Settings.** Pick the **Host**, a **Name** and a **Restart** policy (`unless-stopped` by default). Hosts are listed with their recent CPU and memory use, and the one with the most room is marked **★ suggested** and chosen for you. Add **Ports** (host port, container port, tcp or udp), **Environment variables** and **Volumes**. A volume source can be a volume name like `data`, a host folder like `/srv/app`, or `./config` inside the stack's folder.
 3. Open **Show the compose file this creates** if you want to see what will run.
 4. Click **Deploy**.
 
@@ -193,6 +199,8 @@ On a stack's page, operators and admins have:
 | **Down** | Runs `docker compose down`: stops and removes the stack's containers. |
 
 The same actions are in the `…` menu on the Stacks list.
+
+<img src="images/stack-deploy.png" width="900" alt="Pull &amp; redeploy output streaming live in a drawer below the stack">
 
 Output streams live into a drawer at the bottom of the screen. A deploy keeps running if you close the tab or the connection drops. Click **View progress** to reopen it. The result goes into the audit log.
 
@@ -320,7 +328,7 @@ One card per server. A card shows:
 
 An offline host says **Agent offline. Check docker logs tainerhub-agent on this host.**
 
-Admins have **Add host** (see [Getting started](getting-started.md#4-add-your-other-servers)) and a `…` menu on each card:
+Admins have **Add host** (see [Getting started](getting-started.md#4-add-your-other-servers)) and a `…` menu on each card. Adding a host and making a new join token need a [recent sign-in](#the-fresh-sign-in-rule).
 
 - **Rename**: changes only how the host is shown in TainerHub. Nothing changes on the server.
 - **New join token**: makes a fresh one-hour, one-time install command, for example if the first one expired.
@@ -368,7 +376,11 @@ Admins manage users on the **Users** page.
 
 The link works once, for 24 hours. The person opens it, picks their own username and password (at least 10 characters), and gets their own recovery codes. Unused invites are listed under **Pending invites**, where you can **Revoke** them.
 
-**Changing a role or removing a user:** use the role menu or the remove button on their row. You can only manage users with a lower role than yours, and never your own account. Nobody can change or remove the owner.
+**Changing a role or removing a user:** use the role menu or the remove button on their row. You can only manage users with a lower role than yours, and never your own account. Nobody can change or remove the owner. Removing a user also removes their API tokens.
+
+Creating invites, changing roles and removing users need a [recent sign-in](#the-fresh-sign-in-rule). If yours is older than 10 minutes, a **Sign in again to continue** dialog opens.
+
+**API tokens.** Below the users, an **API tokens** section lists the tokens of users ranked below you, and your own (the owner sees every token), with their access level, expiry and when and from where they were last used. **Revoke** stops a token at once. This section only appears when there is at least one token to show.
 
 ### Roles
 
@@ -379,6 +391,7 @@ There are four roles. Each one can do everything the role below it can.
 | See hosts, containers, stacks, images, volumes, networks | ✓ | ✓ | ✓ | ✓ |
 | Read container logs | ✓ | ✓ | ✓ | ✓ |
 | Manage their own password, passkeys, recovery codes and sessions | ✓ | ✓ | ✓ | ✓ |
+| Create and revoke their own API tokens (up to their own role) | ✓ | ✓ | ✓ | ✓ |
 | Start, stop, restart, pause, kill and remove containers | | ✓ | ✓ | ✓ |
 | Pull & recreate containers; check for image updates | | ✓ | ✓ | ✓ |
 | Deploy, pull & redeploy, start, stop, restart and take down saved stacks | | ✓ | ✓ | ✓ |
@@ -392,6 +405,7 @@ There are four roles. Each one can do everything the role below it can.
 | Add, rename and remove hosts; create join tokens | | | ✓ | ✓ |
 | Update TainerHub and Docker Engine; switch container stats source | | | ✓ | ✓ |
 | Invite users, change roles, remove users (lower roles only) | | | ✓ | ✓ |
+| See and revoke API tokens of users with a lower role | | | ✓ | ✓ |
 | View the audit log | | | ✓ | ✓ |
 | Settings (HTTPS and passkeys) | | | ✓ | ✓ |
 | Manage admins | | | | ✓ |
@@ -406,7 +420,9 @@ To script TainerHub with an API token, see the [API guide](api.md).
 
 <img src="images/audit.png" width="900" alt="The Audit log page">
 
-Admins: **Audit**. Every sign-in and change, newest first, with **When**, **Who**, **Action**, **Target** and **IP**. Use **Filter** to search it. The page shows the most recent 200 entries.
+Admins: **Audit**. Every sign-in and change, newest first, with **When**, **Who**, **Action**, **Target** and **IP**. Use **Filter** to search it. The page shows the most recent 500 entries and refreshes itself every 15 seconds.
+
+Actions taken with an API token show **via token** and the token's name under the user, so you can tell a script from a person.
 
 It records, among other things:
 
@@ -418,28 +434,59 @@ It records, among other things:
 - hosts added, renamed, removed, enrolled and their certificates renewed,
 - TainerHub and Docker Engine updates, and stats-source changes,
 - users invited, joined, changed and removed,
+- API tokens created and revoked,
 - HTTPS turned on or off.
 
 Failed sign-ins that hit the rate limit aren't logged, so a flood of attempts can't fill the log.
 
+The hub deletes entries older than 365 days. To change that, set `TAINERHUB_AUDIT_RETENTION_DAYS` on the `tainerhub` service in the hub's compose file (`0` keeps them forever) and run `docker compose up -d`.
+
 ## Settings
 
-Admins: **Settings**. This page sets up HTTPS and passkeys through a reverse proxy. It shows whether HTTPS is on, whether passkeys are on, and walks you through four steps. See [HTTPS and passkeys](https-and-passkeys.md).
+Admins: **Settings**. This page sets up HTTPS and passkeys through a reverse proxy. It shows whether HTTPS is on, whether passkeys are on, and walks you through four steps. Turning HTTPS on or off needs a [recent sign-in](#the-fresh-sign-in-rule). See [HTTPS and passkeys](https-and-passkeys.md).
 
 ## Account
 
 <img src="images/account.png" width="900" alt="The Account & sign-in page">
 
-Everyone: account menu → **Account & sign-in**. It shows your username and role, and has four cards.
+Everyone: account menu → **Account & sign-in**. It shows your username and role, and has five cards.
 
 - **Password.** Change it with your current password and a new one (at least 10 characters). If you signed up with passkeys only, you can **Set password** to have a second way in. Changing or setting a password signs out your other sessions.
 - **Passkeys.** Add a passkey for each device you use: Touch ID, Windows Hello, your phone or a security key. Name it (for example "iPhone") and click **Add**. Passkeys need HTTPS, so this only works at TainerHub's secure address; on the LAN address the card links you there. You can remove a passkey, except your only one when you have no password.
 - **Recovery codes.** How many unused codes you have left. It turns red at 3 or fewer. **Generate new codes** makes 10 new ones and cancels the old ones at once.
-- **Other sessions.** **Sign out other sessions** signs out every other browser and device. This browser stays signed in.
+- **API tokens.** Tokens that let scripts and tools use the API as you. See [API tokens](#api-tokens) below.
+- **Other sessions.** **Sign out other sessions** signs out every other browser and device. This browser stays signed in. It doesn't revoke API tokens.
+
+### API tokens
+
+<img src="images/api-tokens.png" width="900" alt="The Your new API token dialog, with the token, a Copy token button and a curl example">
+
+Under **API tokens**, **Create a token**:
+
+1. Name it after what will use it, for example `grafana-dashboard` or `backup script`.
+2. Pick its **Access**: **viewer**, **operator** or **admin**, up to your own role (the owner can also pick **owner**).
+3. Pick when it **Expires**: **30 days**, **90 days** (the default), **1 year** or **Never**.
+4. Click **Create**.
+
+The dialog that opens shows the token (`thp_...`) **once**, with **Copy token** and a ready-made `curl` command to try it. Keep it in a password manager or your script's secrets.
+
+The list shows each token's name, the start of the token, its access level, when it expires, and when and from which IP address it was last used. The bin button (**Revoke**) revokes it after you confirm. Anything using it stops working at once.
+
+A token never does more than its access level, or more than your current role: if you're made a viewer, your admin token acts as a viewer. Tokens can't invite users, change roles, change how anyone signs in, add hosts, turn HTTPS on or off, or create or revoke tokens. Creating a token needs a [recent sign-in](#the-fresh-sign-in-rule).
+
+How to call the API, and every endpoint, is in the [API guide](api.md).
 
 ### The fresh sign-in rule
 
-Adding or removing a passkey, generating new recovery codes, and setting a first password all need a sign-in from **the last 10 minutes**. This stops someone who steals a session cookie from locking you out or adding their own way in. If your sign-in is older, the page shows **Sign in again to continue**. Click **Sign in again**, then try once more.
+Some changes could give someone who stole your session lasting access. They need a sign-in from **the last 10 minutes**:
+
+- adding or removing a passkey, generating new recovery codes, and setting a first password,
+- creating an API token,
+- creating invites, changing roles and removing users,
+- adding a host and making a new join token,
+- turning HTTPS on or off.
+
+If your sign-in is older, TainerHub asks you to **Sign in again to continue** (a card on the Account page, a dialog elsewhere). Click **Sign in again**, sign in, and you come back to the same page. Then try once more.
 
 Changing an existing password doesn't need this, because you type your current password instead.
 
@@ -464,3 +511,15 @@ Start with a verb to act on a container straight away:
 | `details grafana` | Opens grafana's details panel. |
 
 The verbs are `start`, `stop`, `restart`, `pause`, `unpause`, `kill`, `remove`, `logs` and `details`. Matching uses the host name, container name and image. Actions that change things ask for confirmation just like the buttons do, and need the operator role. Viewers can use `logs` and `details`.
+
+## Phone layout
+
+<p>
+<img src="images/mobile-overview.png" width="260" alt="The Overview page on a phone">
+&nbsp;&nbsp;
+<img src="images/mobile-containers.png" width="260" alt="The Containers page on a phone">
+</p>
+
+TainerHub works in a phone's browser. The menu becomes a row you can swipe sideways, below the logo and search box. Two-column pages such as the Overview stack into one column, and the Containers list shows each container as a card with its action buttons underneath.
+
+Everything else works as on a computer, including logs and the command palette (tap the search box). To reach TainerHub from outside your home network, use a VPN or [HTTPS through your reverse proxy](https-and-passkeys.md); don't expose port 8585.

@@ -17,13 +17,15 @@ This guide covers signing requests with a token, the conventions every endpoint 
 
 ### API tokens
 
-1. Open account menu → **Account & sign-in** → **API tokens** → **Create token**.
-2. Give it a name (for example `home-assistant`), an **access level** and an **expiry**:
-   - Access level: **viewer**, **operator** or **admin**, up to your own role.
-   - Expiry: **30 days**, **90 days**, **1 year** or **never**.
-3. Copy the token. It's shown **once**. It looks like `thp_` followed by 43 characters.
+1. Open account menu → **Account & sign-in** and scroll to **API tokens**.
+2. Under **Create a token**, give it a name (for example `home-assistant`), an **Access** level and when it **Expires**, then click **Create**:
+   - Access: **viewer**, **operator** or **admin**, up to your own role (the owner can also pick **owner**).
+   - Expires: **30 days**, **90 days**, **1 year** or **Never**.
+3. Copy the token. It's shown **once**. It looks like `thp_` followed by 43 characters. The dialog also gives you a `curl` command to try it.
 
-Admins can see and revoke every user's tokens on the **Users** page.
+Creating a token needs a browser sign-in from the last 10 minutes. If yours is older, TainerHub asks you to sign in again first.
+
+Admins can see and revoke the tokens of users with a lower role on the **Users** page. The owner sees every token.
 
 Send the token in the `Authorization` header:
 
@@ -38,8 +40,8 @@ How a token's access works:
 - **Effective access is the lower of the token's level and your current role.** An admin token belonging to someone who is later made a viewer acts as a viewer. Making them an admin again restores it.
 - **Removing a user removes their tokens.**
 - An expired or revoked token gets `401` with `{"error": "..."}`.
-- Repeated bad tokens from one IP address get `429` for a while.
-- Every action taken with a token appears in the **Audit** log with the token's name.
+- Bad tokens are counted per IP address, separately from sign-in attempts. After 20 in 15 minutes, further bad tokens get `429` until the window passes. A valid token always works, even from that address.
+- Every action taken with a token appears in the **Audit** log under its owner, marked **via token** with the token's name.
 
 ### What tokens can't do
 
@@ -313,8 +315,8 @@ Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. 
 | DELETE | `/api/invites/{iid}` | admin | yes | Revoke a pending invite. `204`. |
 | PUT | `/api/users/{uid}/role` | admin | **no** | Change a role. |
 | DELETE | `/api/users/{uid}` | admin | **no** | Remove a user. |
-| GET | `/api/tokens` | admin | yes | Every user's API tokens. |
-| DELETE | `/api/tokens/{id}` | admin | **no** | Revoke anyone's API token. |
+| GET | `/api/tokens` | admin | yes | API tokens of users with a lower role, and your own (the owner sees all). |
+| DELETE | `/api/tokens/{id}` | admin | **no** | Revoke one of those tokens. |
 
 - **User:** `id`, `username`, `displayName`, `role` (`viewer`, `operator`, `admin`, `owner`), `createdAt`, `hasPassword`, `manageable` (you may change or remove them). **Invite:** `id`, `role`, `note`, `createdBy`, `createdAt`, `expiresAt`, `usedAt`.
 - You can't manage yourself, the owner, or anyone of your rank or above, nor give a role above your own.
@@ -354,7 +356,7 @@ Both changes answer `409` when the address is set by `TAINERHUB_PUBLIC_URL`. See
 | DELETE | `/api/me/tokens/{id}` | viewer | **no** | Revoke one of your tokens. |
 
 - **API token:** `id`, `name`, `prefix` (the start of the secret, to tell tokens apart), `role` (its access level), `createdAt`, `expiresAt` (`null`: never), `lastUsedAt`, `lastUsedIp`, `userId`. `GET /api/tokens` adds `username` and `userRole`.
-- `POST /api/me/tokens` body: `name` (up to 60 characters), `role` (`viewer`, `operator` or `admin`, up to your own), `expiresInDays` (the UI offers 30, 90 or 365; `0` for never).
+- `POST /api/me/tokens` body: `name` (up to 60 characters), `role` (`viewer`, `operator`, `admin` or `owner`, up to your own), `expiresInDays` (1 to 3650; the UI offers 30, 90 or 365; `0` for never).
 
 Passkey and recovery-code changes, `POST /api/me/tokens`, adding a host, issuing a join token, invites, role changes, removing users and HTTPS changes need a sign-in from the last 10 minutes; otherwise they answer `403 {"error": ..., "reauth": true}`. See [the fresh sign-in rule](features.md#the-fresh-sign-in-rule).
 

@@ -117,9 +117,37 @@ Also check:
 
 To set HTTPS up, see [HTTPS and passkeys](https-and-passkeys.md).
 
-## "Sign in again to continue" on the Account page
+## "Sign in again to continue"
 
-Adding or removing a passkey, generating new recovery codes and setting a first password need a sign-in from the last 10 minutes. Click **Sign in again**, sign in, and try once more.
+Some changes need a sign-in from the last 10 minutes: passkeys, recovery codes and setting a first password; creating an API token; invites, role changes and removing users; adding a host or making a new join token; and turning HTTPS on or off. On the Account page this shows as a card, elsewhere as a dialog.
+
+Click **Sign in again**. TainerHub signs you out, shows the sign-in page, and brings you back to the page you were on. Then try once more. **Not now** closes the dialog without changing anything.
+
+If it keeps asking right after you signed in, check that you signed in on the same address you're using. The LAN address and the `https://` address have separate sessions.
+
+See [Features: the fresh sign-in rule](features.md#the-fresh-sign-in-rule) for why.
+
+## Logs won't open: "too many log streams"
+
+Each person can have 4 log streams open per host and 8 in all. Every open logs drawer counts, in every tab and on every device, and so does a script following logs with your API token. Close logs drawers and tabs you don't need, and stop scripts that follow logs, then try again.
+
+"too many open log streams for this host" means everyone together has 16 open on that host. Ask others to close theirs, or wait.
+
+A logs drawer, terminal or live view can also close by itself about a minute after your role was lowered, your account removed, or you were signed out elsewhere. Reload the page.
+
+## API requests fail with 401, 403 or 429
+
+| Answer | What it means |
+| --- | --- |
+| `401` "invalid or expired API token" | The token is wrong, revoked or expired. Check for a missing `thp_` or a stray space or newline. Create a new token on **Account & sign-in → API tokens**. |
+| `429` "too many failed attempts; wait 15 minutes" | More than 20 bad tokens came from your IP address within 15 minutes. Fix the token in your script, then wait. Valid tokens keep working meanwhile. |
+| `429` "you have too many log streams open..." | See [Logs won't open](#logs-wont-open-too-many-log-streams). |
+| `403` "not available with an API token; sign in to the web UI" | Tokens can't invite users, change roles, change sign-in settings, add hosts, change HTTPS or manage tokens. Do it in the browser. |
+| `403` with another message | The token's access level, or your current role, is too low. A token never acts above its owner's role, so if you were made a viewer, an admin token acts as a viewer. |
+
+Behind a reverse proxy, the bad-token limit counts the visitor's IP only if the proxy is trusted in **Settings** or `TAINERHUB_TRUSTED_PROXIES`. Otherwise every request seems to come from the proxy. See [HTTPS and passkeys, step 4](https-and-passkeys.md#step-4-turn-on-https).
+
+More on tokens and every endpoint is in the [API guide](api.md).
 
 ## Too many sign-in attempts
 

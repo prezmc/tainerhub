@@ -49,6 +49,7 @@ Failed enrollments are limited to 10 per IP address per 15 minutes. Successful o
 Agents renew their certificate automatically:
 
 - They start renewing **30 days** before it expires, and check every 12 hours.
+- Renewal happens in two steps. The old certificate keeps working until the agent first connects with the new one. If the hub's reply is lost, or the agent can't save the new certificate, the agent simply carries on with the old one and tries again.
 - If a server was off for a long time and its certificate has already expired, the agent can still renew it for up to **180 days** after expiry. In that window an expired certificate is accepted only for renewal, never for a normal connection.
 - After that, the agent logs that it must be re-enrolled. Create a new join token for it on the Hosts page.
 
@@ -80,7 +81,9 @@ There are four roles: **owner**, **admin**, **operator** and **viewer**. The ful
 - **Admins** also edit stacks, open terminals, delete volumes, see secrets, manage hosts and users, update TainerHub and Docker, and read the audit log.
 - **The owner** is the account created at setup. It can also manage admins. Nobody can change or remove it.
 
-Roles are enforced by the hub's API on every request, not just hidden in the UI. Admins can only manage users with a lower role than their own, can't change their own account from the Users page, and can't hand out a role above their own.
+Roles are enforced by the hub's API on every request, not just hidden in the UI. Admins can only manage users with a lower role than their own, can't change their own account from the Users page, and can't hand out a role above their own. A role change or removal only applies if the user's role is still the one the admin saw; otherwise it's refused and the admin reloads.
+
+Lowering someone's role or removing them takes effect on their open pages too: see [Open streams are re-checked](#open-streams-are-re-checked).
 
 ## What non-admins can't see
 
@@ -110,16 +113,43 @@ Container **logs** are visible to every role, including viewers. If your apps pr
 - Session tokens are random 256-bit values. Only a hash is stored in the database.
 - Cookies are `HttpOnly` and `SameSite=Strict`. On HTTPS they're also `Secure` and use the `__Host-` prefix.
 - A session ends after **12 hours of inactivity**, or **7 days** after sign-in, whichever comes first.
-- Changing or setting your password signs out all your other sessions. **Account & sign-in → Sign out other sessions** does the same on demand.
+- Changing or setting your password signs out all your other sessions. **Account & sign-in → Sign out other sessions** does the same on demand. Neither revokes API tokens.
 
-### Fresh sign-in for account changes
+### Open streams are re-checked
 
-Adding or removing a passkey, generating new recovery codes, and setting a first password need a sign-in from **the last 10 minutes**. A stolen session cookie therefore can't be used to add the thief's own passkey or lock you out. Changing an existing password needs the current password instead.
+Live updates, log views, terminals and stack output are long-lived connections. About once a minute the hub checks that the session or token behind each one is still valid and still has the role it needs. If the user was removed or signed out, the token was revoked or expired, or the role was lowered, the stream is closed within that minute. A terminal is closed once its user is no longer an admin.
+
+### Fresh sign-in for sensitive changes
+
+Some changes would give a stolen session lasting access, or more access. They need a sign-in from **the last 10 minutes**:
+
+- adding or removing a passkey, generating new recovery codes, and setting a first password,
+- creating an API token,
+- creating invites, changing roles and removing users,
+- adding a host and making a new join token,
+- turning HTTPS on or off.
+
+A stolen session cookie therefore can't be used to add the thief's own passkey, mint a token, invite a second account or lock you out. If the sign-in is older, the hub answers with a "sign in again" error and the UI shows a **Sign in again** dialog. Changing an existing password needs the current password instead.
+
+## API tokens
+
+Users can create API tokens for scripts on **Account & sign-in → API tokens**. See [Features: API tokens](features.md#api-tokens) and the [API guide](api.md).
+
+- **Random and hashed.** A token is `thp_` plus 256 random bits. It's shown once; the database keeps only a SHA-256 hash and the first few characters, to tell tokens apart.
+- **Never more than its owner.** Each token has an access level up to its owner's role. It acts with the lower of that level and the owner's *current* role, so demoting a user demotes their tokens. Removing a user removes their tokens.
+- **Can't mint lasting access.** Tokens are refused for anything that creates access or changes how someone signs in: invites, role changes and user removal, passwords, passkeys, recovery codes, sessions, adding hosts and join tokens, HTTPS settings, and creating or revoking tokens. Creating a token needs a fresh browser sign-in.
+- **Expiry.** 30 days, 90 days, 1 year or never. An expired token is refused.
+- **Visible and revocable.** The list shows when and from which IP each token was last used. Admins can see and revoke the tokens of users with a lower role on the **Users** page; the owner sees all of them.
+- **Audited.** Every action taken with a token is logged under its owner, with **via token** and the token's name.
+- **No CSRF exposure.** Tokens are sent in the `Authorization` header, which browsers never add by themselves, so another site can't use one. Cookie sessions keep their CSRF checks.
+- **Survive password changes.** Changing your password or signing out other sessions ends browser sessions only. If you think your account is compromised, revoke your tokens too.
 
 ### Rate limits
 
 - **Failed sign-ins**: 10 per client IP per 15 minutes. This covers passwords, passkeys, recovery codes and guessing the current password when changing it.
 - **Passkey ceremonies** (signing in with or adding a passkey): at most 30 started per client IP per minute.
+- **Bad API tokens**: 20 per client IP per 15 minutes, counted separately from sign-ins, so a misconfigured script doesn't lock people out of signing in. After that, bad tokens get `429` instead of `401`. A valid token always works, even from an address that has sent bad ones.
+- **Log streams**: each user can have 4 open per host and 8 in all. More get `429`.
 
 The client IP comes from `X-Forwarded-For` only when the request arrives from a trusted proxy (set in Settings or `TAINERHUB_TRUSTED_PROXIES`). Otherwise it's the connecting address. That's why Settings only accepts narrow proxy ranges: anything in a trusted range could claim to be any visitor.
 
@@ -129,7 +159,7 @@ The client IP comes from `X-Forwarded-For` only when the request arrives from a 
 - **Strict Content-Security-Policy.** Scripts, styles and fonts load only from TainerHub itself. No inline scripts or styles, no plugins, and TainerHub can't be framed by another site.
 - **Other headers.** `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, cross-origin opener and resource policies, and a `Permissions-Policy` that turns off camera, microphone and location.
 - **Input limits.** Request bodies are capped at 64 KiB (compose files up to 256 KB). Container IDs are strictly validated, which blocks path tricks against the Docker API.
-- **Memory caps.** Pending passkey ceremonies, the rate-limiter table and open log streams (16 per host) are capped, so a flood of requests can't exhaust the hub's memory.
+- **Memory caps.** Pending passkey ceremonies and the rate-limiter tables are capped. Each host has its own caps on open log streams (16), terminals (8) and stack operations (8), so many open log views can't block a deploy or a terminal. A flood of requests can't exhaust the hub's memory.
 
 ## Self-protection
 
@@ -143,9 +173,11 @@ To stop TainerHub on purpose, use `docker compose` on the server.
 
 ## The audit log
 
-Admins can read the audit log under **Audit**. It records sign-ins (and failed ones), account changes, every container and stack action, terminal sessions with the command used, host changes, agent enrollments and certificate renewals, updates, user management, and HTTPS changes. Each entry has the time, user, action, target and client IP.
+Admins can read the audit log under **Audit**. It records sign-ins (and failed ones), account changes, API tokens created and revoked, every container and stack action, terminal sessions with the command used, host changes, agent enrollments and certificate renewals, updates, user management, and HTTPS changes. Each entry has the time, user, action, target and client IP. Actions taken with an API token also name the token.
 
 Failed sign-ins that hit the rate limit aren't logged, so an attacker can't flood the log.
+
+Entries older than 365 days are deleted. Set `TAINERHUB_AUDIT_RETENTION_DAYS` on the hub to keep them longer or shorter (`0` keeps them forever).
 
 ## Data at rest
 
@@ -153,7 +185,7 @@ Failed sign-ins that hit the rate limit aren't logged, so an attacker can't floo
 | --- | --- | --- |
 | Hub `/data` volume | CA private key, database password, first-run setup token | File permissions; the hub runs as a non-root user. **Back this up.** |
 | Postgres | Users, password hashes (argon2id), passkey public keys | Hashes and public keys only |
-| Postgres | Session tokens, recovery codes, join-token secrets, invite tokens | SHA-256 hashes only |
+| Postgres | Session tokens, API tokens, recovery codes, join-token secrets, invite tokens | SHA-256 hashes only |
 | Postgres | Stack compose files and `.env` | **Plain text** |
 | Postgres | Audit log, settings, host records | Plain text |
 | Agent `/data` volume | The agent's certificate and private key | File permissions |
@@ -204,5 +236,6 @@ No software can promise zero vulnerabilities. This is defence in depth, plus aut
 - [ ] **Remove users and hosts you no longer need.** A removed host's certificate stops working at once.
 - [ ] **Review the audit log** now and then, especially failed sign-ins and terminal sessions.
 - [ ] **Use "Sign out other sessions"** if you signed in on a device you don't control.
+- [ ] **Give API tokens the lowest access that works** (viewer for dashboards), with an expiry. Revoke the ones you no longer use.
 - [ ] **Keep TainerHub updated** from the Hosts page.
 - [ ] **Don't run the profiler** (`TAINERHUB_PPROF_ADDR`) on an address others can reach.
