@@ -37,6 +37,8 @@ export function NewContainerPage() {
   const [image, setImage] = useState('') // repository, e.g. "nginx" or "ghcr.io/org/app"
   const [tag, setTag] = useState('latest')
   const [name, setName] = useState('')
+  // The name follows the image until the user types their own.
+  const [nameEdited, setNameEdited] = useState(false)
   const [hostId, setHostId] = useState('')
   const [restart, setRestart] = useState<string>('unless-stopped')
   const [ports, setPorts] = useState<Port[]>([{ host: '', container: '', proto: 'tcp' }])
@@ -68,6 +70,7 @@ export function NewContainerPage() {
     setImage(repo)
     setTag('latest')
     setName(defaultName(repo))
+    setNameEdited(false)
     setError(null)
   }
 
@@ -225,7 +228,7 @@ export function NewContainerPage() {
               value={image}
               onChange={(e) => {
                 setImage(e.target.value.trim())
-                if (!name) setName(defaultName(e.target.value))
+                if (!nameEdited) setName(defaultName(e.target.value))
               }}
               placeholder="image name"
               className="mono"
@@ -242,7 +245,7 @@ export function NewContainerPage() {
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Version (tag)</span>
               <input
                 list="tag-options"
-                value={tag}
+                value={typedTag ? image.slice(Math.max(image.lastIndexOf(':'), image.lastIndexOf('@')) + 1) : tag}
                 onChange={(e) => setTag(e.target.value.trim())}
                 disabled={!image || typedTag}
                 className="mono w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none focus:ring-lime-400/60"
@@ -263,7 +266,10 @@ export function NewContainerPage() {
               </span>
             </label>
             <div>
-              <Input label="Name" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} disabled={!image} placeholder="my-app" hint="Container and stack name." />
+              <Input label="Name" value={name} onChange={(e) => {
+                setName(e.target.value.toLowerCase())
+                setNameEdited(true)
+              }} disabled={!image} placeholder="my-app" hint="Container and stack name." />
               <FieldError msgs={basicErr('name')} />
             </div>
             <label className="block">
