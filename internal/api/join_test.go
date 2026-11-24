@@ -91,3 +91,41 @@ func TestAgentAddrNeverTheProxy(t *testing.T) {
 		t.Errorf("agentAddrFor(LAN IP) = %q, %v", addr, err)
 	}
 }
+
+func TestAgentAddrOptions(t *testing.T) {
+	pub, _ := url.Parse("https://tainerhub.example.com")
+	a, err := auth.New(nil, pub, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Auth: a}
+	used := map[string][]string{
+		"192.168.1.10:7443":          {"nas", "server-2", "pi"},
+		"hub.lan:7443":               {"vps"},
+		"tainerhub.example.com:7443": {"broken"}, // an agent pointed at the proxy
+	}
+	got := s.buildAddrOptions("", used, "192.168.1.10:7443", "tainerhub.example.com")
+	want := []addrOption{
+		{"192.168.1.10:7443", "used by nas, pi, server-2"},
+		{"hub.lan:7443", "used by vps"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("options = %+v, want %+v", got, want)
+	}
+	// Plain install opened by IP, nothing else known: the page's address.
+	got = s.buildAddrOptions("", nil, "", "192.168.1.10:8585")
+	if len(got) != 1 || got[0].Addr != "192.168.1.10:7443" {
+		t.Fatalf("options = %+v", got)
+	}
+	// TAINERHUB_AGENT_ADDR comes first.
+	got = s.buildAddrOptions("10.0.0.5:7443", used, "", "")
+	if got[0].Addr != "10.0.0.5:7443" {
+		t.Fatalf("env not first: %+v", got)
+	}
+	if hubAddrFromEnv([]string{"PATH=/bin", "TAINERHUB_HUB=192.168.1.10:7443"}) != "192.168.1.10:7443" {
+		t.Fatal("hubAddrFromEnv")
+	}
+	if n := namesList([]string{"e", "d", "c", "b", "a"}); n != "a, b, c and 2 more" {
+		t.Fatalf("namesList = %q", n)
+	}
+}

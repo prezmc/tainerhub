@@ -933,11 +933,6 @@ func (s *Server) proxyAddrProblem(host string) string {
 	return ""
 }
 
-// agentAddrDefault answers what the Add host dialog should pre-fill.
-func (s *Server) agentAddrDefault(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"agentAddr": s.suggestAgentAddr(r)})
-}
-
 // issueToken creates a one-time join token (valid 1 hour) and returns it with
 // a ready-to-paste compose file for the agent.
 func (s *Server) issueToken(w http.ResponseWriter, r *http.Request, h store.Host, agentAddr string) {

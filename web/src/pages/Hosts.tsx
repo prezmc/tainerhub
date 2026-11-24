@@ -22,19 +22,23 @@ export function HostsPage() {
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
   // Agents dial the hub directly (not through a reverse proxy) on port 7443.
-  // The hub suggests the address: TAINERHUB_AGENT_ADDR, the last one used, or
-  // the address this page was opened on unless that's the reverse proxy.
+  // The hub lists the addresses it knows, best first: TAINERHUB_AGENT_ADDR,
+  // the ones connected agents use, the last one chosen, this page's address
+  // (never the reverse proxy). The best one is pre-selected.
   const [agentAddr, setAgentAddr] = useState('')
+  const [addrOptions, setAddrOptions] = useState<AddrOption[] | null>(null)
   const [reissuing, setReissuing] = useState<Host | null>(null)
   const openAdd = async (forHost?: Host) => {
     if (forHost) setReissuing(forHost)
     else setAdding(true)
     setError(null)
+    setAddrOptions(null)
     try {
-      const d = await api<{ agentAddr: string }>('/api/hosts/agent-addr')
-      setAgentAddr((cur) => cur || d.agentAddr)
+      const d = await api<{ agentAddr: string; options: AddrOption[] }>('/api/hosts/agent-addr')
+      setAddrOptions(d.options ?? [])
+      setAgentAddr(d.agentAddr)
     } catch {
-      // leave the field for the admin to fill in
+      setAddrOptions([])
     }
   }
   const [join, setJoin] = useState<JoinTokenResponse | null>(null)
@@ -90,17 +94,7 @@ export function HostsPage() {
   }
 
   const online = hosts.data?.filter((h) => h.online).length ?? 0
-  const addrInput = (
-    <Input
-      label="Hub address for agents"
-      value={agentAddr}
-      onChange={(e) => setAgentAddr(e.target.value)}
-      placeholder="192.168.1.10:7443"
-      required
-      className="mono"
-      hint="The hub server's own LAN IP or name, port 7443. The agent connects here directly, never through a reverse proxy, so not your HTTPS address. TainerHub remembers it for the next host."
-    />
-  )
+  const addrInput = <AgentAddrPicker value={agentAddr} onChange={setAgentAddr} options={addrOptions} />
 
   return (
     <div>
@@ -402,6 +396,65 @@ function JoinInstructions({ join }: { join: JoinTokenResponse }) {
           </div>
         </div>
       </details>
+    </div>
+  )
+}
+
+interface AddrOption {
+  addr: string
+  note: string
+}
+
+const OTHER = '__other__'
+
+/** "Hub address for agents": a list of the addresses the hub knows, or your own. */
+function AgentAddrPicker({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: AddrOption[] | null }) {
+  const [other, setOther] = useState(false)
+  const known = options?.some((o) => o.addr === value) ?? false
+  const typing = options !== null && (other || options.length === 0 || (!known && value !== ''))
+  const hint = 'The agent connects to the hub here, directly on port 7443, never through your reverse proxy.'
+  return (
+    <div className="space-y-2">
+      <label className="block">
+        <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Hub address for agents</span>
+        {options === null ? (
+          <span className="block rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-ink-100/50 ring-1 ring-inset ring-white/12">Finding the hub's addresses…</span>
+        ) : options.length > 0 ? (
+          <select
+            className="mono w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none focus:ring-lime-400/60"
+            value={typing ? OTHER : value}
+            onChange={(e) => {
+              if (e.target.value === OTHER) {
+                setOther(true)
+                onChange('')
+              } else {
+                setOther(false)
+                onChange(e.target.value)
+              }
+            }}
+          >
+            {options.map((o) => (
+              <option key={o.addr} value={o.addr}>
+                {o.addr} ({o.note})
+              </option>
+            ))}
+            <option value={OTHER}>Another address…</option>
+          </select>
+        ) : null}
+      </label>
+      {typing && (
+        <Input
+          aria-label="Hub address for agents"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="192.168.1.10:7443"
+          required
+          autoFocus={options.length > 0}
+          className="mono"
+          hint={options.length === 0 ? `Type the hub server's LAN IP or name with :7443. ${hint}` : hint}
+        />
+      )}
+      {!typing && options !== null && <p className="text-xs text-ink-100/50">{hint}</p>}
     </div>
   )
 }

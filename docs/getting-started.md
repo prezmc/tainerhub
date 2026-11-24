@@ -112,7 +112,7 @@ The hub's own server shows up under **Hosts** a few seconds after the hub starts
 
 1. Go to **Hosts** and click **Add host**.
 2. Enter a **Name** (for example `server-2` or `nas`). This is only how it appears in TainerHub.
-3. Check **Hub address for agents**: the hub server's own IP or name with port 7443, for example `192.168.1.10:7443`. This must be the hub itself, never a reverse proxy. TainerHub pre-fills `TAINERHUB_AGENT_ADDR` if you set it, else the address you used last time, else the address you opened TainerHub on. If you opened TainerHub through your reverse proxy (`https://tainerhub.example.com`), there is no safe guess the first time. Type the hub's LAN IP, and TainerHub remembers it. It refuses the proxy's HTTPS name and the proxy's own IP (if it's in the trusted proxies).
+3. Check **Hub address for agents**: where the new server's agent connects to the hub, directly on port 7443 and never through a reverse proxy. Pick it from the list. TainerHub offers, best first: `TAINERHUB_AGENT_ADDR` if you set it, the addresses your connected servers' agents already use ("used by nas, server-2"), the one you chose last time, and the address you opened TainerHub on. It leaves out your reverse proxy's name and IP. The best one is selected for you. If the list is empty (your first server, opened through the proxy), or none fits, choose **Another address…** and type the hub server's LAN IP with `:7443`, for example `192.168.1.10:7443`.
 4. Click **Create join token**.
 
 Creating a join token needs a sign-in from the last 10 minutes. If yours is older, TainerHub asks you to **Sign in again** first and then brings you back.
