@@ -2,9 +2,9 @@ import { Link } from '@tanstack/react-router'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDownToLine, Boxes, CircleCheck, CircleX, Download, LoaderCircle, X } from 'lucide-react'
-import { useFleet } from './fleet'
+import { useFleet, useLive } from './fleet'
 import { api, ApiError, errorText, type Container, type Host, type StackAction, type StackStatus, type StackSummary } from './api'
-import { Badge, IconButton, cx, download, useConfirm, useToast, type Tone } from './ui'
+import { Badge, IconButton, cx, download, useConfirm, useLayer, useToast, type Tone } from './ui'
 
 // ---- live stack list (managed stacks + compose projects found on hosts) ----
 
@@ -12,7 +12,13 @@ export function useStacks() {
   // The list itself (and running jobs) comes from a short poll; container
   // counts and status are recomputed from the live fleet stream so they
   // change the moment a container does.
-  const q = useQuery({ queryKey: ['stacks'], queryFn: () => api<StackSummary[]>('/api/stacks'), refetchInterval: 5000 })
+  // Poll fast only while a job runs or the live stream is down.
+  const live = useLive()
+  const q = useQuery({
+    queryKey: ['stacks'],
+    queryFn: () => api<StackSummary[]>('/api/stacks'),
+    refetchInterval: (query) => (!live || query.state.data?.some((s) => s.job) ? 5000 : 30000),
+  })
   const { containers, hosts } = useFleet()
   const data = useMemo(() => q.data?.map((s) => withLive(s, containers, hosts)), [q.data, containers, hosts])
   return { ...q, data }
@@ -144,6 +150,9 @@ export function JobPanel({ jobId, onClose }: { jobId: string; onClose: () => voi
   const [text, setText] = useState('')
   const [state, setState] = useState<'connecting' | 'running' | 'ok' | 'failed' | 'gone'>('connecting')
   const [error, setError] = useState('')
+  const panel = useRef<HTMLDivElement>(null)
+  // Escape closes the drawer, unless focus is in a field (or a dialog sits above it).
+  useLayer(true, panel, () => (document.activeElement?.tagName === 'INPUT' ? false : onClose()))
   const [follow, setFollow] = useState(true)
   const pre = useRef<HTMLPreElement>(null)
 
@@ -200,7 +209,7 @@ export function JobPanel({ jobId, onClose }: { jobId: string; onClose: () => voi
     )
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 mx-auto flex h-[46vh] max-w-[1500px] flex-col rounded-t-md border-t-2 border-lime-400 bg-panel shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/15 animate-[drawer_200ms_ease-out]">
+    <div ref={panel} className="fixed inset-x-0 bottom-0 z-[45] mx-auto flex h-[46vh] max-w-[1500px] flex-col rounded-t-md border-t-2 border-lime-400 bg-panel shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/15 animate-[drawer_200ms_ease-out]">
       <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-5 py-3">
         {state === 'gone' ? <CircleX className="size-5 text-ink-100/40" /> : icon}
         <div className="min-w-0">

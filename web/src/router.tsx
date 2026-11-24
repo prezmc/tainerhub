@@ -1,21 +1,24 @@
-import { createRootRoute, createRoute, createRouter, Navigate, Outlet, useRouterState } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent, Navigate, Outlet, useRouterState } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { api, type HubState } from './api'
 import { AppLayout } from './pages/AppLayout'
-import { SetupPage } from './pages/Setup'
 import { LoginPage } from './pages/Login'
 import { OverviewPage } from './pages/Overview'
 import { ContainersPage } from './pages/Containers'
-import { ResourcesPage } from './pages/Resources'
 import { HostsPage } from './pages/Hosts'
-import { AccountPage } from './pages/Account'
-import { AuditPage } from './pages/Audit'
-import { UsersPage } from './pages/Users'
-import { SettingsPage } from './pages/Settings'
-import { InvitePage } from './pages/Invite'
 import { StacksPage } from './pages/Stacks'
-import { NewStackPage, StackPage } from './pages/StackEditor'
-import { NewContainerPage } from './pages/NewContainer'
+
+// Pages used now and then (and admin-only ones) load on first visit.
+const SetupPage = lazyRouteComponent(() => import('./pages/Setup'), 'SetupPage')
+const InvitePage = lazyRouteComponent(() => import('./pages/Invite'), 'InvitePage')
+const ResourcesPage = lazyRouteComponent(() => import('./pages/Resources'), 'ResourcesPage')
+const AccountPage = lazyRouteComponent(() => import('./pages/Account'), 'AccountPage')
+const AuditPage = lazyRouteComponent(() => import('./pages/Audit'), 'AuditPage')
+const UsersPage = lazyRouteComponent(() => import('./pages/Users'), 'UsersPage')
+const SettingsPage = lazyRouteComponent(() => import('./pages/Settings'), 'SettingsPage')
+const NewStackPage = lazyRouteComponent(() => import('./pages/StackEditor'), 'NewStackPage')
+const StackPage = lazyRouteComponent(() => import('./pages/StackEditor'), 'StackPage')
+const NewContainerPage = lazyRouteComponent(() => import('./pages/NewContainer'), 'NewContainerPage')
 
 function Root() {
   const path = useRouterState({ select: (s) => s.location.pathname })
@@ -86,7 +89,11 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([overviewRoute, containersRoute, newContainerRoute, stacksRoute, newStackRoute, stackRoute, resourcesRoute, hostsRoute, accountRoute, auditRoute, usersRoute, settingsRoute]),
 ])
 
-export const router = createRouter({ routeTree })
+export const router = createRouter({
+  routeTree,
+  defaultPendingComponent: () => <p className="text-sm text-ink-100/60">Loading…</p>,
+  defaultPreload: 'intent',
+})
 
 declare module '@tanstack/react-router' {
   interface Register {

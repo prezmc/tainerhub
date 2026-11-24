@@ -3,7 +3,7 @@ import { Link } from '@tanstack/react-router'
 import { ArrowRight, Cpu, MemoryStick, PartyPopper, Plus, RotateCw, ScrollText, Server, WifiOff } from 'lucide-react'
 import { can, isUnhealthy, mem, timeAgo, type Activity, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, type SortKey } from '../fleet'
-import { Button, Card, EmptyState, cx } from '../ui'
+import { Button, Card, EmptyState, ErrorNote, cx } from '../ui'
 import { useMe } from './AppLayout'
 
 const SORTS: { key: SortKey; label: string }[] = [
@@ -15,7 +15,7 @@ const SORTS: { key: SortKey; label: string }[] = [
 
 export function OverviewPage() {
   const me = useMe()
-  const { containers, hosts, activity, loading } = useFleet()
+  const { containers, hosts, activity, loading, error } = useFleet()
   const [sort, setSort] = useState<SortKey>(() => loadPref('th.sort', ['cpu', 'memory', 'name', 'status'] as const, 'cpu'))
 
   const issues = containers.filter(isUnhealthy)
@@ -24,6 +24,7 @@ export function OverviewPage() {
   const stopped = containers.length - running
   const alerts = issues.length + offline.filter((h) => h.enrolledAt).length
 
+  if (error && hosts.length === 0) return <ErrorNote error={`Couldn't load the fleet: ${error}`} />
   if (!loading && hosts.length === 0) {
     return (
       <EmptyState icon={Server} title="Let's connect your first server">

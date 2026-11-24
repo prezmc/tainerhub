@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from '@tanstack/react-router'
 import {
   Boxes,
@@ -14,7 +15,9 @@ import {
   ScrollText,
   Search,
   Server,
+  Settings,
   ShieldCheck,
+  Users,
   Square,
   Trash2,
   Zap,
@@ -22,7 +25,7 @@ import {
 } from 'lucide-react'
 import { can, type Container } from '../api'
 import { ACTIONS, useContainerAction, useFleet, type Action } from '../fleet'
-import { Kbd, StatusDot, cx, toneOf } from '../ui'
+import { Kbd, StatusDot, cx, toneOf, useLayer } from '../ui'
 import { useMe } from './AppLayout'
 
 type Item = { id: string; icon: LucideIcon; label: string; hint?: string; tone?: 'danger'; run: () => void; dot?: Container }
@@ -34,23 +37,25 @@ const VERBS = [...ACTIONS, 'logs', 'details'] as const
  * ⌘K palette: jump to pages and containers, or type commands such as
  * "restart pihole", "logs npm" or "stop server-2/mosquitto".
  */
-export function CommandPalette({ open, onClose, onLogs, onDetails }: { open: boolean; onClose: () => void; onLogs: (c: Container) => void; onDetails: (c: Container) => void }) {
+type Props = { onClose: () => void; onLogs: (c: Container) => void; onDetails: (c: Container) => void }
+
+export function CommandPalette({ open, ...props }: Props & { open: boolean }) {
+  // Nothing is computed (or subscribed to) while it's closed; each opening starts fresh.
+  return open ? <Palette {...props} /> : null
+}
+
+function Palette({ onClose, onLogs, onDetails }: Props) {
   const me = useMe()
   const navigate = useNavigate()
   const { containers, hosts } = useFleet()
   const { run } = useContainerAction()
   const [q, setQ] = useState('')
-  const [sel, setSel] = useState(0)
-  const input = useRef<HTMLInputElement>(null)
+  // The selected item's id, so the list changing underneath (live updates) can't retarget Enter.
+  const [selId, setSelId] = useState<string | null>(null)
+  const root = useRef<HTMLDivElement>(null)
   const operator = can(me.user, 'operator')
-
-  useEffect(() => {
-    if (open) {
-      setQ('')
-      setSel(0)
-      setTimeout(() => input.current?.focus(), 10)
-    }
-  }, [open])
+  const admin = can(me.user, 'admin')
+  useLayer(true, root, onClose, { modal: true })
 
   const items = useMemo<Item[]>(() => {
     const close = (fn: () => void) => () => {
@@ -82,10 +87,17 @@ export function CommandPalette({ open, onClose, onLogs, onDetails }: { open: boo
     const pages: Item[] = [
       { id: 'p-overview', icon: LayoutDashboard, label: 'Overview', run: close(() => navigate({ to: '/' })) },
       { id: 'p-containers', icon: Boxes, label: 'Containers', run: close(() => navigate({ to: '/containers' })) },
+      { id: 'p-stacks', icon: Layers, label: 'Stacks', run: close(() => navigate({ to: '/stacks' })) },
       { id: 'p-resources', icon: Layers, label: 'Resources: images, volumes, networks', run: close(() => navigate({ to: '/resources' })) },
       { id: 'p-hosts', icon: Server, label: 'Hosts', run: close(() => navigate({ to: '/hosts' })) },
       { id: 'p-account', icon: Fingerprint, label: 'Account & passkeys', run: close(() => navigate({ to: '/account' })) },
-      ...(can(me.user, 'admin') ? [{ id: 'p-audit', icon: ShieldCheck, label: 'Audit log', run: close(() => navigate({ to: '/audit' })) }] : []),
+      ...(admin
+        ? [
+            { id: 'p-users', icon: Users, label: 'Users & invites', run: close(() => navigate({ to: '/users' })) },
+            { id: 'p-audit', icon: ShieldCheck, label: 'Audit log', run: close(() => navigate({ to: '/audit' })) },
+            { id: 'p-settings', icon: Settings, label: 'Settings', run: close(() => navigate({ to: '/settings' })) },
+          ]
+        : []),
     ].filter((p) => !text || p.label.toLowerCase().includes(text))
     const cs: Item[] = containers
       .filter(match)
@@ -95,36 +107,38 @@ export function CommandPalette({ open, onClose, onLogs, onDetails }: { open: boo
       .filter((h) => text && h.name.toLowerCase().includes(text))
       .map((h) => ({ id: `h-${h.id}`, icon: Server, label: h.name, hint: h.online ? 'online' : 'offline', run: close(() => navigate({ to: '/hosts' })) }))
     return [...pages, ...cs, ...hs]
-  }, [q, containers, hosts, operator, me.user, navigate, onClose, onLogs, onDetails, run])
+  }, [q, containers, hosts, operator, admin, navigate, onClose, onLogs, onDetails, run])
 
-  useEffect(() => setSel(0), [q])
-
-  if (!open) return null
+  // Falls back to the first item when the selected one is gone (or nothing is picked yet).
+  const selIndex = Math.max(0, items.findIndex((it) => it.id === selId))
+  const selected = items[selIndex]
 
   const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') onClose()
-    else if (e.key === 'ArrowDown') {
+    if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSel((s) => Math.min(s + 1, items.length - 1))
+      setSelId(items[Math.min(selIndex + 1, items.length - 1)]?.id ?? null)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setSel((s) => Math.max(s - 1, 0))
+      setSelId(items[Math.max(selIndex - 1, 0)]?.id ?? null)
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      items[sel]?.run()
+      selected?.run()
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh]" onKeyDown={onKey}>
-      <div className="absolute inset-0 bg-black/60-sm" onClick={onClose} />
+  return createPortal(
+    <div ref={root} className="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh]" onKeyDown={onKey}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       <div role="dialog" aria-modal="true" aria-label="Command palette" className="relative w-full max-w-2xl overflow-hidden rounded-md bg-panel/95 shadow-2xl shadow-black/60 ring-1 ring-white/15 animate-[pop_140ms_ease-out]">
         <div className="flex items-center gap-3 border-b border-white/10 px-5 py-4">
           <Search className="size-5 text-ink-100/50" />
           <input
-            ref={input}
+            autoFocus
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              setQ(e.target.value)
+              setSelId(null)
+            }}
             placeholder="Search, or type a command: restart pihole, logs npm, stop mosquitto"
             className="flex-1 bg-transparent text-base text-white outline-none placeholder:text-ink-100/40"
             aria-label="Command"
@@ -133,18 +147,19 @@ export function CommandPalette({ open, onClose, onLogs, onDetails }: { open: boo
         </div>
         <ul className="max-h-[50vh] overflow-y-auto p-2" role="listbox">
           {items.length === 0 && <li className="px-4 py-8 text-center text-sm text-ink-100/50">{operator ? 'Nothing matches.' : 'Nothing matches, or your role cannot run that.'}</li>}
-          {items.map((it, i) => (
-            <li key={it.id} role="option" aria-selected={i === sel}>
+          {items.map((it) => (
+            <li key={it.id} role="option" aria-selected={it === selected}>
               <button
-                onMouseEnter={() => setSel(i)}
+                tabIndex={-1}
+                onMouseEnter={() => setSelId(it.id)}
                 onClick={it.run}
-                className={cx('flex w-full items-center gap-3 rounded-md px-4 py-2.5 text-left text-sm transition', i === sel ? 'bg-white/10 text-white' : 'text-ink-100/80')}
+                className={cx('flex w-full items-center gap-3 rounded-md px-4 py-2.5 text-left text-sm transition', it === selected ? 'bg-white/10 text-white' : 'text-ink-100/80')}
               >
                 <it.icon className={cx('size-4', it.tone === 'danger' ? 'text-rose-300' : 'text-lime-300')} />
                 {it.dot && <StatusDot tone={toneOf(it.dot.state, it.dot.status)} />}
                 <span className="font-medium">{it.label}</span>
                 {it.hint && <span className="text-xs text-ink-100/50">{it.hint}</span>}
-                {i === sel && <CornerDownLeft className="ml-auto size-4 text-ink-100/40" />}
+                {it === selected && <CornerDownLeft className="ml-auto size-4 text-ink-100/40" />}
               </button>
             </li>
           ))}
@@ -158,6 +173,7 @@ export function CommandPalette({ open, onClose, onLogs, onDetails }: { open: boo
           <span className="ml-auto">↑↓ to move · ↵ to run</span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

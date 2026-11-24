@@ -3,12 +3,16 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  type RefObject,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { Check, CircleAlert, CircleCheck, Copy, Download, LoaderCircle, X, type LucideIcon } from 'lucide-react'
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(' ')
@@ -317,32 +321,146 @@ export function RecoveryCodes({ codes }: { codes: string[] }) {
   )
 }
 
+// ---------------- layers: Escape, focus and inert ----------------
+
+/*
+ * Every overlay (dialog, drawer, menu, palette) registers as a layer while
+ * it is open. Escape only reaches the topmost layer. Modal layers also keep
+ * Tab inside themselves, move focus in when they open, give it back to
+ * whatever had it when they close, and make the rest of the page inert.
+ */
+type Layer = { id: number; node: () => HTMLElement | null; modal: boolean; onEscape: () => boolean | void; restore: HTMLElement | null }
+const layers: Layer[] = []
+let nextLayer = 1
+let lastFocusFrom: HTMLElement | null = null
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+function focusables(node: HTMLElement): HTMLElement[] {
+  return [...node.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => !el.closest('[inert]') && el.getClientRects().length > 0)
+}
+
+function topModal(): number {
+  for (let i = layers.length - 1; i >= 0; i--) if (layers[i].modal) return i
+  return -1
+}
+
+/** Makes everything under <body> inert except the top modal layer and anything opened above it. */
+function syncInert() {
+  const m = topModal()
+  const keep = m < 0 ? [] : layers.slice(m).map((l) => l.node()).filter((n): n is HTMLElement => !!n)
+  for (const child of [...document.body.children] as HTMLElement[]) {
+    const off = m >= 0 && !child.hasAttribute('data-layer-keep') && !keep.some((n) => child.contains(n))
+    if (off) child.setAttribute('inert', '')
+    else child.removeAttribute('inert')
+  }
+}
+
+function onLayerKey(e: KeyboardEvent) {
+  const top = layers[layers.length - 1]
+  if (!top) return
+  if (e.key === 'Escape') {
+    if (top.onEscape() === false) return
+    e.preventDefault()
+    e.stopPropagation()
+  } else if (e.key === 'Tab' && top.modal) {
+    const node = top.node()
+    if (!node) return
+    const els = focusables(node)
+    if (els.length === 0) {
+      e.preventDefault()
+      node.focus()
+      return
+    }
+    const first = els[0]
+    const last = els[els.length - 1]
+    const active = document.activeElement as HTMLElement | null
+    if (!active || !node.contains(active)) {
+      e.preventDefault()
+      first.focus()
+    } else if (e.shiftKey && active === first) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', onLayerKey, true)
+  document.addEventListener('focusin', (e) => {
+    lastFocusFrom = e.relatedTarget instanceof HTMLElement ? e.relatedTarget : null
+  })
+}
+
+/**
+ * Registers an open overlay. `ref` is its outermost element (portaled to
+ * <body> for modal layers, so the rest of the page can be made inert).
+ * onEscape may return false to leave Escape alone.
+ */
+export function useLayer(open: boolean, ref: RefObject<HTMLElement | null>, onEscape: () => boolean | void, opts: { modal?: boolean; initialFocus?: boolean } = {}) {
+  const esc = useRef(onEscape)
+  esc.current = onEscape
+  const { modal = false, initialFocus = modal } = opts
+  // Whatever had focus when the layer was first rendered open: the trigger, usually.
+  const opener = useRef<HTMLElement | null | undefined>(undefined)
+  if (!open) opener.current = undefined
+  else if (opener.current === undefined) opener.current = document.activeElement as HTMLElement | null
+  useEffect(() => {
+    if (!open) return
+    const node = ref.current
+    const active = document.activeElement as HTMLElement | null
+    // If focus already moved inside (autoFocus), give it back to where it came from.
+    const inside = !!node && !!active && node.contains(active)
+    const restore = inside ? (opener.current && !node.contains(opener.current) ? opener.current : lastFocusFrom) : active
+    const layer: Layer = { id: nextLayer++, node: () => ref.current, modal, onEscape: () => esc.current(), restore }
+    layers.push(layer)
+    syncInert()
+    if (initialFocus && node && !node.contains(document.activeElement)) {
+      const target = node.querySelector<HTMLElement>('[data-autofocus]') ?? focusables(node).find((el) => !el.hasAttribute('data-no-initial-focus')) ?? node
+      target.focus({ preventScroll: true })
+    }
+    return () => {
+      const i = layers.indexOf(layer)
+      if (i >= 0) layers.splice(i, 1)
+      syncInert()
+      if (!initialFocus) return
+      const now = document.activeElement
+      const lost = !now || now === document.body || !now.isConnected || (node?.contains(now) ?? false)
+      if (lost && layer.restore?.isConnected) layer.restore.focus({ preventScroll: true })
+    }
+  }, [open, modal, initialFocus, ref])
+}
+
 // ---------------- modal ----------------
 
 export function Modal({ open, onClose, title, children, wide }: { open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  const ref = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  useLayer(open, ref, onClose, { modal: true })
   if (!open) return null
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+  return createPortal(
+    <div ref={ref} className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={title}
-        className={cx('relative max-h-[90vh] w-full overflow-y-auto rounded-md border-t-2 border-lime-400 bg-panel p-6 shadow-2xl shadow-black/60 ring-1 ring-line animate-[pop_150ms_ease-out]', wide ? 'max-w-2xl' : 'max-w-md')}
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className={cx('relative max-h-[90vh] w-full overflow-y-auto rounded-md border-t-2 border-lime-400 bg-panel p-6 shadow-2xl shadow-black/60 ring-1 ring-line outline-none animate-[pop_150ms_ease-out]', wide ? 'max-w-2xl' : 'max-w-md')}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="font-display text-xl font-bold text-white">{title}</h2>
-          <IconButton icon={X} label="Close" onClick={onClose} />
+          <h2 id={titleId} className="font-display text-xl font-bold text-white">
+            {title}
+          </h2>
+          <IconButton icon={X} label="Close" onClick={onClose} data-no-initial-focus />
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -353,17 +471,24 @@ const ConfirmCtx = createContext<(o: ConfirmOpts) => Promise<boolean>>(async () 
 export const useConfirm = () => useContext(ConfirmCtx)
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<(ConfirmOpts & { resolve: (v: boolean) => void }) | null>(null)
-  const ask = useCallback((o: ConfirmOpts) => new Promise<boolean>((resolve) => setState({ ...o, resolve })), [])
-  const close = useCallback(
-    (v: boolean) => {
-      setState((s) => {
-        s?.resolve(v)
-        return null
-      })
-    },
+  const [state, setState] = useState<ConfirmOpts | null>(null)
+  const pending = useRef<((v: boolean) => void) | null>(null)
+  const ask = useCallback(
+    (o: ConfirmOpts) =>
+      new Promise<boolean>((resolve) => {
+        // A new question replaces any open one: that one counts as cancelled.
+        pending.current?.(false)
+        pending.current = resolve
+        setState(o)
+      }),
     [],
   )
+  const close = useCallback((v: boolean) => {
+    const resolve = pending.current
+    pending.current = null
+    setState(null)
+    resolve?.(v)
+  }, [])
   const cancel = useCallback(() => close(false), [close])
   return (
     <ConfirmCtx.Provider value={ask}>
@@ -400,17 +525,20 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={push}>
       {children}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2" aria-live="polite">
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={cx('pointer-events-auto flex items-start gap-2.5 rounded-[3px] border-l-2 bg-panel px-4 py-3 text-sm text-white shadow-2xl ring-1 ring-line animate-[slide_200ms_ease-out]', t.tone === 'good' ? 'border-emerald-400' : 'border-rose-400')}
-          >
-            {t.tone === 'good' ? <CircleCheck className="mt-0.5 size-4 shrink-0 text-emerald-400" /> : <CircleAlert className="mt-0.5 size-4 shrink-0 text-rose-400" />}
-            <span className="flex-1">{t.text}</span>
-          </div>
-        ))}
-      </div>
+      {createPortal(
+        <div data-layer-keep className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2" aria-live="polite">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className={cx('pointer-events-auto flex items-start gap-2.5 rounded-[3px] border-l-2 bg-panel px-4 py-3 text-sm text-white shadow-2xl ring-1 ring-line animate-[slide_200ms_ease-out]', t.tone === 'good' ? 'border-emerald-400' : 'border-rose-400')}
+            >
+              {t.tone === 'good' ? <CircleCheck className="mt-0.5 size-4 shrink-0 text-emerald-400" /> : <CircleAlert className="mt-0.5 size-4 shrink-0 text-rose-400" />}
+              <span className="flex-1">{t.text}</span>
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
     </ToastCtx.Provider>
   )
 }
@@ -418,39 +546,67 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 // ---------------- dropdown menu ----------------
 
 export type MenuItem = { label: string; icon: LucideIcon; onClick: () => void; danger?: boolean; hidden?: boolean }
+/** Spread onto the menu's trigger button. */
+export type MenuTriggerProps = { 'aria-haspopup': 'menu'; 'aria-expanded': boolean; 'aria-controls'?: string }
 
-export function Menu({ trigger, items }: { trigger: (toggle: () => void) => ReactNode; items: MenuItem[] }) {
+export function Menu({ trigger, items }: { trigger: (toggle: () => void, props: MenuTriggerProps) => ReactNode; items: MenuItem[] }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const list = useRef<HTMLDivElement>(null)
+  const id = useId()
+  const triggerEl = () => ref.current?.querySelector<HTMLElement>('[aria-haspopup]') ?? null
+  const close = useCallback((refocus: boolean) => {
+    setOpen(false)
+    if (refocus) triggerEl()?.focus()
+  }, [])
+  useLayer(open, list, () => close(true))
   useEffect(() => {
     if (!open) return
+    list.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
     const onDown = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false)
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
     document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
+    return () => document.removeEventListener('mousedown', onDown)
   }, [open])
+  const onKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const els = [...(list.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])]
+    const i = els.indexOf(document.activeElement as HTMLElement)
+    const go = (n: number) => {
+      e.preventDefault()
+      els[(n + els.length) % els.length]?.focus()
+    }
+    if (e.key === 'ArrowDown') go(i + 1)
+    else if (e.key === 'ArrowUp') go(i - 1)
+    else if (e.key === 'Home') go(0)
+    else if (e.key === 'End') go(els.length - 1)
+    else if (e.key === 'Tab') setOpen(false)
+  }
   return (
     <div ref={ref} className="relative">
-      {trigger(() => setOpen((o) => !o))}
+      {trigger(() => setOpen((o) => !o), { 'aria-haspopup': 'menu', 'aria-expanded': open, 'aria-controls': open ? id : undefined })}
       {open && (
-        <div role="menu" className="absolute right-0 top-9 z-40 min-w-44 overflow-hidden rounded-[3px] bg-panel p-1 shadow-2xl shadow-black/50 ring-1 ring-line animate-[pop_120ms_ease-out]">
+        <div
+          ref={list}
+          id={id}
+          role="menu"
+          onKeyDown={onKey}
+          className="absolute right-0 top-9 z-40 min-w-44 overflow-hidden rounded-[3px] bg-panel p-1 shadow-2xl shadow-black/50 ring-1 ring-line animate-[pop_120ms_ease-out]"
+        >
           {items
             .filter((i) => !i.hidden)
             .map((i) => (
               <button
                 key={i.label}
                 role="menuitem"
+                tabIndex={-1}
                 onClick={() => {
-                  setOpen(false)
+                  close(true)
                   i.onClick()
                 }}
                 className={cx(
-                  'flex w-full items-center gap-2.5 rounded-[2px] border-l-2 border-transparent px-3 py-2 text-left text-sm transition',
-                  i.danger ? 'text-rose-300 hover:border-rose-400 hover:bg-rose-500/10' : 'text-ink-50 hover:border-lime-400 hover:bg-white/[0.05]',
+                  'flex w-full items-center gap-2.5 rounded-[2px] border-l-2 border-transparent px-3 py-2 text-left text-sm outline-none transition',
+                  i.danger
+                    ? 'text-rose-300 hover:border-rose-400 hover:bg-rose-500/10 focus:border-rose-400 focus:bg-rose-500/10'
+                    : 'text-ink-50 hover:border-lime-400 hover:bg-white/[0.05] focus:border-lime-400 focus:bg-white/[0.05]',
                 )}
               >
                 <i.icon className="size-4 opacity-80" />

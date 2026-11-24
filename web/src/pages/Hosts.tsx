@@ -1,11 +1,14 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Clock, Cpu, Ellipsis, KeyRound, Layers, MemoryStick, Pencil, Plus, Server, ShieldCheck, Trash2 } from 'lucide-react'
 import { api, bytes, can, errorText, hostAddress, stackProblem, timeAgo, type Host, type JoinTokenResponse } from '../api'
 import { Badge, Button, Card, CopyButton, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, PageHeader, StatusDot, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
-import { UpdatesCard } from './Updates'
+import { useHostsQuery } from '../fleet'
+
+// Admins only: load the updates card when it's shown.
+const UpdatesCard = lazy(() => import('./Updates').then((m) => ({ default: m.UpdatesCard })))
 import { LoadBars } from '../placement'
 
 export function HostsPage() {
@@ -14,7 +17,7 @@ export function HostsPage() {
   const toast = useToast()
   const confirm = useConfirm()
   const admin = can(me.user, 'admin')
-  const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api<Host[]>('/api/hosts'), refetchInterval: 30000 })
+  const hosts = useHostsQuery()
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
   // Agents dial the hub directly (not through a reverse proxy) on port 7443.
@@ -88,8 +91,14 @@ export function HostsPage() {
         )}
       </PageHeader>
 
-      {admin && <UpdatesCard />}
-      {hosts.data?.length === 0 ? (
+      {admin && (
+        <Suspense fallback={null}>
+          <UpdatesCard />
+        </Suspense>
+      )}
+      {hosts.isError && !hosts.data ? (
+        <ErrorNote error={`Couldn't load hosts: ${errorText(hosts.error)}`} />
+      ) : hosts.data?.length === 0 ? (
         <EmptyState icon={Server} title="No hosts yet">
           Add a host to get a one-time join token and a ready-made compose file for its agent.
         </EmptyState>
@@ -194,7 +203,7 @@ function HostCard({ h, admin, onToken, onRemove, onRename }: { h: Host; admin: b
         </div>
         {admin && (
           <Menu
-            trigger={(toggle) => <IconButton icon={Ellipsis} label="Host actions" onClick={toggle} />}
+            trigger={(toggle, menu) => <IconButton {...menu} icon={Ellipsis} label="Host actions" onClick={toggle} />}
             items={[
               { label: 'Rename', icon: Pencil, onClick: onRename },
               { label: 'New join token', icon: KeyRound, onClick: onToken },

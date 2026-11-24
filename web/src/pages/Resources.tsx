@@ -407,8 +407,8 @@ function PruneMenu({ tab, hosts }: { tab: Tab; hosts: Host[] }) {
   }
   return (
     <Menu
-      trigger={(toggle) => (
-        <Button icon={Eraser} onClick={toggle} loading={m.isPending}>
+      trigger={(toggle, menu) => (
+        <Button {...menu} icon={Eraser} onClick={toggle} loading={m.isPending}>
           Prune
         </Button>
       )}

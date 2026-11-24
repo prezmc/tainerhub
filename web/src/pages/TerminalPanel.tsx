@@ -160,6 +160,7 @@ export function TerminalPanel({ container, onClose }: { container: Container; on
       const prev = cleanup
       cleanup = () => {
         ro.disconnect()
+        if (resizeTimer) clearTimeout(resizeTimer)
         prev()
       }
     })()
@@ -172,7 +173,7 @@ export function TerminalPanel({ container, onClose }: { container: Container; on
   }, [container.hostId, container.id, attempt]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 mx-auto flex h-[52vh] max-w-[1500px] flex-col rounded-t-md border-t-2 border-lime-400 bg-panel shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/15 animate-[drawer_200ms_ease-out]">
+    <div className="fixed inset-x-0 bottom-0 z-[45] mx-auto flex h-[52vh] max-w-[1500px] flex-col rounded-t-md border-t-2 border-lime-400 bg-panel shadow-[0_-20px_60px_-10px_rgba(0,0,0,0.8)] ring-1 ring-white/15 animate-[drawer_200ms_ease-out]">
       <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.06] px-5 py-2.5">
         <SquareTerminal className="size-4 text-lime-300" />
         <div className="min-w-0">

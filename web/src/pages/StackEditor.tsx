@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
+import { getRouteApi, Link, useBlocker, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDownToLine, ArrowLeft, Download, FileText, Lock, Play, RefreshCw, RotateCw, Save, ScrollText, Square, Trash2, Undo2 } from 'lucide-react'
 import { api, ApiError, can, errorText, stackProblem, timeAgo, type StackAction, type StackDetail, type StackSaveResult, type StackSummary } from '../api'
-import { Badge, Button, Card, ErrorNote, IconButton, Input, Modal, PageHeader, StateBadge, cx, useToast } from '../ui'
+import { Badge, Button, Card, ErrorNote, IconButton, Input, Modal, PageHeader, StateBadge, cx, useConfirm, useToast } from '../ui'
 import { useFleet, useOpenDetails, useOpenLogs } from '../fleet'
 import { CodeEditor, StackStatusBadge, useOpenJob, useStackAction, useStacks, withLive } from '../stacks'
 import { useMe } from './AppLayout'
@@ -21,16 +21,29 @@ const STARTER = `services:
       - ./html:/usr/share/nginx/html:ro
 `
 
+const newStackApi = getRouteApi('/app/stacks/new')
+
 const NAME_HINT = "Lowercase letters, digits, '-' and '_'. This is the compose project name and the stack's folder on the host."
 
-/** Warn before closing the tab with unsaved edits. */
+// Set right before navigating away on purpose (after saving or deleting), so the
+// unsaved-changes prompt doesn't ask about edits that no longer matter.
+let leavingOnPurpose = false
+const leaveWithoutPrompt = () => {
+  leavingOnPurpose = true
+  setTimeout(() => (leavingOnPurpose = false), 0)
+}
+
+/** Asks before leaving the page (in-app or closing the tab) with unsaved edits. */
 function useUnsavedWarning(dirty: boolean) {
-  useEffect(() => {
-    if (!dirty) return
-    const h = (e: BeforeUnloadEvent) => e.preventDefault()
-    window.addEventListener('beforeunload', h)
-    return () => window.removeEventListener('beforeunload', h)
-  }, [dirty])
+  const confirm = useConfirm()
+  useBlocker({
+    disabled: !dirty,
+    enableBeforeUnload: () => dirty && !leavingOnPurpose,
+    shouldBlockFn: async ({ current, next }) => {
+      if (leavingOnPurpose || current.pathname === next.pathname) return false
+      return !(await confirm({ title: 'Discard unsaved changes?', body: "Your edits to this stack haven't been saved.", confirm: 'Discard', danger: true }))
+    },
+  })
 }
 
 function FilesHelp({ name }: { name: string }) {
@@ -46,7 +59,7 @@ function FilesHelp({ name }: { name: string }) {
 // ---------------- new stack ----------------
 
 export function NewStackPage() {
-  const search = useSearch({ strict: false }) as { host?: string; name?: string }
+  const search = newStackApi.useSearch()
   const navigate = useNavigate()
   const qc = useQueryClient()
   const toast = useToast()
@@ -87,6 +100,7 @@ export function NewStackPage() {
       if (res.deployError) toast('bad', `Saved, but the deploy didn't start: ${res.deployError}`)
       else toast('good', `${res.stack.name} saved`)
       if (res.jobId) openJob(res.jobId)
+      leaveWithoutPrompt()
       navigate({ to: '/stacks/$stackId', params: { stackId: res.stack.id } })
     },
     onError: (e) => setError(errorText(e)),
@@ -209,7 +223,7 @@ function BackLink() {
 // ---------------- existing stack ----------------
 
 export function StackPage() {
-  const { stackId } = useParams({ strict: false }) as { stackId: string }
+  const { stackId } = getRouteApi('/app/stacks/$stackId').useParams()
   const me = useMe()
   const admin = can(me.user, 'admin')
   const operator = can(me.user, 'operator')
@@ -487,6 +501,7 @@ function DangerZone({ s }: { s: StackSummary }) {
       qc.invalidateQueries({ queryKey: ['stacks'] })
       if (res?.jobId) openJob(res.jobId)
       else toast('good', mode === 'forget' ? `${s.name} removed from TainerHub` : `${s.name} deleted`)
+      leaveWithoutPrompt()
       navigate({ to: '/stacks' })
     },
     onError: (e) => toast('bad', errorText(e)),

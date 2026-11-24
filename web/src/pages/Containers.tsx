@@ -1,13 +1,15 @@
-import { useMemo, useState } from 'react'
-import { useNavigate, useSearch } from '@tanstack/react-router'
+import { memo, useMemo, useState } from 'react'
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowRightLeft, Boxes, X, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
 import { api, can, hostAddress, isUnhealthy, mem, publishedPort, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, useOpenTerminal, type Action, type SortKey } from '../fleet'
-import { Button, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
+import { Button, ErrorNote, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { StackLink } from '../stacks'
 import { MoveContainerDialog, movable } from './MoveContainer'
+
+const routeApi = getRouteApi('/app/containers')
 
 type View = 'all' | 'running' | 'stopped' | 'issues' | 'updates'
 type Group = 'host' | 'stack' | 'state'
@@ -46,8 +48,9 @@ function useCollapsed() {
 export function ContainersPage() {
   const me = useMe()
   const navigate = useNavigate()
-  const { containers, hosts } = useFleet()
-  const search = useSearch({ strict: false }) as { host?: string; view?: string }
+  const { containers, hosts, error } = useFleet()
+  const { run, pendingId } = useContainerAction()
+  const search = routeApi.useSearch()
   const views: View[] = ['all', 'running', 'stopped', 'issues', 'updates']
   const [view, setView] = useState<View>(views.includes(search.view as View) ? (search.view as View) : 'all')
   const onlyHost = hosts.find((h) => h.id === search.host)
@@ -114,12 +117,7 @@ export function ContainersPage() {
     setSort(k)
     savePref('th.csort', k)
   }
-  const SortHead = ({ k, label, right }: { k: SortKey; label: string; right?: boolean }) => (
-    <button onClick={() => pickSort(k)} className={cx('flex items-center gap-1 uppercase tracking-wider hover:text-white', right && 'justify-end', sort === k && 'text-lime-300')}>
-      {label}
-      {sort === k && <ArrowDown className="size-3" />}
-    </button>
-  )
+  const hostById = useMemo(() => new Map(hosts.map((h) => [h.id, h])), [hosts])
 
   return (
     <div className="animate-[rise_300ms_ease-out]">
@@ -196,12 +194,12 @@ export function ContainersPage() {
 
       <div className="overflow-hidden rounded-md ring-1 ring-line">
         <div className={cx('hidden border-b border-line bg-ink-900/80 px-4 py-2 font-mono text-[10.5px] text-ink-100/50', COLS)}>
-          <SortHead k="name" label="Container" />
+          <SortHead k="name" label="Container" sort={sort} onPick={pickSort} />
           <span className="uppercase tracking-wider">Image</span>
           <span className="uppercase tracking-wider">Ports</span>
-          <SortHead k="status" label="Status" />
-          <SortHead k="cpu" label="CPU" right />
-          <SortHead k="memory" label="Memory" right />
+          <SortHead k="status" label="Status" sort={sort} onPick={pickSort} />
+          <SortHead k="cpu" label="CPU" right sort={sort} onPick={pickSort} />
+          <SortHead k="memory" label="Memory" right sort={sort} onPick={pickSort} />
           <span className="flex justify-end">
             {sections.length > 1 && (
               <button
@@ -217,7 +215,13 @@ export function ContainersPage() {
             )}
           </span>
         </div>
-        {sections.length === 0 && <p className="px-4 py-10 text-center text-sm text-ink-100/50">{containers.length ? 'Nothing matches.' : 'No containers yet.'}</p>}
+        {error && containers.length === 0 ? (
+          <div className="p-4">
+            <ErrorNote error={`Couldn't load containers: ${error}`} />
+          </div>
+        ) : (
+          sections.length === 0 && <p className="px-4 py-10 text-center text-sm text-ink-100/50">{containers.length ? 'Nothing matches.' : 'No containers yet.'}</p>
+        )}
         {sections.map((s) => {
           const folded = collapsed.has(s.key)
           const issues = s.items.filter(isUnhealthy).length
@@ -244,7 +248,9 @@ export function ContainersPage() {
             ) : s.items.length === 0 ? (
               <div className="border-b border-line px-4 py-4 text-sm text-ink-100/50">No containers{q || view !== 'all' ? ' match' : ''}.</div>
             ) : (
-              s.items.map((c) => <Row key={c.hostId + c.id} c={c} operator={operator} showHost={group !== 'host'} />)
+              s.items.map((c) => (
+                <Row key={c.hostId + c.id} c={c} host={hostById.get(c.hostId)} operator={operator} admin={admin} showHost={group !== 'host'} busy={pendingId === c.id} run={run} />
+              ))
             )}
           </section>
           )
@@ -261,20 +267,53 @@ function stateLabel(c: Container) {
   return 'stopped'
 }
 
-function Row({ c, operator, showHost }: { c: Container; operator: boolean; showHost: boolean }) {
+function SortHead({ k, label, right, sort, onPick }: { k: SortKey; label: string; right?: boolean; sort: SortKey; onPick: (k: SortKey) => void }) {
+  return (
+    <button onClick={() => onPick(k)} className={cx('flex items-center gap-1 uppercase tracking-wider hover:text-white', right && 'justify-end', sort === k && 'text-lime-300')}>
+      {label}
+      {sort === k && <ArrowDown className="size-3" />}
+    </button>
+  )
+}
+
+type RowProps = {
+  c: Container
+  host?: Host
+  operator: boolean
+  admin: boolean
+  showHost: boolean
+  busy: boolean
+  run: (c: Container, a: Action) => Promise<boolean>
+}
+
+// The live stream replaces every container and host object on each tick, so
+// compare what a row shows rather than object identity.
+const sameContainer = (a: Container, b: Container) =>
+  a.id === b.id &&
+  a.hostId === b.hostId &&
+  a.name === b.name &&
+  a.image === b.image &&
+  a.state === b.state &&
+  a.status === b.status &&
+  a.project === b.project &&
+  a.hostName === b.hostName &&
+  a.update === b.update &&
+  a.cpu === b.cpu &&
+  a.mem === b.mem &&
+  (a.ports ?? []).join() === (b.ports ?? []).join()
+const sameHost = (a?: Host, b?: Host) => a === b || (!!a && !!b && a.id === b.id && a.online === b.online && hostAddress(a) === hostAddress(b))
+const sameRow = (a: RowProps, b: RowProps) =>
+  a.operator === b.operator && a.admin === b.admin && a.showHost === b.showHost && a.busy === b.busy && a.run === b.run && sameHost(a.host, b.host) && sameContainer(a.c, b.c)
+
+const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run }: RowProps) {
   const navigate = useNavigate()
-  const { hosts } = useFleet()
-  const host = hosts.find((h) => h.id === c.hostId)
   const openLogs = useOpenLogs()
   const openTerminal = useOpenTerminal()
-  const admin = can(useMe().user, 'admin')
   const openDetails = useOpenDetails()
-  const { run, pendingId } = useContainerAction()
   const [moving, setMoving] = useState(false)
   const bad = isUnhealthy(c)
   const running = c.state === 'running'
   const paused = c.state === 'paused'
-  const busy = pendingId === c.id
   const act = (a: Action) => run(c, a)
   const ports = (c.ports ?? []).filter((p) => p.includes('->'))
   const uptime = c.status.replace(/\s*\((un)?healthy\)/, '')
@@ -341,7 +380,7 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
             <IconButton icon={RotateCw} label="Restart" disabled={busy} onClick={() => act('restart')} />
             <IconButton icon={Trash2} label="Remove" tone="bad" disabled={busy} onClick={() => act('remove')} />
             <Menu
-              trigger={(toggle) => <IconButton icon={Ellipsis} label="More actions" disabled={busy} onClick={toggle} />}
+              trigger={(toggle, menu) => <IconButton {...menu} icon={Ellipsis} label="More actions" disabled={busy} onClick={toggle} />}
               items={[
                 { label: 'Details', icon: Info, onClick: () => openDetails(c) },
                 { label: 'Terminal', icon: SquareTerminal, onClick: () => openTerminal(c), hidden: !admin || !running },
@@ -371,7 +410,7 @@ function Row({ c, operator, showHost }: { c: Container; operator: boolean; showH
       </div>
     </div>
   )
-}
+}, sameRow)
 
 /** Asks every online host to check for newer images now. */
 function CheckUpdatesButton({ hosts }: { hosts: Host[] }) {
