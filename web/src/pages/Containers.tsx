@@ -2,7 +2,7 @@ import { memo, useMemo, useState } from 'react'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowRightLeft, Boxes, X, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
-import { api, can, hostAddress, isUnhealthy, mem, publishedPort, type Container, type Host } from '../api'
+import { api, can, hostAddress, isUnhealthy, mem, publishedPort, timeAgo, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, useOpenTerminal, type Action, type SortKey } from '../fleet'
 import { Button, ErrorNote, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
 import { useMe } from './AppLayout'
@@ -435,10 +435,19 @@ function CheckUpdatesButton({ hosts }: { hosts: Host[] }) {
     )
     setBusy(false)
     setTimeout(() => qc.invalidateQueries({ queryKey: ['containers'] }), 1500)
+    qc.invalidateQueries({ queryKey: ['hosts'] })
     toast(failed.length ? 'bad' : 'good', `${found ? `${found} newer image${found === 1 ? '' : 's'} available` : 'Everything is up to date'}${failed.length ? ` (couldn't check ${failed.join(', ')})` : ''}`)
   }
+  // The oldest online host's last check, so "checked X ago" holds for all of them.
+  const online = hosts.filter((h) => h.online)
+  const checked = online.every((h) => h.imagesCheckedAt) ? online.map((h) => h.imagesCheckedAt!).sort((a, b) => Date.parse(a) - Date.parse(b))[0] : undefined
   return (
-    <Button icon={RefreshCw} loading={busy} onClick={run} title="Ask each host's registry for newer images now (also happens every 6 hours)">
+    <Button
+      icon={RefreshCw}
+      loading={busy}
+      onClick={run}
+      title={`Ask each host's registry for newer images now (also happens every few hours)${checked ? `. Last checked ${timeAgo(checked)}` : ''}`}
+    >
       Check for updates
     </Button>
   )

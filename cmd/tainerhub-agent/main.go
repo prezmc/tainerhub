@@ -75,8 +75,11 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// Look for newer container images a couple of minutes after start, then every 6 hours.
-	go docker.RunUpdateChecks(ctx, 2*time.Minute, 6*time.Hour)
+	// Look for newer container images every 6 hours, unless the hub checked
+	// recently (it schedules checks with the saved registry logins). The
+	// first one waits 5 minutes so a hub that checks 2-3 minutes after the
+	// agent connects gets there first.
+	go docker.RunUpdateChecks(ctx, 5*time.Minute, 6*time.Hour)
 	log.Info("tainerhub agent starting", "version", version.Version, "hub", cfg.HubAddr)
 	if err := a.Run(ctx); err != nil {
 		log.Error("agent stopped", "err", err)

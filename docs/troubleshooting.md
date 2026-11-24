@@ -176,7 +176,7 @@ When updating a host:
 | "TainerHub didn't come back with a new version within 5 minutes" | Check the hub: `cd ~/tainerhub && docker compose logs`. |
 | "This hub was installed without its built-in agent, so it can't update itself" | Run `cd ~/tainerhub && docker compose pull && docker compose up -d` on the hub's server. |
 
-The "update" badge on *containers* comes from a separate check: each agent asks the image registries every 6 hours. If **Check for updates** says "couldn't check" for a host, that host's agent couldn't reach the registry.
+The "update" badge on *containers* comes from a separate check: the hub has each host ask the image registries every 6 hours (`TAINERHUB_UPDATE_CHECK_HOURS`). If **Check for updates** says "couldn't check" for a host, that host's agent couldn't reach the registry.
 
 ## High CPU on a server
 

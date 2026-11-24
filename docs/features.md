@@ -86,9 +86,11 @@ A move can't start when the new host already has a container or volume of that n
 
 ### Image updates
 
-Each agent checks for newer images about 2 minutes after it starts and then every 6 hours. It asks the registry for the current digest of each image tag your containers use and compares it with what's on disk. Containers with a newer image get an **update** badge next to the image name.
+The hub has each host check for newer images 2–3 minutes after its agent connects and then every 6 hours (set `TAINERHUB_UPDATE_CHECK_HOURS` on the hub; `0` turns this off). Hosts are spread out so a large fleet doesn't hit the registries all at once. The agent asks the registry for the current digest of each image tag your containers use and compares it with what's on disk. Containers with a newer image get an **update** badge next to the image name.
 
-Operators can click **Check for updates** to check every online host right away.
+Operators can click **Check for updates** to check every online host right away; hovering over it shows when the hosts were last checked.
+
+Agents also check on their own every 6 hours, without registry logins, for hubs that don't schedule checks. They skip it when the hub has checked in the last 5 hours.
 
 To update:
 
@@ -326,7 +328,7 @@ Admins save logins under **Settings → Container registries**: the registry's a
 - No page or API shows a saved password again. Changing a login needs a recent sign-in; API tokens can't.
 - A host gets a login only inside the command that pulls from that registry (pulling an image, deploying a stack, Pull & recreate, checking for updates, updating TainerHub) and keeps nothing. For stacks, the hub reads the compose file's `image:` lines to pick the registries.
 - **Test** has an online host's Docker log in with the saved login, without saving it there.
-- The background update check (every 6 hours) runs without logins, so private images show update badges after **Check for updates** on the Containers page (which carries them).
+- Scheduled update checks carry the logins too, so private images get update badges without clicking **Check for updates**. An agent's own fallback check has no logins: for private images it keeps the last answer instead of clearing it.
 
 ## Resources
 

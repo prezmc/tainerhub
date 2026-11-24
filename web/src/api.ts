@@ -107,6 +107,8 @@ export interface Host {
   unhealthy: number
   /** Recent CPU, memory and disk use; missing from older agents and offline hosts. */
   load?: HostLoad
+  /** When the hub last had this host check its images for updates (scheduled or on request); unset until it has. */
+  imagesCheckedAt?: string
 }
 
 /** A host's load: averages over the last 15 minutes, plus the latest sample. */

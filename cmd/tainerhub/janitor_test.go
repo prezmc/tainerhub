@@ -56,3 +56,20 @@ func TestAuditRetentionConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateCheckConfig(t *testing.T) {
+	t.Setenv("TAINERHUB_DATABASE_URL", "postgres://x@y/z")
+	for in, want := range map[string]time.Duration{"": 6 * time.Hour, "0": 0, "12": 12 * time.Hour} {
+		t.Setenv("TAINERHUB_UPDATE_CHECK_HOURS", in)
+		c, err := loadConfig()
+		if err != nil || c.UpdateCheckEvery != want {
+			t.Fatalf("%q: got %v, %v; want %v", in, c.UpdateCheckEvery, err, want)
+		}
+	}
+	for _, bad := range []string{"-1", "often"} {
+		t.Setenv("TAINERHUB_UPDATE_CHECK_HOURS", bad)
+		if _, err := loadConfig(); err == nil {
+			t.Fatalf("%q: want an error", bad)
+		}
+	}
+}
