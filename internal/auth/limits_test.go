@@ -25,6 +25,7 @@ type fakeStore struct {
 	revokedKeep   []byte
 	revokeCalls   int
 	passwordSetTo string
+	recoveryIDs   []string // user IDs UseRecoveryCode was called with
 }
 
 func (f *fakeStore) UserByUsername(ctx context.Context, username string) (store.User, error) {

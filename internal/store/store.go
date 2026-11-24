@@ -26,6 +26,9 @@ var migrations embed.FS
 var (
 	ErrNotFound = gateway.ErrNotFound
 	ErrConflict = errors.New("already exists")
+	// ErrChanged: the row no longer matches what the caller checked (for
+	// example a user's role changed between the check and the update).
+	ErrChanged = errors.New("changed in the meantime")
 )
 
 type Store struct{ db *pgxpool.Pool }
@@ -723,23 +726,69 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	return out, rows.Err()
 }
 
-// SetUserRole changes a user's role. The owner's role can't change here.
-func (s *Store) SetUserRole(ctx context.Context, id, role string) error {
-	tag, err := s.db.Exec(ctx, `UPDATE users SET role = $2 WHERE id = $1::uuid AND role <> 'owner'`, id, role)
-	if err == nil && tag.RowsAffected() == 0 {
-		return ErrNotFound
+// SetUserRole changes a user's role, but only if it is still expectRole (the
+// role the caller checked permission against), so two admins acting at once
+// can't slip a change past the rank check. Pending invites the user created
+// for a role above their new one are revoked in the same transaction: a
+// demoted admin's links must not still hand out admin. ErrNotFound if the
+// user is gone, ErrChanged if their role moved on. The owner can't change.
+func (s *Store) SetUserRole(ctx context.Context, id, expectRole, role string, revokeInviteRoles []string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	return err
+	defer tx.Rollback(ctx) //nolint:errcheck
+	tag, err := tx.Exec(ctx, `UPDATE users SET role = $3 WHERE id = $1::uuid AND role = $2 AND role <> 'owner'`, id, expectRole, role)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return s.missingOrChanged(ctx, tx, id)
+	}
+	if len(revokeInviteRoles) > 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM invites WHERE created_by = $1::uuid AND used_at IS NULL AND role = ANY($2)`, id, revokeInviteRoles); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // DeleteUser removes a user with their sessions, passkeys and recovery codes
-// (signing them out everywhere). The owner can't be removed.
-func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	tag, err := s.db.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid AND role <> 'owner'`, id)
-	if err == nil && tag.RowsAffected() == 0 {
+// (signing them out everywhere) and their unused invites, but only if their
+// role is still expectRole. ErrNotFound if the user is gone, ErrChanged if
+// their role moved on. The owner can't be removed.
+func (s *Store) DeleteUser(ctx context.Context, id, expectRole string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	// invites.created_by is ON DELETE SET NULL (kept for used invites'
+	// history), so pending ones must go explicitly or they'd outlive the
+	// person who vouched for them.
+	if _, err := tx.Exec(ctx, `DELETE FROM invites WHERE created_by = $1::uuid AND used_at IS NULL`, id); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid AND role = $2 AND role <> 'owner'`, id, expectRole)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return s.missingOrChanged(ctx, tx, id)
+	}
+	return tx.Commit(ctx)
+}
+
+// missingOrChanged explains a conditional user update that matched no row.
+func (s *Store) missingOrChanged(ctx context.Context, tx pgx.Tx, id string) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1::uuid)`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
 		return ErrNotFound
 	}
-	return err
+	return ErrChanged
 }
 
 type Invite struct {
