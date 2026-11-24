@@ -111,6 +111,10 @@ Automatic updates are off until an admin turns them on for a stack or a containe
 
 Opted-in stacks show an **auto** badge in the Stacks list.
 
+<img src="images/stack-auto.png" width="900" alt="A stack page with the Automatic updates switch on, its next window and the last result: updated to the newest image">
+
+<img src="images/auto-updates.png" width="760" alt="Settings: the Automatic updates card with the window (days, start time, time zone, how long to keep starting updates), Run now, the opted-in targets and the recent results">
+
 **When.** Under **Settings → Automatic updates** you choose the days, a start time and a time zone (empty means the hub's local time, which is often UTC inside a container; **Use my time zone** fills in your browser's), and how long the window lasts (2 hours by default). The default is every day at 03:00. The switch at the top pauses every scheduled window without forgetting what was opted in. **Run now** runs the whole procedure straight away, even while paused.
 
 **What happens in a window.**
