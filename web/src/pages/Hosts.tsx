@@ -22,8 +22,21 @@ export function HostsPage() {
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
   // Agents dial the hub directly (not through a reverse proxy) on port 7443.
-  // The address this page was opened on is the right guess for a plain install.
-  const [agentAddr, setAgentAddr] = useState(() => `${window.location.hostname}:7443`)
+  // The hub suggests the address: TAINERHUB_AGENT_ADDR, the last one used, or
+  // the address this page was opened on unless that's the reverse proxy.
+  const [agentAddr, setAgentAddr] = useState('')
+  const [reissuing, setReissuing] = useState<Host | null>(null)
+  const openAdd = async (forHost?: Host) => {
+    if (forHost) setReissuing(forHost)
+    else setAdding(true)
+    setError(null)
+    try {
+      const d = await api<{ agentAddr: string }>('/api/hosts/agent-addr')
+      setAgentAddr((cur) => cur || d.agentAddr)
+    } catch {
+      // leave the field for the admin to fill in
+    }
+  }
   const [join, setJoin] = useState<JoinTokenResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -39,8 +52,11 @@ export function HostsPage() {
   })
   const reissue = useMutation({
     mutationFn: (h: Host) => api<JoinTokenResponse>(`/api/hosts/${h.id}/token`, { method: 'POST', body: { agentAddr: agentAddr.trim() } }),
-    onSuccess: setJoin,
-    onError: (e) => toast('bad', errorText(e)),
+    onSuccess: (res) => {
+      setReissuing(null)
+      setJoin(res)
+    },
+    onError: (e) => setError(errorText(e)),
   })
   const [renaming, setRenaming] = useState<Host | null>(null)
   const [newName, setNewName] = useState('')
@@ -74,6 +90,17 @@ export function HostsPage() {
   }
 
   const online = hosts.data?.filter((h) => h.online).length ?? 0
+  const addrInput = (
+    <Input
+      label="Hub address for agents"
+      value={agentAddr}
+      onChange={(e) => setAgentAddr(e.target.value)}
+      placeholder="192.168.1.10:7443"
+      required
+      className="mono"
+      hint="The hub server's own LAN IP or name, port 7443. The agent connects here directly, never through a reverse proxy, so not your HTTPS address. TainerHub remembers it for the next host."
+    />
+  )
 
   return (
     <div>
@@ -82,10 +109,7 @@ export function HostsPage() {
           <Button
             variant="primary"
             icon={Plus}
-            onClick={() => {
-              setAdding(true)
-              setError(null)
-            }}
+            onClick={() => openAdd()}
           >
             Add host
           </Button>
@@ -110,7 +134,7 @@ export function HostsPage() {
               key={h.id}
               h={h}
               admin={admin}
-              onToken={() => reissue.mutate(h)}
+              onToken={() => openAdd(h)}
               onRemove={() => askRemove(h)}
               onRename={() => {
                 setRenaming(h)
@@ -132,20 +156,36 @@ export function HostsPage() {
           }}
         >
           <Input label="Name" placeholder="server-2" value={name} onChange={(e) => setName(e.target.value)} autoFocus required maxLength={64} hint="How this server appears in TainerHub." />
-          <Input
-            label="Hub address for agents"
-            value={agentAddr}
-            onChange={(e) => setAgentAddr(e.target.value)}
-            required
-            className="mono"
-            hint="The hub server's IP or name, port 7443. The agent connects here directly, never through a reverse proxy."
-          />
+          {addrInput}
           <ErrorNote error={error} />
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => setAdding(false)}>
               Cancel
             </Button>
             <Button variant="primary" icon={KeyRound} loading={create.isPending}>
+              Create join token
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={!!reissuing} onClose={() => setReissuing(null)} title={reissuing ? `New join token for ${reissuing.name}` : ''}>
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setError(null)
+            if (reissuing) reissue.mutate(reissuing)
+          }}
+        >
+          <p className="text-sm text-ink-100/70">The old token stops working. Run the new command on {reissuing?.name}.</p>
+          {addrInput}
+          <ErrorNote error={error} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setReissuing(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" icon={KeyRound} loading={reissue.isPending}>
               Create join token
             </Button>
           </div>
@@ -302,7 +342,9 @@ function JoinInstructions({ join }: { join: JoinTokenResponse }) {
   // another subnet (curl: 403), so offer the hub's own address too.
   const page = window.location.origin
   const direct = directAlternative(page, join.directURL)
-  const [useDirect, setUseDirect] = useState(false)
+  // Default to the hub directly: the new server must reach the hub's address
+  // anyway (for port 7443), while a proxy's access list may refuse it.
+  const [useDirect, setUseDirect] = useState(true)
   const base = useDirect && direct ? direct : page
   const command = joinCommand(base, join.joinToken, join.agentAddr)
   return (
@@ -346,6 +388,7 @@ function JoinInstructions({ join }: { join: JoinTokenResponse }) {
             If curl answers <code className="mono text-ink-100/80">403</code>, your reverse proxy's access list doesn't admit this server's network: choose <em>the hub directly</em> above, add the server's subnet to the access list, or set it up by hand below.
           </>
         )}
+        {direct && useDirect && <> The installer link carries the one-time token over plain HTTP on your network; choose <em>this page's address</em> to download it over HTTPS through your proxy instead.</>}
       </p>
       <details className="rounded-[3px] ring-1 ring-line">
         <summary className="cursor-pointer select-none px-4 py-2.5 text-xs text-ink-100/70 hover:text-white">Set it up by hand instead</summary>

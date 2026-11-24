@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"sort"
@@ -108,6 +109,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/containers", s.need("viewer", s.containers))
 	mux.Handle("GET /api/events", s.need("viewer", s.events))
 	mux.Handle("GET /api/hosts", s.need("viewer", s.hosts))
+	mux.Handle("GET /api/hosts/agent-addr", s.need("admin", s.agentAddrDefault))
 	mux.Handle("GET /api/placement", s.need("viewer", s.placement))
 	mux.Handle("GET /api/hosts/{id}/containers/{cid}/logs", s.stream("viewer", s.logs))
 
@@ -833,11 +835,6 @@ func (s *Server) createHost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) newHostToken(w http.ResponseWriter, r *http.Request) {
 	var in struct{ AgentAddr string }
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in) // body is optional
-	addr, err := s.agentAddrFor(r, in.AgentAddr)
-	if err != nil {
-		jsonErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
 	id := r.PathValue("id")
 	if !validUUID(id) { // a malformed id would fail the ::uuid cast with a 500
 		jsonErr(w, http.StatusNotFound, "not found")
@@ -845,6 +842,11 @@ func (s *Server) newHostToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// A join token enrolls a machine that stays trusted: needs a fresh sign-in.
 	if !s.fresh(w, r) {
+		return
+	}
+	addr, err := s.agentAddrFor(r, in.AgentAddr)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	h, err := s.Store.GetHost(r.Context(), id)
@@ -855,28 +857,85 @@ func (s *Server) newHostToken(w http.ResponseWriter, r *http.Request) {
 	s.issueToken(w, r, h, addr)
 }
 
+// settingAgentAddr remembers the last hub address for agents an admin used,
+// so the next Add host (and New join token) suggests it.
+const settingAgentAddr = "agent_addr"
+
 // agentAddrFor picks the address new agents should dial: the admin's choice,
-// else TAINERHUB_AGENT_ADDR, else the host this request reached the hub on
-// with port 7443. That last guess is right for a plain install opened by IP,
-// and wrong behind a reverse proxy on another server, so the UI shows it and
-// lets the admin change it.
+// else TAINERHUB_AGENT_ADDR, else the last address used, else the host this
+// request reached the hub on with port 7443. That last guess is right for a
+// plain install opened by IP, and wrong when the page came through a reverse
+// proxy: agents connect with mutual TLS on 7443 and must reach the hub itself,
+// so an address that names the proxy is refused with an explanation.
 func (s *Server) agentAddrFor(r *http.Request, requested string) (string, error) {
 	addr := strings.TrimSpace(requested)
 	if addr == "" {
-		addr = s.AgentAddr
+		addr = s.suggestAgentAddr(r)
 	}
 	if addr == "" {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		addr = net.JoinHostPort(strings.Trim(host, "[]"), "7443")
+		return "", errors.New("enter the hub address for agents: the hub server's LAN IP or name with port 7443, e.g. 192.168.1.10:7443. This page came through your reverse proxy, and agents must reach the hub directly")
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host == "" || port == "" || strings.ContainsAny(addr, " /\\\"'\n") {
 		return "", errors.New("hub address for agents must look like 192.168.1.10:7443 or hub.lan:7443")
 	}
+	if msg := s.proxyAddrProblem(host); msg != "" {
+		return "", errors.New(msg)
+	}
 	return addr, nil
+}
+
+// suggestAgentAddr is the default hub address for agents, or "" when the
+// only guess would be the reverse proxy.
+func (s *Server) suggestAgentAddr(r *http.Request) string {
+	stored := ""
+	if s.AgentAddr == "" {
+		stored, _ = s.Store.Setting(r.Context(), settingAgentAddr)
+	}
+	return s.guessAgentAddr(r.Host, stored)
+}
+
+func (s *Server) guessAgentAddr(reqHost, stored string) string {
+	if s.AgentAddr != "" {
+		return s.AgentAddr
+	}
+	if stored != "" {
+		if h, _, err := net.SplitHostPort(stored); err == nil && s.proxyAddrProblem(h) == "" {
+			return stored
+		}
+	}
+	host := reqHost
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" || s.proxyAddrProblem(host) != "" {
+		return ""
+	}
+	return net.JoinHostPort(host, "7443")
+}
+
+// proxyAddrProblem explains why host can't be the hub address for agents:
+// it is the HTTPS name your reverse proxy serves, or the proxy's own IP from
+// the trusted proxies. Returns "" when host may be the hub.
+func (s *Server) proxyAddrProblem(host string) string {
+	host = strings.Trim(host, "[]")
+	if u := s.Auth.PublicURL(); u != nil && strings.EqualFold(host, u.Hostname()) {
+		return fmt.Sprintf("%s is the address your reverse proxy serves (TainerHub's public URL), and agents can't connect through a proxy (they use mutual TLS on port 7443). Enter the hub server's own LAN IP or name instead, e.g. 192.168.1.10:7443", host)
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		for _, p := range s.Auth.Trusted() {
+			if p.IsSingleIP() && p.Addr().Unmap() == ip.Unmap() {
+				return fmt.Sprintf("%s is your reverse proxy (it's in the trusted proxies), and agents can't connect through a proxy (they use mutual TLS on port 7443). Enter the hub server's own LAN IP or name instead", host)
+			}
+		}
+	}
+	return ""
+}
+
+// agentAddrDefault answers what the Add host dialog should pre-fill.
+func (s *Server) agentAddrDefault(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"agentAddr": s.suggestAgentAddr(r)})
 }
 
 // issueToken creates a one-time join token (valid 1 hour) and returns it with
@@ -887,6 +946,9 @@ func (s *Server) issueToken(w http.ResponseWriter, r *http.Request, h store.Host
 	if err := s.Store.CreateJoinToken(r.Context(), tok.ID, h.ID, gateway.HashSecret(tok.Secret), expires); err != nil {
 		s.fail(w, err)
 		return
+	}
+	if s.AgentAddr == "" { // remember it for the next host; best effort
+		_ = s.Store.SetSetting(r.Context(), settingAgentAddr, agentAddr)
 	}
 	u := userFrom(r)
 	s.record(r, &u, "host.join_token_issued", h.Name, nil)

@@ -79,11 +79,23 @@ TainerHub never answers the install link with 403: a bad or used token gets a sh
 
 Pick one:
 
-- **Download from the hub directly.** In the **Add host** dialog, under **Download the installer from**, choose **the hub directly**. The command then uses `http://<hub address for agents>:8585`, which skips the proxy. The new server must be able to reach port 8585 on the hub (check any `DOCKER-USER` rule you added).
+- **Download from the hub directly.** In the **Add host** dialog, under **Download the installer from**, choose **the hub directly** (the default since this option was added). The command then uses `http://<hub address for agents>:8585`, which skips the proxy. The new server must be able to reach port 8585 on the hub (check any `DOCKER-USER` rule you added).
 - **Allow the server's network in the proxy.** In NPM, edit the Access List and add the server's subnet (for example `192.168.20.0/24`) under **Allow**.
 - **Set it up by hand.** Open **Set it up by hand instead** in the dialog, save the compose file on the server and run `docker compose up -d`. This needs no download from the hub.
 
 The agent itself always connects to port 7443 directly, so the proxy never affects it after the install.
+
+## The agent can't reach the hub: "connection refused" on port 7443
+
+The installer says "The agent didn't reach the hub ... within 90 seconds", and the agent's log shows `dial tcp <IP>:7443: connect: connection refused`. Most often, **Hub address for agents** was your reverse proxy's HTTPS name (`tainerhub.example.com:7443`), so the agent called the proxy, which doesn't listen on 7443. Agents use mutual TLS and must reach the hub server itself. Current versions refuse the proxy's name in that field.
+
+The token wasn't used, because the agent never enrolled. To fix it on the new server, put the hub's own address into the agent's compose file and start it again:
+
+```bash
+cd ~/tainerhub-agent && sed -i 's/tainerhub.example.com:7443/192.168.1.10:7443/' compose.yml && docker compose up -d
+```
+
+Or remove the agent (`cd ~/tainerhub-agent && docker compose down -v`) and use **New join token** with the right address. If the address is right and the connection is still refused, check that the hub publishes port 7443 and that no firewall between the networks blocks it.
 
 ## "Stacks unavailable" on a host card
 

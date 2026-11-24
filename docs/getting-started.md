@@ -112,7 +112,7 @@ The hub's own server shows up under **Hosts** a few seconds after the hub starts
 
 1. Go to **Hosts** and click **Add host**.
 2. Enter a **Name** (for example `server-2` or `nas`). This is only how it appears in TainerHub.
-3. Check **Hub address for agents**. It is pre-filled with the address you opened TainerHub on, port 7443, for example `192.168.1.10:7443`. Change it if the new server should reach the hub by another IP or name. This must be the hub itself, never a reverse proxy.
+3. Check **Hub address for agents**: the hub server's own IP or name with port 7443, for example `192.168.1.10:7443`. This must be the hub itself, never a reverse proxy. TainerHub pre-fills `TAINERHUB_AGENT_ADDR` if you set it, else the address you used last time, else the address you opened TainerHub on. If you opened TainerHub through your reverse proxy (`https://tainerhub.example.com`), there is no safe guess the first time. Type the hub's LAN IP, and TainerHub remembers it. It refuses the proxy's HTTPS name and the proxy's own IP (if it's in the trusted proxies).
 4. Click **Create join token**.
 
 Creating a join token needs a sign-in from the last 10 minutes. If yours is older, TainerHub asks you to **Sign in again** first and then brings you back.
@@ -134,7 +134,9 @@ The command:
 
 The host turns green in TainerHub when it's connected.
 
-If you opened TainerHub through a reverse proxy (an `https://` name), the dialog also shows **Download the installer from**. **This page's address** downloads through the proxy. **The hub directly** uses `http://<hub address for agents>:8585` and skips the proxy. Choose the hub directly when the new server is on a network your proxy's access list doesn't allow. Otherwise curl stops with `curl: (22) The requested URL returned error: 403`. See [Troubleshooting](troubleshooting.md#the-install-command-fails-with-curl-22--403).
+If you opened TainerHub through a reverse proxy (an `https://` name), the dialog also shows **Download the installer from**. It defaults to **the hub directly**, `http://<hub address for agents>:8585`, which the new server can reach whenever it can reach the agent port. A proxy's access list may refuse a server on another subnet or VLAN, and curl then stops with `curl: (22) The requested URL returned error: 403`. **This page's address** downloads through the proxy over HTTPS instead. With the hub directly, the one-time token crosses your network over plain HTTP. See [Troubleshooting](troubleshooting.md#the-install-command-fails-with-curl-22--403).
+
+**New join token** (in a host's `…` menu) asks for the same hub address.
 
 The link works **once** and expires **one hour** after you created it. If it expires, open the host's menu (the `…` button on its card) and pick **New join token**.
 
