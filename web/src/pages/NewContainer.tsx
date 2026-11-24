@@ -1,18 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, BadgeCheck, Download, Plus, Rocket, Search, Star, X } from 'lucide-react'
-import { api, errorText, stackProblem, type StackSaveResult } from '../api'
-import { Badge, Button, Card, ErrorNote, IconButton, Input, PageHeader, cx, useToast } from '../ui'
+import { ArrowLeft, BadgeCheck, Download, Rocket, Search, Star } from 'lucide-react'
+import { api, errorText, stackProblem, type NetworkRes, type StackSaveResult } from '../api'
+import { Badge, Button, Card, ErrorNote, Input, PageHeader, cx, useConfirm, useToast } from '../ui'
 import { useFleet } from '../fleet'
 import { useOpenJob, useStacks } from '../stacks'
 import { HostSelect, useDefaultHost } from '../placement'
+import { allProblems, blankAdvanced, composeFor, isUserNetwork, setCounts, type Advanced, type Env, type Port, type Section, type Vol } from '../compose'
+import { AdvancedOptions, ComposePreview, FieldError, Rows, field } from './ContainerOptions'
 
 type Repo = { name: string; description: string; stars: number; pulls: number; official: boolean }
 type Tag = { name: string; updated: string; size: number }
-type Port = { host: string; container: string; proto: 'tcp' | 'udp' }
-type Env = { key: string; value: string }
-type Vol = { source: string; target: string }
 
 const RESTART = ['unless-stopped', 'always', 'on-failure', 'no'] as const
 
@@ -24,56 +23,11 @@ function defaultName(image: string) {
   return last.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+/, '').slice(0, 63)
 }
 
-const q = (s: string) => JSON.stringify(s) // a JSON string is a valid YAML double-quoted scalar
-const isNamedVolume = (src: string) => /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(src)
-
-/** Builds a one-service compose file. Values are quoted, and "$" is escaped so compose doesn't interpolate it. */
-export function composeFor(o: { name: string; image: string; restart: string; ports: Port[]; env: Env[]; vols: Vol[] }) {
-  const lines = ['services:', `  ${o.name}:`, `    image: ${q(o.image)}`, `    container_name: ${q(o.name)}`, `    restart: ${o.restart}`]
-  const ports = o.ports.filter((p) => p.container)
-  if (ports.length) {
-    lines.push('    ports:')
-    for (const p of ports) lines.push(`      - ${q(`${p.host ? p.host + ':' : ''}${p.container}/${p.proto}`)}`)
-  }
-  const env = o.env.filter((e) => e.key)
-  if (env.length) {
-    lines.push('    environment:')
-    for (const e of env) lines.push(`      ${e.key}: ${q(e.value.replaceAll('$', '$$$$'))}`)
-  }
-  const vols = o.vols.filter((v) => v.source && v.target)
-  if (vols.length) {
-    lines.push('    volumes:')
-    for (const v of vols) lines.push(`      - ${q(`${v.source}:${v.target}`)}`)
-  }
-  const named = [...new Set(vols.map((v) => v.source).filter(isNamedVolume))]
-  if (named.length) {
-    lines.push('volumes:')
-    for (const n of named) lines.push(`  ${n}: {}`)
-  }
-  return lines.join('\n') + '\n'
-}
-
-function problems(o: { name: string; image: string; ports: Port[]; env: Env[]; vols: Vol[] }): string | null {
-  if (!o.image) return 'Pick an image.'
-  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(o.name)) return 'Name: lowercase letters, digits, - and _, starting with a letter or digit.'
-  const portOK = (s: string) => /^\d{1,5}$/.test(s) && +s >= 1 && +s <= 65535
-  for (const p of o.ports) {
-    if (!p.container && !p.host) continue
-    if (!portOK(p.container) || (p.host && !portOK(p.host))) return 'Ports must be numbers from 1 to 65535.'
-  }
-  for (const e of o.env) if (e.key && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(e.key)) return `Environment variable names use letters, digits and _ (not "${e.key}").`
-  for (const v of o.vols) {
-    if (!v.source && !v.target) continue
-    if (!v.source || !v.target.startsWith('/')) return 'Volumes need a source and an absolute path inside the container, like /data.'
-    if (!isNamedVolume(v.source) && !/^(\/|\.\/|\.\.\/)/.test(v.source)) return `Volume source "${v.source}" should be a volume name or a path starting with / or ./`
-  }
-  return null
-}
-
 export function NewContainerPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const toast = useToast()
+  const confirm = useConfirm()
   const openJob = useOpenJob()
   const { hosts, containers } = useFleet()
   const stacks = useStacks()
@@ -88,7 +42,10 @@ export function NewContainerPage() {
   const [ports, setPorts] = useState<Port[]>([{ host: '', container: '', proto: 'tcp' }])
   const [env, setEnv] = useState<Env[]>([])
   const [vols, setVols] = useState<Vol[]>([])
+  const [adv, setAdv] = useState<Advanced>(blankAdvanced)
+  const [openSections, setOpenSections] = useState<Set<Section>>(() => new Set())
   const [error, setError] = useState<string | null>(null)
+  const [tried, setTried] = useState(false) // basic fields show their messages after the first Deploy
 
   useDefaultHost(hostId, setHostId)
 
@@ -114,10 +71,42 @@ export function NewContainerPage() {
     setError(null)
   }
 
+  const patchAdv = useCallback((patch: Partial<Advanced>) => setAdv((old) => ({ ...old, ...patch })), [])
+  const toggleSection = useCallback(
+    (id: Section) =>
+      setOpenSections((old) => {
+        const next = new Set(old)
+        if (!next.delete(id)) next.add(id)
+        return next
+      }),
+    [],
+  )
+  const changeHost = (id: string) => {
+    setHostId(id)
+    // networks belong to a host: a choice on the old one means nothing on the new one
+    if (id !== hostId) patchAdv({ networks: [] })
+  }
+
   const fullImage = image ? `${image}:${tag || 'latest'}` : ''
-  const spec = { name, image: fullImage, restart, ports, env, vols }
-  const compose = useMemo(() => (image ? composeFor(spec) : ''), [image, tag, name, restart, ports, env, vols]) // eslint-disable-line react-hooks/exhaustive-deps
+  const spec = { name, image: fullImage, restart, ports, env, vols, adv }
+  const compose = useMemo(() => (image ? composeFor(spec) : ''), [image, tag, name, restart, ports, env, vols, adv]) // eslint-disable-line react-hooks/exhaustive-deps
   const host = hosts.find((h) => h.id === hostId)
+  const networks = useQuery({
+    queryKey: ['host-networks', hostId],
+    queryFn: () => api<NetworkRes[]>(`/api/hosts/${hostId}/networks`),
+    enabled: !!image && !!hostId && !!host?.online,
+    staleTime: 30_000,
+    retry: false,
+  })
+  const allNetworks = useMemo(() => (networks.data ?? []).map((n) => n.name), [networks.data])
+  const userNetworks = useMemo(
+    () => (networks.data ?? []).filter((n) => !n.builtin && isUserNetwork(n.name) && n.name !== 'ingress' && n.name !== 'docker_gwbridge').map((n) => n.name),
+    [networks.data],
+  )
+  const issues = useMemo(() => allProblems(spec, allNetworks), [image, tag, name, restart, ports, env, vols, adv, allNetworks]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Advanced fields are checked as you type; the basic ones on Deploy, as before.
+  const advIssues = issues.filter((p) => p.section !== 'basic')
+  const basicErr = (f: string) => (tried ? issues.filter((p) => p.field === f).map((p) => p.msg) : [])
   const hostIssue = stackProblem(host)
   const clash =
     containers.find((c) => c.hostId === hostId && c.name === name) || stacks.data?.find((s) => s.hostId === hostId && s.name === name && s.managed)
@@ -125,7 +114,7 @@ export function NewContainerPage() {
       : null
 
   const deploy = useMutation({
-    mutationFn: () => api<StackSaveResult>('/api/stacks', { method: 'POST', body: { hostId, name, compose, env: '', deploy: true } }),
+    mutationFn: () => api<StackSaveResult>('/api/stacks', { method: 'POST', body: { hostId, name, compose, env: adv.envFile, deploy: true } }),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['stacks'] })
       if (res.deployError) toast('bad', `Saved, but the deploy didn't start: ${res.deployError}`)
@@ -135,10 +124,32 @@ export function NewContainerPage() {
     onError: (e) => setError(errorText(e)),
   })
 
-  const submit = () => {
-    const p = problems(spec) ?? hostIssue ?? clash
+  const submit = async () => {
+    const all = issues.map((p) => p.msg)
+    setTried(true)
+    if (issues.length) {
+      // open every section that needs attention
+      setOpenSections((old) => new Set([...old, ...issues.map((p) => p.section).filter((s) => s !== 'basic')]))
+      return setError(all.length === 1 ? all[0] : `${all.length} things to fix: ${[...new Set(all)].join(' ')}`)
+    }
+    const p = hostIssue ?? clash
     if (p) return setError(p)
     setError(null)
+    if (
+      adv.privileged &&
+      !(await confirm({
+        title: 'Deploy a privileged container?',
+        body: (
+          <>
+            <strong className="text-red-200">{name}</strong> will run with full root access to {host?.name ?? 'the host'}: every capability and every device. Anyone who controls this
+            container controls the host.
+          </>
+        ),
+        confirm: 'Deploy privileged',
+        danger: true,
+      }))
+    )
+      return
     deploy.mutate()
   }
 
@@ -242,10 +253,13 @@ export function NewContainerPage() {
                 {tags.isFetching ? 'Loading versions…' : tags.data ? `${tags.data.length} recent versions to pick from` : 'Usually “latest” or a version number.'}
               </span>
             </label>
-            <Input label="Name" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} disabled={!image} placeholder="my-app" hint="Container and stack name." />
+            <div>
+              <Input label="Name" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} disabled={!image} placeholder="my-app" hint="Container and stack name." />
+              <FieldError msgs={basicErr('name')} />
+            </div>
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Host</span>
-              <HostSelect value={hostId} onChange={setHostId} disabled={!image} className="w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none focus:ring-lime-400/60" />
+              <HostSelect value={hostId} onChange={changeHost} disabled={!image} className="w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none focus:ring-lime-400/60" />
             </label>
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Restart</span>
@@ -266,11 +280,18 @@ export function NewContainerPage() {
 
           <Rows
             title="Ports"
-            hint="Host port: reach it at http://<server>:<host port>. Container port: what the app listens on (see the image's docs)."
+            hint={
+              adv.networkMode === 'host'
+                ? "Off with host networking (see Advanced → Networking): the app listens on the host's ports directly, so there's nothing to map."
+                : adv.networkMode === 'none'
+                  ? 'Off: the container has no network (see Advanced → Networking).'
+                  : "Host port: reach it at http://<server>:<host port>. Container port: what the app listens on (see the image's docs)."
+            }
             items={ports}
             setItems={setPorts}
             blank={{ host: '', container: '', proto: 'tcp' }}
-            disabled={!image}
+            disabled={!image || adv.networkMode !== ''}
+            error={basicErr('ports')}
             render={(p, set) => (
               <>
                 <input aria-label="Host port" placeholder="host" value={p.host} onChange={(e) => set({ ...p, host: e.target.value.trim() })} className={field + ' w-24'} />
@@ -289,6 +310,7 @@ export function NewContainerPage() {
             setItems={setEnv}
             blank={{ key: '', value: '' }}
             disabled={!image}
+            error={basicErr('env')}
             render={(e, set) => (
               <>
                 <input aria-label="Variable name" placeholder="NAME" value={e.key} onChange={(ev) => set({ ...e, key: ev.target.value.trim() })} className={field + ' w-40'} />
@@ -304,6 +326,7 @@ export function NewContainerPage() {
             setItems={setVols}
             blank={{ source: '', target: '' }}
             disabled={!image}
+            error={basicErr('vols')}
             render={(v, set) => (
               <>
                 <input aria-label="Source" placeholder="data or /srv/app" value={v.source} onChange={(e) => set({ ...v, source: e.target.value.trim() })} className={field + ' min-w-0 flex-1'} />
@@ -314,11 +337,20 @@ export function NewContainerPage() {
           />
 
           {image && (
-            <details className="group">
-              <summary className="cursor-pointer select-none text-xs text-ink-100/60 hover:text-white">Show the compose file this creates</summary>
-              <pre className="mono mt-2 overflow-x-auto rounded-[3px] bg-black/40 p-3 text-xs leading-relaxed text-ink-100/80 ring-1 ring-line">{compose}</pre>
-            </details>
+            <AdvancedOptions
+              adv={adv}
+              set={patchAdv}
+              open={openSections}
+              onToggle={toggleSection}
+              problems={advIssues}
+              counts={setCounts(adv)}
+              networks={userNetworks}
+              networksLoading={networks.isPending && networks.fetchStatus !== 'idle'}
+              networksError={!host?.online ? 'the host is offline' : networks.error ? errorText(networks.error) : null}
+              envHasTZ={env.some((e) => e.key === 'TZ')}
+            />
           )}
+          {image && <ComposePreview compose={compose} />}
           <ErrorNote error={error} />
           {image && hostIssue && <p className="text-xs text-amber-200">{hostIssue}</p>}
           <div className="flex flex-wrap items-center gap-3">
@@ -330,45 +362,5 @@ export function NewContainerPage() {
         </Card>
       </div>
     </div>
-  )
-}
-
-const field = 'mono rounded-[2px] bg-ink-950/70 px-2.5 py-1.5 text-sm text-white ring-1 ring-inset ring-white/12 outline-none placeholder:text-ink-100/30 focus:ring-lime-400/60 disabled:opacity-50'
-
-function Rows<T>({
-  title,
-  hint,
-  items,
-  setItems,
-  blank,
-  render,
-  disabled,
-}: {
-  title: string
-  hint?: string
-  items: T[]
-  setItems: (f: (old: T[]) => T[]) => void
-  blank: T
-  render: (item: T, set: (v: T) => void) => React.ReactNode
-  disabled?: boolean
-}) {
-  return (
-    <fieldset disabled={disabled}>
-      <div className="mb-2 flex items-center justify-between">
-        <legend className="text-sm font-medium text-ink-100/80">{title}</legend>
-        <Button type="button" variant="ghost" icon={Plus} className="!px-2 !py-1 text-[11px]" onClick={() => setItems((old) => [...old, blank])}>
-          Add
-        </Button>
-      </div>
-      {hint && <p className="-mt-1 mb-2 text-xs text-ink-100/45">{hint}</p>}
-      <div className="space-y-2">
-        {items.map((it, i) => (
-          <div key={i} className="flex items-center gap-2">
-            {render(it, (v) => setItems((old) => old.map((o, j) => (j === i ? v : o))))}
-            <IconButton icon={X} label="Remove row" onClick={() => setItems((old) => old.filter((_, j) => j !== i))} />
-          </div>
-        ))}
-      </div>
-    </fieldset>
   )
 }
