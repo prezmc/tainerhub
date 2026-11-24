@@ -52,6 +52,9 @@ type SocketDocker struct {
 	c       *http.Client
 	socket  string      // path of the Docker socket inside this container
 	updates updateCache // last image update check, shown on each container
+	// hubChecks tracks update checks the hub asked for (with registry
+	// logins), so the agent's own scheduled check can stand down.
+	hubChecks hubCheckTimes
 
 	cpuMu   sync.Mutex
 	lastCPU map[string]cpuSample // container ID -> previous stats sample

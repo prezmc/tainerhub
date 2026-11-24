@@ -354,9 +354,55 @@ func labelsWithoutInherited(container, image json.RawMessage) json.RawMessage {
 	return b
 }
 
+// HubCheckCovers is how recent a check the hub asked for must be for the
+// agent to skip its own scheduled one. A hub that schedules checks runs one
+// every 6 hours (by default), so 5 hours means the agent stands down while
+// the hub keeps checking, and takes over again when it stops (an older hub,
+// or checks turned off there).
+const HubCheckCovers = 5 * time.Hour
+
+// hubCheckTimes records update checks the hub asked for.
+type hubCheckTimes struct {
+	mu      sync.Mutex
+	running int
+	last    time.Time // when the last one finished successfully
+}
+
+// begin records a hub check starting; call done with its outcome.
+func (h *hubCheckTimes) begin() (done func(ok bool)) {
+	h.mu.Lock()
+	h.running++
+	h.mu.Unlock()
+	return func(ok bool) {
+		h.mu.Lock()
+		h.running--
+		if ok {
+			h.last = time.Now()
+		}
+		h.mu.Unlock()
+	}
+}
+
+// covers reports whether a hub check is running or finished within window
+// before now.
+func (h *hubCheckTimes) covers(now time.Time, window time.Duration) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.running > 0 || (!h.last.IsZero() && now.Sub(h.last) < window)
+}
+
 // RunUpdateChecks checks for newer images shortly after start and then every
-// interval, until ctx ends. Results show up on containers in the next snapshot.
+// interval, until ctx ends. Results show up on containers in the next
+// snapshot. This is the fallback for hubs that don't schedule checks: it
+// has no registry logins, so it's skipped while the hub's checks (which
+// have them) are recent.
 func (d *SocketDocker) RunUpdateChecks(ctx context.Context, first, every time.Duration) {
+	runUpdateChecks(ctx, first, every, func() bool { return d.hubChecks.covers(time.Now(), HubCheckCovers) }, func(ctx context.Context) {
+		_ = d.refreshUpdates(ctx, nil)
+	})
+}
+
+func runUpdateChecks(ctx context.Context, first, every time.Duration, skip func() bool, check func(context.Context)) {
 	t := time.NewTimer(first)
 	defer t.Stop()
 	for {
@@ -365,7 +411,9 @@ func (d *SocketDocker) RunUpdateChecks(ctx context.Context, first, every time.Du
 			return
 		case <-t.C:
 		}
-		_ = d.refreshUpdates(ctx, nil)
+		if !skip() {
+			check(ctx)
+		}
 		t.Reset(every)
 	}
 }

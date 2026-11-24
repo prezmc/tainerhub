@@ -95,6 +95,10 @@ type Registry struct {
 
 	xferMu sync.Mutex
 	xfers  map[string]*Transfer // active data transfers, by ID
+
+	checkMu sync.Mutex
+	checks  map[string]*hostCheck // host ID -> image update checks; kept across reconnects
+	now     func() time.Time      // tests set a fake clock; nil: time.Now
 }
 
 // SetStatsFromDocker records a host's stats source and tells its agent now
@@ -510,7 +514,7 @@ func (a *Agent) Do(ctx context.Context, act wire.ContainerAction) error {
 }
 
 // Operate runs a resource operation on the agent and returns its JSON result.
-func (a *Agent) Operate(ctx context.Context, op wire.Operation) (json.RawMessage, error) {
+func (a *Agent) Operate(ctx context.Context, op wire.Operation) (_ json.RawMessage, err error) {
 	if err := wire.ValidOperation(op); err != nil {
 		return nil, err
 	}
@@ -521,6 +525,12 @@ func (a *Agent) Operate(ctx context.Context, op wire.Operation) (json.RawMessage
 	}
 	cmd := wire.Command{Op: &op}
 	a.addAuth(ctx, &cmd)
+	if op.Kind == wire.OpImagesCheckUpdates && a.reg != nil {
+		// Recorded for the scheduler (no overlapping checks, next one a
+		// full period later) and for "checked X ago" in the UI.
+		a.reg.beginImageCheck(a.HostID)
+		defer func() { a.reg.endImageCheck(a.HostID, err == nil) }()
+	}
 	res, err := a.call(ctx, cmd, timeout)
 	return res.Data, err
 }

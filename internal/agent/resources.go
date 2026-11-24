@@ -63,10 +63,12 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 	case wire.OpDockerUpgrade:
 		return d.dockerUpgrade(ctx)
 	case wire.OpImagesCheckUpdates:
+		done := d.hubChecks.begin()
 		r, err := d.checkUpdates(ctx, op.Auth)
 		if err == nil {
 			d.updates.set(r)
 		}
+		done(err == nil)
 		return r, err
 	case wire.OpRegistryLogin:
 		return d.registryLogin(ctx, op.Auth[0])

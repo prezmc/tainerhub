@@ -213,7 +213,7 @@ TAINERHUB_DATABASE_URL=postgres://... TAINERHUB_DATA_DIR=./data ./bin/tainerhub
 
 Add `TAINERHUB_PUBLIC_URL=http://localhost:8585` to try passkeys, which work on `http://localhost` without HTTPS.
 
-Other settings: `TAINERHUB_AUDIT_RETENTION_DAYS` (default `365`; `0` keeps the audit log forever), and `TAINERHUB_PPROF_ADDR=127.0.0.1:6060` to serve Go's profiler (see [Troubleshooting: profiling](docs/troubleshooting.md#profiling-with-pprof)).
+Other settings: `TAINERHUB_AUDIT_RETENTION_DAYS` (default `365`; `0` keeps the audit log forever), `TAINERHUB_UPDATE_CHECK_HOURS` (how often hosts check for newer container images, default `6`; `0` leaves it to the agents' own checks), and `TAINERHUB_PPROF_ADDR=127.0.0.1:6060` to serve Go's profiler (see [Troubleshooting: profiling](docs/troubleshooting.md#profiling-with-pprof)).
 
 Under the hood: agents reconnect with backoff and resend their full state, and keepalives drop dead links within 90 seconds. The UI's JS and CSS are pre-compressed (Brotli and gzip) and cached as immutable, and pages load on demand.
 

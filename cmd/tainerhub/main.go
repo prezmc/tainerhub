@@ -44,6 +44,10 @@ type config struct {
 	// AuditRetention is how long audit log entries are kept; 0 keeps them
 	// forever.
 	AuditRetention time.Duration
+	// UpdateCheckEvery is how often the hub has each host check its
+	// containers' images for updates (with the saved registry logins); 0
+	// leaves it to the agents' own checks.
+	UpdateCheckEvery time.Duration
 }
 
 func loadConfig() (config, error) {
@@ -70,6 +74,11 @@ func loadConfig() (config, error) {
 		return c, fmt.Errorf("TAINERHUB_AUDIT_RETENTION_DAYS must be a whole number of days (0 keeps the audit log forever), got %q", os.Getenv("TAINERHUB_AUDIT_RETENTION_DAYS"))
 	}
 	c.AuditRetention = time.Duration(days) * 24 * time.Hour
+	hours, err := strconv.Atoi(envOr("TAINERHUB_UPDATE_CHECK_HOURS", "6"))
+	if err != nil || hours < 0 {
+		return c, fmt.Errorf("TAINERHUB_UPDATE_CHECK_HOURS must be a whole number of hours (0 turns the hub's scheduled image update checks off), got %q", os.Getenv("TAINERHUB_UPDATE_CHECK_HOURS"))
+	}
+	c.UpdateCheckEvery = time.Duration(hours) * time.Hour
 	c.DatabaseURL = os.Getenv("TAINERHUB_DATABASE_URL")
 	if c.DatabaseURL == "" {
 		return c, errors.New("TAINERHUB_DATABASE_URL is required, e.g. postgres://tainerhub@postgres:5432/tainerhub")
@@ -213,6 +222,9 @@ func run(log *slog.Logger) error {
 	// Commands that pull images carry the saved registry logins they need.
 	reg.AddAuth = apiSrv.AddRegistryAuth
 	gwStore.changed = apiSrv.HostsChanged // set before the gateway starts serving
+	// Scheduled image update checks go through the same path as "Check for
+	// updates", so they carry the saved registry logins too.
+	go (&registry.UpdateChecker{Reg: reg, Every: cfg.UpdateCheckEvery, Log: log.With("component", "update-checks")}).Run(ctx)
 	if err := apiSrv.LoadStatsSettings(ctx); err != nil {
 		log.Warn("load stats settings", "err", err)
 	}

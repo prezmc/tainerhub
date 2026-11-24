@@ -717,6 +717,9 @@ type hostView struct {
 	// Load is the host's recent CPU, memory and disk use (nil from older
 	// agents, and while the host is offline).
 	Load *registry.HostLoad `json:"load,omitempty"`
+	// ImagesCheckedAt is when the hub last had this host check its images
+	// for updates (scheduled or "Check for updates"); unset until it has.
+	ImagesCheckedAt *time.Time `json:"imagesCheckedAt,omitempty"`
 }
 
 func (s *Server) hosts(w http.ResponseWriter, r *http.Request) {
@@ -749,6 +752,9 @@ func (s *Server) hostViewsFrom(hs []store.Host) []hostView {
 			v.Hello = st.Hello
 			v.Containers = len(st.Containers)
 			v.Load = s.Reg.Load(h.ID)
+			if t := s.Reg.ImagesCheckedAt(h.ID); !t.IsZero() {
+				v.ImagesCheckedAt = &t
+			}
 			if !st.SnapshotAt.IsZero() {
 				t := st.SnapshotAt
 				v.SnapshotAt = &t
