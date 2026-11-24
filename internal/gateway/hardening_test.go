@@ -1,6 +1,7 @@
 package gateway_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -16,6 +17,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -343,15 +345,20 @@ func TestAgentFloodThrottled(t *testing.T) {
 	}
 }
 
-// The real server: unauthenticated connections per address are capped, and
-// an agent that has shown its certificate does not count against the cap.
-func TestServerCapsUnauthenticatedConns(t *testing.T) {
-	h := newRenewHarness(t)
+// startRealServer runs the gateway's own *http.Server (with its connection
+// limits) and returns its address. grace, if set, replaces how long
+// certificate-less connections may stay open.
+func (h *renewHarness) startRealServer(t *testing.T, grace time.Duration) string {
+	t.Helper()
+	gw := &gateway.Gateway{CA: h.ca, Store: h.store, Reg: h.reg, Log: h.gw.Log}
+	if grace > 0 {
+		gateway.SetCertlessGrace(gw, grace)
+	}
 	srvCert, err := h.ca.ServerCert([]string{"127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := h.gw.Server("127.0.0.1:0", srvCert)
+	srv := gw.Server("127.0.0.1:0", srvCert)
 	if srv.IdleTimeout == 0 || srv.HTTP2 == nil || srv.HTTP2.MaxConcurrentStreams == 0 {
 		t.Fatalf("server limits not set: idle %v, http2 %+v", srv.IdleTimeout, srv.HTTP2)
 	}
@@ -361,10 +368,69 @@ func TestServerCapsUnauthenticatedConns(t *testing.T) {
 	}
 	go func() { _ = srv.ServeTLS(ln, "", "") }()
 	t.Cleanup(func() { _ = srv.Close() })
-	addr := ln.Addr().String()
+	return ln.Addr().String()
+}
 
-	// An agent renews and keeps its connection open (idle in the pool).
+// tlsDial completes a TLS handshake with the hub, with cert if given, and
+// keeps the connection for the test's lifetime.
+func (h *renewHarness) tlsDial(t *testing.T, addr string, cert *tls.Certificate) *tls.Conn {
+	t.Helper()
+	cfg := &tls.Config{RootCAs: h.ca.Pool(), NextProtos: []string{"http/1.1"}}
+	if cert != nil {
+		cfg.Certificates = []tls.Certificate{*cert}
+	}
+	c, err := tls.Dial("tcp", addr, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
+}
+
+// open reports whether the hub is keeping c open: a read waits rather than
+// failing. In TLS 1.3 the server checks the client's certificate (or its
+// absence) after the client's handshake has finished, so a refusal shows up
+// as an alert on the first read.
+func open(c net.Conn) bool {
+	_ = c.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	_, err := c.Read(make([]byte, 1))
+	var ne net.Error
+	return err != nil && errors.As(err, &ne) && ne.Timeout()
+}
+
+// The real server caps connections per address that finished a handshake
+// without a client certificate. Connections that never handshake, and
+// agents with a certificate, don't count.
+func TestServerCapsUnauthenticatedConns(t *testing.T) {
+	h := newRenewHarness(t)
+	addr := h.startRealServer(t, 0)
+
+	// Bare TCP connections (no handshake yet) take no slots.
+	for range 40 {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.Close() })
+	}
+	var conns []*tls.Conn
+	for range 32 {
+		conns = append(conns, h.tlsDial(t, addr, nil))
+	}
+	for i, c := range conns {
+		if !open(c) {
+			t.Fatalf("certificate-less connection %d refused, want up to 32 kept", i+1)
+		}
+	}
+	if open(h.tlsDial(t, addr, nil)) {
+		t.Fatal("33rd certificate-less connection kept")
+	}
+
+	// An agent from the same address still gets in and renews.
 	cert := h.issue(t, time.Hour)
+	if !open(h.tlsDial(t, addr, &cert)) {
+		t.Fatal("connection with a client certificate refused")
+	}
 	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: h.ca.Pool(), Certificates: []tls.Certificate{cert}}, ForceAttemptHTTP2: true}
 	defer tr.CloseIdleConnections()
 	_, csr, _ := pki.NewKeyAndCSR("x")
@@ -378,48 +444,52 @@ func TestServerCapsUnauthenticatedConns(t *testing.T) {
 		t.Fatalf("renew = %d", resp.StatusCode)
 	}
 
-	// accepted: the server waits for a TLS hello rather than hanging up.
-	// A refused connection is closed at once, so a short wait tells them
-	// apart once the server has had a moment.
-	accepted := func(c net.Conn) bool {
-		_ = c.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
-		_, err := c.Read(make([]byte, 1))
-		var ne net.Error
-		return err != nil && errors.As(err, &ne) && ne.Timeout()
-	}
-	var conns []net.Conn
-	defer func() {
-		for _, c := range conns {
-			c.Close()
-		}
-	}()
-	dial := func() net.Conn {
-		c, err := net.Dial("tcp", addr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		conns = append(conns, c)
-		return c
-	}
-	for range 32 {
-		dial()
-	}
-	extra := dial()
-	time.Sleep(200 * time.Millisecond)
-	for i, c := range conns[:32] {
-		if !accepted(c) {
-			t.Fatalf("connection %d refused, want up to 32 accepted", i+1)
-		}
-	}
-	if accepted(extra) {
-		t.Fatal("33rd unauthenticated connection accepted")
-	}
 	conns[0].Close()
-	waitFor(t, "slot freed", func() bool {
-		c := dial()
-		time.Sleep(50 * time.Millisecond)
-		return accepted(c)
-	})
+	waitFor(t, "slot freed", func() bool { return open(h.tlsDial(t, addr, nil)) })
+}
+
+// Connections without a client certificate are closed after a short grace
+// period, unless they are in the middle of enrolling.
+func TestCertlessConnsTimedOut(t *testing.T) {
+	h := newRenewHarness(t)
+	const grace = 300 * time.Millisecond
+	addr := h.startRealServer(t, grace)
+
+	idle := h.tlsDial(t, addr, nil)
+	cert := h.issue(t, time.Hour)
+	agent := h.tlsDial(t, addr, &cert)
+	_ = idle.SetReadDeadline(time.Now().Add(3 * time.Second))
+	start := time.Now()
+	if _, err := idle.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("idle certificate-less connection not closed: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("closed after %v, want about %v", d, grace)
+	}
+	if !open(agent) {
+		t.Fatal("connection with a client certificate was closed")
+	}
+
+	// An enrollment trickling in for longer than the grace period is
+	// served to the end.
+	enr := h.tlsDial(t, addr, nil)
+	payload, _ := json.Marshal(wire.EnrollRequest{Token: "not-a-token"})
+	fmt.Fprintf(enr, "POST %s HTTP/1.1\r\nHost: hub\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n", wire.PathEnroll, len(payload))
+	for i, b := range payload {
+		if _, err := enr.Write([]byte{b}); err != nil {
+			t.Fatalf("enrollment cut off after %d bytes: %v", i, err)
+		}
+		time.Sleep(3 * grace / time.Duration(len(payload)))
+	}
+	_ = enr.SetReadDeadline(time.Now().Add(3 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(enr), nil)
+	if err != nil {
+		t.Fatalf("no reply to a slow enrollment: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("enroll with a bad token = %d, want 400", resp.StatusCode)
+	}
 }
 
 // When the hub refuses a connection because the certificate expired (here

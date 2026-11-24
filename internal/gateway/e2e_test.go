@@ -30,6 +30,9 @@ type memStore struct {
 	renewals    int
 	hellos      int      // TouchHost calls with a Hello
 	enrollments []string // "hostName ip reenrolled", from RecordEnrollment
+
+	stallTouch    bool // disconnect TouchHost calls hang until their context ends
+	touchDeadline bool // the last disconnect TouchHost had a deadline
 }
 
 func (m *memStore) GetJoinToken(_ context.Context, id string) (gateway.JoinTokenRecord, error) {
@@ -51,6 +54,7 @@ func (m *memStore) CompleteEnrollment(_ context.Context, tokenID, hostID, serial
 	}
 	t.Used = true
 	m.hosts[hostID].CertSerial = serial
+	m.hosts[hostID].PendingSerial = ""
 	return nil
 }
 
@@ -64,15 +68,26 @@ func (m *memStore) GetHostCert(_ context.Context, hostID string) (gateway.HostCe
 	return *h, nil
 }
 
-func (m *memStore) RenewHostCert(_ context.Context, hostID, oldSerial, newSerial string) error {
+func (m *memStore) RenewHostCert(_ context.Context, hostID string, seen gateway.HostCert, newSerial string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	h, ok := m.hosts[hostID]
-	if !ok || oldSerial == "" || h.CertSerial != oldSerial {
+	if !ok || seen.CertSerial == "" || h.CertSerial != seen.CertSerial || h.PendingSerial != seen.PendingSerial {
 		return gateway.ErrSerialChanged
 	}
-	h.CertSerial = newSerial
+	h.PendingSerial = newSerial
 	m.renewals++
+	return nil
+}
+
+func (m *memStore) PromoteHostCert(_ context.Context, hostID, serial string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.hosts[hostID]
+	if !ok || serial == "" || h.PendingSerial != serial {
+		return gateway.ErrSerialChanged
+	}
+	h.CertSerial, h.PendingSerial = serial, ""
 	return nil
 }
 
@@ -82,11 +97,25 @@ func (m *memStore) serial(hostID string) string {
 	return m.hosts[hostID].CertSerial
 }
 
-func (m *memStore) TouchHost(_ context.Context, _ string, hello *wire.Hello, _ time.Time) error {
+func (m *memStore) pending(hostID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hosts[hostID].PendingSerial
+}
+
+func (m *memStore) TouchHost(ctx context.Context, _ string, hello *wire.Hello, _ time.Time) error {
+	m.mu.Lock()
 	if hello != nil {
-		m.mu.Lock()
 		m.hellos++
 		m.mu.Unlock()
+		return nil
+	}
+	_, m.touchDeadline = ctx.Deadline()
+	stall := m.stallTouch
+	m.mu.Unlock()
+	if stall {
+		<-ctx.Done() // a database that has stopped answering
+		return ctx.Err()
 	}
 	return nil
 }

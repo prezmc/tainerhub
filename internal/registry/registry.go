@@ -20,10 +20,53 @@ var (
 	ErrOffline     = errors.New("host is offline")
 	ErrTimeout     = errors.New("agent did not respond in time")
 	ErrTooManyLogs = errors.New("too many open log streams for this host; close some and retry")
+	// ErrTooManyExecs and ErrTooManyStackOps also match ErrTooManyLogs
+	// with errors.Is, so callers can treat every stream limit alike.
+	ErrTooManyExecs    error = tooManyStreams("too many terminals open on this host; close some and retry")
+	ErrTooManyStackOps error = tooManyStreams("too many stack operations running on this host; wait for one to finish and retry")
+	// ErrExecOverflow ends a terminal whose output arrived faster than it
+	// was read for longer than its buffer could absorb.
+	ErrExecOverflow = errors.New("terminal output arrived faster than it could be shown; the session was closed")
 )
 
-// MaxLogStreams caps concurrent log streams per host to protect the agent.
-const MaxLogStreams = 16
+type tooManyStreams string
+
+func (e tooManyStreams) Error() string        { return string(e) }
+func (e tooManyStreams) Is(target error) bool { return target == ErrTooManyLogs }
+
+// Per-host caps on concurrent streams, to protect the agent. Each kind has
+// its own, so many open log views can't block a deploy or a terminal.
+const (
+	MaxLogStreams   = 16
+	MaxExecStreams  = 8
+	MaxStackStreams = 8
+)
+
+// Stream buffer sizes, in chunks of at most 32 KiB. Log and stack output
+// is dropped when its reader falls behind; a terminal missing bytes would be
+// garbled, so it gets a much larger buffer and is closed if even that fills.
+const (
+	streamBuffer = 256
+	execBuffer   = 2048
+)
+
+type streamKind uint8
+
+const (
+	streamLogs streamKind = iota
+	streamExec
+	streamStack
+)
+
+func (k streamKind) limit() (int, error) {
+	switch k {
+	case streamExec:
+		return MaxExecStreams, ErrTooManyExecs
+	case streamStack:
+		return MaxStackStreams, ErrTooManyStackOps
+	}
+	return MaxLogStreams, ErrTooManyLogs
+}
 
 type Registry struct {
 	mu     sync.RWMutex
@@ -219,7 +262,19 @@ type Agent struct {
 	snapshotAt time.Time
 	snapSum    [32]byte // hash of the last snapshot's container list, if known
 	pending    map[string]chan wire.CommandResult
-	logs       map[string]chan wire.LogChunk
+	logs       map[string]chan wire.LogChunk // every open stream, by command ID
+	kinds      map[string]streamKind         // what each stream in logs is
+	open       [3]int                        // open streams per kind
+}
+
+// dropStream forgets stream id; callers hold a.mu.
+func (a *Agent) dropStream(id string) {
+	if _, ok := a.logs[id]; !ok {
+		return
+	}
+	delete(a.logs, id)
+	a.open[a.kinds[id]]--
+	delete(a.kinds, id)
 }
 
 // Attach registers a newly connected agent, replacing (and disconnecting)
@@ -244,6 +299,7 @@ func (r *Registry) AttachFrom(hostID, name, remoteIP string, cancel context.Canc
 		reg:         r,
 		pending:     map[string]chan wire.CommandResult{},
 		logs:        map[string]chan wire.LogChunk{},
+		kinds:       map[string]streamKind{},
 	}
 	r.mu.Lock()
 	old := r.agents[hostID]
@@ -275,7 +331,10 @@ func (r *Registry) Detach(a *Agent) {
 	}
 }
 
-// Disconnect forcibly drops a host's connection (used on revocation).
+// Disconnect forcibly drops a host's connection (used on revocation,
+// re-enrollment and certificate renewal), and ends any data transfer the
+// host takes part in: those run over their own requests, which may be
+// using the same superseded certificate.
 func (r *Registry) Disconnect(hostID string) {
 	r.mu.RLock()
 	a := r.agents[hostID]
@@ -283,6 +342,7 @@ func (r *Registry) Disconnect(hostID string) {
 	if a != nil {
 		a.cancel()
 	}
+	r.abortTransfers(hostID, ErrOffline)
 }
 
 func (r *Registry) Get(hostID string) *Agent {
@@ -323,7 +383,7 @@ func (a *Agent) close() {
 	for id, ch := range a.logs {
 		deliverFinal(ch, wire.LogChunk{CommandID: id, EOF: true, Error: ErrOffline.Error()})
 		close(ch)
-		delete(a.logs, id)
+		a.dropStream(id)
 	}
 }
 
@@ -352,11 +412,21 @@ func (a *Agent) Handle(m wire.AgentMessage, onEvent func(string, wire.DockerEven
 				// The final chunk carries the outcome, so it must arrive.
 				deliverFinal(ch, *m.Log)
 				close(ch)
-				delete(a.logs, m.Log.CommandID)
+				a.dropStream(m.Log.CommandID)
 			} else {
 				select {
 				case ch <- *m.Log:
-				default: // slow consumer: drop rather than stall the whole stream
+				default:
+					// Slow consumer: never stall the whole agent stream.
+					// Logs just lose some lines; a terminal is closed
+					// instead, since silently missing bytes would garble it.
+					if a.kinds[m.Log.CommandID] == streamExec {
+						id := m.Log.CommandID
+						deliverFinal(ch, wire.LogChunk{CommandID: id, EOF: true, Error: ErrExecOverflow.Error()})
+						close(ch)
+						a.dropStream(id)
+						a.tell(wire.HubMessage{Command: &wire.Command{ID: newID(), Cancel: id}})
+					}
 				}
 			}
 		}
@@ -496,7 +566,7 @@ func (a *Agent) forget(id string) {
 // Logs starts a log stream. The returned channel closes at EOF. Call stop
 // when the consumer goes away; it tells the agent to stop following.
 func (a *Agent) Logs(ctx context.Context, req wire.LogsRequest) (<-chan wire.LogChunk, func(), error) {
-	_, ch, stop, err := a.stream(ctx, wire.Command{Logs: &req})
+	_, ch, stop, err := a.stream(ctx, wire.Command{Logs: &req}, streamLogs)
 	return ch, stop, err
 }
 
@@ -507,7 +577,7 @@ func (a *Agent) Exec(ctx context.Context, e wire.ExecStart) (string, <-chan wire
 	if err := wire.ValidExecStart(e); err != nil {
 		return "", nil, nil, err
 	}
-	return a.stream(ctx, wire.Command{Exec: &e})
+	return a.stream(ctx, wire.Command{Exec: &e}, streamExec)
 }
 
 func (a *Agent) ExecInput(ctx context.Context, session string, data []byte) error {
@@ -531,7 +601,7 @@ func (a *Agent) Stack(ctx context.Context, c wire.StackCommand) (<-chan wire.Log
 	if err := wire.ValidStackCommand(c); err != nil {
 		return nil, err
 	}
-	_, ch, _, err := a.stream(ctx, wire.Command{Stack: &c})
+	_, ch, _, err := a.stream(ctx, wire.Command{Stack: &c}, streamStack)
 	return ch, err
 }
 
@@ -552,10 +622,14 @@ func deliverFinal(ch chan wire.LogChunk, c wire.LogChunk) {
 }
 
 // stream sends a command whose output comes back as LogChunks.
-func (a *Agent) stream(ctx context.Context, cmd wire.Command) (string, <-chan wire.LogChunk, func(), error) {
+func (a *Agent) stream(ctx context.Context, cmd wire.Command, kind streamKind) (string, <-chan wire.LogChunk, func(), error) {
 	id := newID()
 	cmd.ID = id
-	ch := make(chan wire.LogChunk, 256)
+	size := streamBuffer
+	if kind == streamExec {
+		size = execBuffer
+	}
+	ch := make(chan wire.LogChunk, size)
 	a.mu.Lock()
 	select {
 	case <-a.done:
@@ -563,15 +637,17 @@ func (a *Agent) stream(ctx context.Context, cmd wire.Command) (string, <-chan wi
 		return "", nil, nil, ErrOffline
 	default:
 	}
-	if len(a.logs) >= MaxLogStreams {
+	if max, err := kind.limit(); a.open[kind] >= max {
 		a.mu.Unlock()
-		return "", nil, nil, ErrTooManyLogs
+		return "", nil, nil, err
 	}
 	a.logs[id] = ch
+	a.kinds[id] = kind
+	a.open[kind]++
 	a.mu.Unlock()
 	if err := a.send(ctx, wire.HubMessage{Command: &cmd}); err != nil {
 		a.mu.Lock()
-		delete(a.logs, id)
+		a.dropStream(id)
 		a.mu.Unlock()
 		return "", nil, nil, err
 	}
@@ -580,7 +656,7 @@ func (a *Agent) stream(ctx context.Context, cmd wire.Command) (string, <-chan wi
 		once.Do(func() {
 			a.mu.Lock()
 			_, running := a.logs[id]
-			delete(a.logs, id)
+			a.dropStream(id)
 			a.mu.Unlock()
 			if running {
 				sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

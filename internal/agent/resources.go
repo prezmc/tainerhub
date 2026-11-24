@@ -69,6 +69,12 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		}
 		return r, err
 	case wire.OpContainerRecreate:
+		// Recreating stops the old container first: for the agent itself
+		// that ends the operation half done, and for the hub it cuts
+		// everyone off. Updates to them go through Hosts → Updates.
+		if err := d.guardSelf(ctx, op.Target); err != nil {
+			return nil, err
+		}
 		r, err := d.recreate(ctx, op.Target)
 		if err == nil {
 			_ = d.refreshUpdates(ctx) // the badge should go away now

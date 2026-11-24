@@ -68,6 +68,21 @@ func (r *Registry) dropTransfer(t *Transfer) {
 	r.xferMu.Unlock()
 }
 
+// abortTransfers ends every active transfer to or from hostID with err.
+func (r *Registry) abortTransfers(hostID string, err error) {
+	r.xferMu.Lock()
+	var hit []*Transfer
+	for _, t := range r.xfers {
+		if t.Src == hostID || t.Dst == hostID {
+			hit = append(hit, t)
+		}
+	}
+	r.xferMu.Unlock()
+	for _, t := range hit {
+		t.Abort(err)
+	}
+}
+
 // Transfer finds an active transfer by ID.
 func (r *Registry) Transfer(id string) *Transfer {
 	r.xferMu.Lock()

@@ -29,9 +29,9 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-// ErrSerialChanged is returned by RenewHostCert when the host's stored serial
-// is no longer the one the caller presented (another renewal won, or the
-// host was re-enrolled or revoked in the meantime).
+// ErrSerialChanged is returned by RenewHostCert and PromoteHostCert when the
+// host's stored serials are no longer the ones the caller saw (another
+// renewal won, or the host was re-enrolled or revoked in the meantime).
 var ErrSerialChanged = errors.New("certificate serial changed")
 
 type JoinTokenRecord struct {
@@ -45,20 +45,38 @@ type JoinTokenRecord struct {
 type HostCert struct {
 	Name       string
 	CertSerial string
-	Revoked    bool
+	// PendingSerial is a renewed certificate the agent has not connected
+	// with yet ("" if none). Until it does, CertSerial keeps working, so a
+	// renewal whose reply never reached the agent doesn't lock it out.
+	PendingSerial string
+	Revoked       bool
+}
+
+// accepts reports whether serial is one of the host's working certificates.
+func (hc HostCert) accepts(serial string) bool {
+	if hc.Revoked || serial == "" {
+		return false
+	}
+	return serial == hc.CertSerial || serial == hc.PendingSerial
 }
 
 // Store is the persistence the gateway needs. The Postgres store implements it.
 type Store interface {
 	GetJoinToken(ctx context.Context, id string) (JoinTokenRecord, error)
 	// CompleteEnrollment must atomically mark the token used (failing if it
-	// already was) and record the host's certificate serial.
+	// already was) and record the host's certificate serial, clearing any
+	// pending one.
 	CompleteEnrollment(ctx context.Context, tokenID, hostID, certSerial string) error
 	GetHostCert(ctx context.Context, hostID string) (HostCert, error)
-	// RenewHostCert must replace the host's serial only if it still equals
-	// oldSerial (compare-and-swap), returning ErrSerialChanged otherwise, so
-	// two concurrent renewals with the same certificate cannot both win.
-	RenewHostCert(ctx context.Context, hostID, oldSerial, newSerial string) error
+	// RenewHostCert must set the host's pending serial to newSerial only if
+	// its current and pending serials still equal seen's (compare-and-swap),
+	// returning ErrSerialChanged otherwise, so two concurrent renewals
+	// cannot both win. The current serial is left as it is.
+	RenewHostCert(ctx context.Context, hostID string, seen HostCert, newSerial string) error
+	// PromoteHostCert must make the pending serial the current one (and
+	// clear pending) only if the pending serial still equals serial,
+	// returning ErrSerialChanged otherwise.
+	PromoteHostCert(ctx context.Context, hostID, serial string) error
 	TouchHost(ctx context.Context, hostID string, hello *wire.Hello, at time.Time) error
 }
 
@@ -84,15 +102,20 @@ type Gateway struct {
 	PingEvery    time.Duration // default 20s
 	DeadAfter    time.Duration // drop silent agents, default 90s
 
-	initOnce    sync.Once
-	enrollFails *failLimiter
-	conns       *connCap
+	initOnce      sync.Once
+	enrollFails   *failLimiter
+	conns         *connCap
+	certlessGrace time.Duration // tests shorten it
 }
 
 func (g *Gateway) init() {
 	g.initOnce.Do(func() {
 		g.enrollFails = newFailLimiter(enrollFailures, enrollWindow)
-		g.conns = newConnCap(maxUnauthConnsPerIP)
+		grace := g.certlessGrace
+		if grace == 0 {
+			grace = certlessGrace
+		}
+		g.conns = newConnCap(maxUnauthConnsPerIP, grace)
 	})
 }
 
@@ -142,9 +165,12 @@ func (g *Gateway) TLSConfig(serverCert tls.Certificate) *tls.Config {
 func (g *Gateway) Server(addr string, serverCert tls.Certificate) *http.Server {
 	g.init()
 	return &http.Server{
-		Addr:              addr,
-		Handler:           g.Handler(),
-		TLSConfig:         g.TLSConfig(serverCert),
+		Addr:    addr,
+		Handler: g.Handler(),
+		// Connections without a client certificate are counted and timed
+		// out per address once their handshake is done; see connCap.
+		TLSConfig:         g.conns.tlsConfig(g.TLSConfig(serverCert)),
+		ConnContext:       g.conns.connContext,
 		ReadHeaderTimeout: 10 * time.Second, // also bounds the TLS handshake
 		// Drops connections with no request in flight. A connected agent's
 		// stream stays in flight, and both sides ping every 20s anyway.
@@ -196,6 +222,9 @@ func readBody(w http.ResponseWriter, r *http.Request, v any) error {
 }
 
 func (g *Gateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
+	// Enrolling is the one thing a connection without a client certificate
+	// may stay open for.
+	defer g.conns.enrolling(r.Context())()
 	ip := remoteIP(r)
 	// Join tokens are long random secrets, so this is not about guessing
 	// them; it stops one address making the hub do unbounded work.
@@ -254,6 +283,12 @@ func (g *Gateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	if err := g.Store.CompleteEnrollment(r.Context(), rec.ID, rec.HostID, pki.SerialString(cert)); err != nil {
 		deny("token already used")
 		return
+	}
+	// Whatever is still connected with an earlier certificate (perhaps a
+	// stolen key, the reason to re-enroll) is dropped now, not whenever it
+	// next reconnects.
+	if g.Reg != nil {
+		g.Reg.Disconnect(rec.HostID)
 	}
 	g.log().Info("agent enrolled", "host", prev.Name, "host_id", rec.HostID, "hostname", req.Hostname, "remote", r.RemoteAddr, "reenrolled", reenrolled)
 	g.recordEnrollment(r, rec.HostID, prev.Name, reenrolled)
@@ -316,10 +351,11 @@ func (g *Gateway) authAgent(w http.ResponseWriter, r *http.Request, what string,
 		}
 		return nil, hc, expired, false
 	}
-	// The serial check makes only the host's latest certificate count, so
-	// renewed or re-enrolled hosts' old ones stop working.
+	// The serial check makes only the host's current certificate (and a
+	// renewed one not yet used) count, so re-enrolled hosts' old ones, and
+	// renewed hosts' once the new one has connected, stop working.
 	hc, err = g.Store.GetHostCert(r.Context(), hostID)
-	if err != nil || hc.Revoked || hc.CertSerial != pki.SerialString(leaf) {
+	if err != nil || !hc.accepts(pki.SerialString(leaf)) {
 		g.log().Warn("agent "+what+" refused", "host_id", hostID, "remote", r.RemoteAddr)
 		http.Error(w, "certificate revoked or unknown", http.StatusForbidden)
 		return nil, hc, expired, false
@@ -350,7 +386,21 @@ func (g *Gateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldSerial, newSerial := pki.SerialString(leaf), pki.SerialString(cert)
-	if err := g.Store.RenewHostCert(r.Context(), hostID, oldSerial, newSerial); err != nil {
+	seen := hc
+	if oldSerial == hc.PendingSerial {
+		// Renewing with the renewed certificate shows the agent got it, as
+		// connecting with it would: it becomes the current one first.
+		if !g.promote(r.Context(), hostID, oldSerial) {
+			g.log().Warn("agent certificate renewal refused", "host_id", hostID, "remote", r.RemoteAddr, "err", ErrSerialChanged)
+			http.Error(w, "certificate revoked or unknown", http.StatusForbidden)
+			return
+		}
+		seen = HostCert{CertSerial: oldSerial}
+	}
+	// The new serial is only pending: the certificate presented now keeps
+	// working until the agent connects with the new one, so if this reply
+	// is lost the agent simply renews again.
+	if err := g.Store.RenewHostCert(r.Context(), hostID, seen, newSerial); err != nil {
 		g.log().Warn("agent certificate renewal refused", "host_id", hostID, "remote", r.RemoteAddr, "err", err)
 		if errors.Is(err, ErrSerialChanged) {
 			http.Error(w, "certificate revoked or unknown", http.StatusForbidden)
@@ -383,6 +433,13 @@ func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hostID := leaf.Subject.CommonName
+	serial := pki.SerialString(leaf)
+	// The first connection with a renewed certificate retires the old one.
+	if serial == hc.PendingSerial && !g.promote(r.Context(), hostID, serial) {
+		g.log().Warn("agent connection refused", "host_id", hostID, "remote", r.RemoteAddr, "err", ErrSerialChanged)
+		http.Error(w, "certificate revoked or unknown", http.StatusForbidden)
+		return
+	}
 
 	rc := http.NewResponseController(w)
 	_ = rc.EnableFullDuplex() // needed for HTTP/1.1; HTTP/2 is duplex already
@@ -397,6 +454,14 @@ func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	agent := g.Reg.AttachFrom(hostID, hc.Name, remoteIP(r), cancel)
 	defer g.Reg.Detach(agent)
 	log := g.log().With("host", hc.Name, "host_id", hostID)
+	// The certificate may have been superseded (re-enrolled, or a renewed
+	// one promoted) between the check above and attaching; whoever did that
+	// disconnected the host before this connection was attached, so check
+	// again now that it is.
+	if now, err := g.Store.GetHostCert(ctx, hostID); err != nil || !now.accepts(serial) {
+		log.Warn("agent connection dropped: its certificate was superseded while connecting", "remote", r.RemoteAddr)
+		return
+	}
 	log.Info("agent connected", "remote", r.RemoteAddr, "proto", r.Proto)
 	defer log.Info("agent disconnected")
 
@@ -431,6 +496,10 @@ func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 				}
 				m = wire.HubMessage{Ping: true}
 			}
+			// An agent that stops reading would otherwise block this write
+			// forever once flow control fills up, and with it the whole
+			// teardown below. A missed deadline fails the write instead.
+			_ = rc.SetWriteDeadline(time.Now().Add(deadAfter))
 			if err := enc.Encode(m); err != nil {
 				return
 			}
@@ -502,8 +571,37 @@ func (g *Gateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		agent.Handle(m, g.Reg.OnEvent)
 	}
 	cancel()
+	// A writer stuck on an agent that stopped reading would hold us here
+	// until its deadline; a deadline in the past fails its write at once.
+	_ = rc.SetWriteDeadline(time.Now())
 	wg.Wait()
-	_ = g.Store.TouchHost(context.Background(), hostID, nil, time.Now())
+	// Unregister before touching the database, so a stalled database can't
+	// keep a dead agent looking connected and calls to it waiting for their
+	// full timeouts.
+	g.Reg.Detach(agent)
+	tctx, tcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer tcancel()
+	if err := g.Store.TouchHost(tctx, hostID, nil, time.Now()); err != nil {
+		log.Debug("touch host on disconnect", "err", err)
+	}
+}
+
+// promote makes a host's renewed certificate its current one, now that the
+// agent has shown it holds it, and drops any connection still using the
+// old one. It reports false if serial is no longer the host's renewed or
+// current certificate.
+func (g *Gateway) promote(ctx context.Context, hostID, serial string) bool {
+	if err := g.Store.PromoteHostCert(ctx, hostID, serial); err != nil {
+		// A concurrent connection with the same certificate may have
+		// promoted it first.
+		hc, gerr := g.Store.GetHostCert(ctx, hostID)
+		return gerr == nil && !hc.Revoked && hc.CertSerial == serial
+	}
+	g.log().Info("agent is using its renewed certificate; the previous one no longer works", "host_id", hostID)
+	if g.Reg != nil {
+		g.Reg.Disconnect(hostID)
+	}
+	return true
 }
 
 // transferFor authenticates an agent and finds the transfer it names. Only
