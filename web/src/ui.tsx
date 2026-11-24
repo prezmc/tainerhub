@@ -111,13 +111,20 @@ export function IconButton({
 }
 
 export function Input({ label, hint, icon: Icon, className, ...props }: InputHTMLAttributes<HTMLInputElement> & { label?: string; hint?: string; icon?: LucideIcon }) {
+  // Explicit ids, so screen readers announce the label (not the placeholder)
+  // and read the hint as the field's description.
+  const auto = useId()
+  const id = props.id ?? auto
   return (
-    <label className="block">
-      {label && <span className="mb-1.5 block text-sm font-medium text-ink-100/80">{label}</span>}
+    <label className="block" htmlFor={id}>
+      {label && <span className="mb-1.5 block text-sm font-medium text-ink-100/80" id={`${id}-label`}>{label}</span>}
       <span className="relative block">
         {Icon && <Icon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-100/50" />}
         <input
           {...props}
+          id={id}
+          aria-labelledby={props['aria-label'] || !label ? props['aria-labelledby'] : `${id}-label`}
+          aria-describedby={hint ? `${id}-hint` : props['aria-describedby']}
           className={cx(
             'w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none transition placeholder:text-ink-100/35 focus:shadow-[inset_3px_0_0] focus:shadow-lime-400 focus:ring-lime-400/60',
             Icon && 'pl-9',
@@ -125,7 +132,7 @@ export function Input({ label, hint, icon: Icon, className, ...props }: InputHTM
           )}
         />
       </span>
-      {hint && <span className="mt-1.5 block text-xs text-ink-100/50">{hint}</span>}
+      {hint && <span className="mt-1.5 block text-xs text-ink-100/50" id={`${id}-hint`}>{hint}</span>}
     </label>
   )
 }
