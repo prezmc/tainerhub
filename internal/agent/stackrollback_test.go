@@ -388,3 +388,18 @@ func TestProjectImagesFromDocker(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+// The override records each service's real image name on its container, so
+// lists and update checks don't show the internal pinned tag.
+func TestRollbackOverrideLabelsTheRealImage(t *testing.T) {
+	got := string(rollbackOverride("web", []wire.RollbackService{
+		{Service: "app", ImageID: "sha256:" + strings.Repeat("a", 64), Ref: "ghcr.io/org/app:1.2"},
+		{Service: "db", ImageID: "sha256:" + strings.Repeat("b", 64)}, // no name known: no label
+	}))
+	if !strings.Contains(got, `"`+wire.RollbackFromLabel+`": "ghcr.io/org/app:1.2"`) {
+		t.Fatalf("no label for app:\n%s", got)
+	}
+	if strings.Count(got, wire.RollbackFromLabel) != 1 {
+		t.Fatalf("db shouldn't get a label:\n%s", got)
+	}
+}

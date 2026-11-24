@@ -45,6 +45,11 @@ func rollbackOverride(stack string, svcs []wire.RollbackService) []byte {
 		name, _ := json.Marshal(s.Service)
 		image, _ := json.Marshal(wire.PinnedTag(stack, s.Service))
 		fmt.Fprintf(&b, "  %s:\n    image: %s\n    pull_policy: never\n", name, image)
+		if s.Ref != "" && !wire.IsRollbackTag(s.Ref) {
+			ref, _ := json.Marshal(s.Ref)
+			label, _ := json.Marshal(wire.RollbackFromLabel)
+			fmt.Fprintf(&b, "    labels:\n      %s: %s\n", label, ref)
+		}
 	}
 	return b.Bytes()
 }

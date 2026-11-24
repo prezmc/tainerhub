@@ -46,6 +46,11 @@ type StackImages struct {
 }
 
 // RollbackService is one service a rollback puts back on an older image.
+// RollbackFromLabel is set on rolled-back containers to the image name the
+// service ran under before (its pinned tag says nothing to a person), so the
+// UI and update checks keep showing the real name.
+const RollbackFromLabel = "tainerhub.rollback.from"
+
 type RollbackService struct {
 	Service string `json:"service"`
 	ImageID string `json:"imageId"`

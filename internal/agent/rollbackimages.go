@@ -66,6 +66,9 @@ func (d *SocketDocker) ProjectImages(ctx context.Context, project string) (map[s
 				ref = cfg
 			}
 		}
+		if from := c.Labels[wire.RollbackFromLabel]; from != "" && wire.IsRollbackTag(ref) {
+			ref = from // a rolled-back service: the name it really runs
+		}
 		im := wire.StackImage{Ref: ref, ImageID: c.ImageID}
 		var insp struct {
 			RepoTags    []string

@@ -244,6 +244,11 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 				r.Image = ref
 			}
 		}
+		// A rolled-back service runs a tainerhub-rollback/ tag; show the
+		// image name it really is (recorded on the container by the rollback).
+		if from := r.Labels[wire.RollbackFromLabel]; from != "" && wire.IsRollbackTag(r.Image) {
+			r.Image = from
+		}
 		name := r.ID[:min(12, len(r.ID))]
 		if len(r.Names) > 0 {
 			name = strings.TrimPrefix(r.Names[0], "/")
