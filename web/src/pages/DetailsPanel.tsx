@@ -9,6 +9,7 @@ import { useFleet } from '../fleet'
 import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf, useLayer } from '../ui'
 import { useMe } from './AppLayout'
 import { ContainerMoveNotes, MoveContainerDialog, movable } from './MoveContainer'
+import { ContainerAutoUpdate } from '../autoupdatesui'
 
 /** Slide-over with everything Docker knows about one container. */
 export function DetailsPanel({ container, onClose }: { container: Container; onClose: () => void }) {
@@ -102,6 +103,11 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
             <p className="mt-3 text-xs text-ink-100/50">It belongs to the compose project {container.project}: to move it to another host, move its stack.</p>
           )}
           {admin && <ContainerMoveNotes c={container} />}
+          {admin && (
+            <div className="mt-3">
+              <ContainerAutoUpdate c={container} />
+            </div>
+          )}
           {moving && <MoveContainerDialog c={container} onClose={() => setMoving(false)} />}
           {running && (
             <div className="mt-4 grid grid-cols-2 gap-3">

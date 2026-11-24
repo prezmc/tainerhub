@@ -225,6 +225,8 @@ func run(log *slog.Logger) error {
 	// Scheduled image update checks go through the same path as "Check for
 	// updates", so they carry the saved registry logins too.
 	go (&registry.UpdateChecker{Reg: reg, Every: cfg.UpdateCheckEvery, Log: log.With("component", "update-checks")}).Run(ctx)
+	// Opt-in automatic updates, in the maintenance window set under Settings.
+	go apiSrv.RunAutoUpdates(ctx)
 	if err := apiSrv.LoadStatsSettings(ctx); err != nil {
 		log.Warn("load stats settings", "err", err)
 	}

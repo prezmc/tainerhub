@@ -52,7 +52,8 @@ Tokens can't do anything that grants lasting access to TainerHub. These endpoint
 - changing your password, passkeys or recovery codes, and "sign out other sessions",
 - turning HTTPS on or off,
 - adding a host or issuing a host join token,
-- creating or revoking API tokens (listing them works).
+- creating or revoking API tokens (listing them works),
+- saving registry logins, and changing automatic updates (opting in or out, the window, Run now).
 
 Do these in the browser. Everything else follows the [role table](features.md#roles). The [reference](#endpoint-reference) marks each route.
 
@@ -264,8 +265,9 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 | GET | `/api/jobs/{jid}` | viewer | yes | SSE job output. |
 | GET | `/api/dockerhub/search` | admin | yes | Query: `q` (1-100 characters). `[{"name", "description", "stars", "pulls", "official"}]`. |
 | GET | `/api/dockerhub/tags` | admin | yes | Query: `repo` (`nginx`, `linuxserver/plex`). `[{"name", "updated", "size"}]`. |
+| PUT | `/api/stacks/{sid}/auto-update` | admin | **no** | Turn [automatic updates](#automatic-updates) on or off for the stack. Body: `{"enabled": true}`. |
 
-- **Stack summary** (list): `id` (empty for projects TainerHub doesn't manage), `name`, `hostId`, `hostName`, `managed`, `tainerhub` (TainerHub's own project), `online`, `status` (`running`, `partial`, `stopped`, `down`, `not deployed`, `unknown`), `containers`, `running`, `unhealthy`, `updatedAt`, `updatedBy`, `deployedAt`, `pending` (saved changes not yet deployed), `job` (`{"id", "action"}` while one runs).
+- **Stack summary** (list): `id` (empty for projects TainerHub doesn't manage), `name`, `hostId`, `hostName`, `managed`, `tainerhub` (TainerHub's own project), `online`, `status` (`running`, `partial`, `stopped`, `down`, `not deployed`, `unknown`), `containers`, `running`, `unhealthy`, `updatedAt`, `updatedBy`, `deployedAt`, `pending` (saved changes not yet deployed), `autoUpdate` (opted in to automatic updates), `job` (`{"id", "action"}` while one runs).
 - **Get** returns `{"stack", "summary", "filesVisible", "moves"}`. `stack` has `id`, `hostId`, `name`, `compose`, `env`, `files` (`[{"path", "content", "executable"}]`), `createdAt`, `updatedAt`, `updatedBy`, `deployedAt`. Below admin, `compose` and `env` are empty, `files` is `[]` and `filesVisible` is `false`.
 - **Actions:** `pull` pulls newer images, then deploys (with `build:` services: `build --pull`, `pull --ignore-buildable`, `up -d`). `deploy` writes the files and runs `up -d --remove-orphans` (adding `--build` when a service builds its image). The first deploy of a project taken over from outside TainerHub needs an admin and a body `{"ack": "..."}` from the takeover check.
 - **Create** body: `hostId`, `name` (lowercase letters, digits, `-`, `_`; up to 63), `compose` (up to 256 KB), `env` (up to 64 KB), `files` (optional: up to 30 `{"path", "content", "executable"}`, each up to 256 KB of UTF-8 text, 2 MB together; `path` relative with `/` between folders, letters, digits, `.`, `_`, `-`, at most 4 parts and 200 characters), `deploy` (bool), `adopt` (bool: take over a running project of that name), `ack`. Returns `{"stack", "jobId"?, "deployError"?}`. `409` if the name is taken on that host or belongs to a project started elsewhere (unless `adopt`).
@@ -305,6 +307,24 @@ Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. 
 - **Updates** returns `{"hubVersion", "hubCurrent", "latest": {"version", "commit", "title", "at"}, "checkedAt", "error"?, "dockerLatest", "hubManaged", "hosts": [{"id", "name", "online", "version", "docker", "dockerBehind", "current", "hubHost", "canUpdate", "cgroupStats", "statsFromDocker", "note"}]}`.
 - **Docker plan** returns `{"manager", "installed", "candidate", "systemd", "supported", "available", "reason", "command"}`.
 - **Docker upgrade** body: `{"confirm": "<the host's exact name>"}`. Returns `202` with the plan.
+
+### Automatic updates
+
+| Method | Path | Role | Token | Notes |
+| --- | --- | --- | --- | --- |
+| GET | `/api/auto-updates` | admin | yes | `{"targets", "window", "run"}`: what's opted in, the window, and the current or last run. |
+| GET | `/api/auto-updates/settings` | admin | yes | The window: `{"settings", "zone", "next", "nextText"}`. |
+| PUT | `/api/auto-updates/settings` | admin | **no** | Change the window. Body: `enabled`, `days`, `time`, `timeZone`, `maxMinutes`. Returns the same as GET. |
+| POST | `/api/auto-updates/run` | admin | **no** | Run now (even while paused). `202 {"runId"}`; `409 {"error", "runId"}` while a run is going. |
+| GET | `/api/auto-updates/runs/latest` | admin | yes | `{"run"}`: the current or last run since the hub started, or `null`. |
+| PUT | `/api/stacks/{sid}/auto-update` | admin | **no** | Opt a managed stack in or out. Body: `{"enabled": true\|false}`. |
+| PUT | `/api/hosts/{id}/containers/{name}/auto-update` | admin | **no** | Opt a standalone container in or out, by name. Body: `{"enabled": true\|false}`. |
+
+- **Settings:** `enabled` (false pauses every scheduled window), `days` (`mon` … `sun`, at least one), `time` (`HH:MM`, 24-hour), `timeZone` (an IANA name like `Europe/Berlin`; empty for the hub's local time), `maxMinutes` (15 to 720; default 120). The default is every day at 03:00 for 2 hours. `400` with the reason when something is invalid.
+- **Target:** `id`, `kind` (`stack` or `container`), `stackId`, `stackName`, `containerName`, `hostId`, `hostName`, `enabledBy`, `createdAt`, `lastRunAt`, `lastResult` (`ok`, `failed`, `skipped`, or empty before the first run), `lastError` (the error, or why it was skipped).
+- **Run:** `id`, `trigger` (`window` or `manual`), `startedBy`, `startedAt`, `deadline`, `finishedAt`, `running`, `error`, `outcomes`: `[{"targetId", "kind", "name", "stackId", "hostId", "host", "result", "reason", "images", "oldImage", "newImage", "jobId", "at"}]`.
+- **Opting in** a container needs its host online: `404` if there's no container of that name, `409` if it belongs to a compose project (opt its stack in instead) or is one of TainerHub's own, `400` if its image is pinned by digest, `503` if the host is offline. Opting out always works. A stack that is TainerHub's own project is refused with `409`.
+- All changes need a recent sign-in (`403 {"reauth": true}` otherwise) and refuse API tokens.
 
 ### Users and invites
 

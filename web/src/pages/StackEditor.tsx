@@ -9,6 +9,7 @@ import { CodeEditor, StackStatusBadge, useOpenJob, useStackAction, useStacks, wi
 import { useMe } from './AppLayout'
 import { HostSelect, useDefaultHost } from '../placement'
 import { MoveSection } from './MoveStack'
+import { AutoUpdateToggle } from '../autoupdatesui'
 import { SourceNote, TakeoverPanel, takeoverReady, useTakeoverCheck, useTakeoverSource } from '../takeover'
 import {
   composeBuilds,
@@ -276,6 +277,7 @@ export function StackPage() {
             <span>{s.hostName}</span>
             <StackStatusBadge s={s} />
             {s.pending && d.stack.deployedAt && <Badge tone="warn">changes not deployed</Badge>}
+            {s.autoUpdate && <Badge tone="info">auto updates</Badge>}
             <span className="text-ink-100/50">{d.stack.deployedAt ? `Deployed ${timeAgo(d.stack.deployedAt)}` : 'Never deployed'}</span>
           </span>
         }
@@ -286,6 +288,7 @@ export function StackPage() {
       <div className="space-y-6">
         {takeover && admin && <TakeoverDeploy d={d} s={s} />}
         <StackContainers s={s} />
+        {admin && s.managed && <AutoUpdateToggle stackId={d.stack.id} hostId={d.stack.hostId} name={d.stack.name} />}
         {admin ? <FilesEditor d={d} /> : <FilesLocked />}
         {admin && s.managed && <MoveSection d={d} s={s} />}
         {admin && <DangerZone s={s} />}

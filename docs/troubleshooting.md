@@ -178,6 +178,23 @@ When updating a host:
 
 The "update" badge on *containers* comes from a separate check: the hub has each host ask the image registries every 6 hours (`TAINERHUB_UPDATE_CHECK_HOURS`). If **Check for updates** says "couldn't check" for a host, that host's agent couldn't reach the registry.
 
+## A stack or container wasn't updated automatically
+
+Look at **Settings → Automatic updates**: each opted-in target shows its last result, and **Recent automatic updates** lists the last run's outcome for each, with the reason. Every update tried is also in the **Audit** log (`update.auto_applied`, `update.auto_failed`). The usual reasons:
+
+| What you see | Why |
+| --- | --- |
+| It isn't in the **Opted in** list | Automatic updates are off by default. Turn them on with the switch on the stack's page or in the container's details panel. |
+| "already up to date" | The registry has no newer image for the tag it uses. A pinned tag (`postgres:16.4`) never changes; use a moving tag (`postgres:16`) if you want updates. |
+| "builds: ..." | The stack builds its images, and TainerHub can't tell whether their base images changed. See [Stacks that build images](features.md#automatic-updates). |
+| "host offline" | The host's agent wasn't connected during the window. |
+| "a job is running for this stack" | A deploy, pull or move was already running; it gets its turn in the next window. |
+| "it has saved changes that haven't been deployed" | Deploy (or discard) the edits yourself first: Pull & redeploy would deploy them too. |
+| "the window ended first" | Earlier updates used up the window. Make it longer under Settings. |
+| "the update check failed" | The host couldn't reach the registry. With a private image, check its login under **Settings → Container registries**. |
+| failed: "not running and healthy 2m0s after the update" | The new version didn't come up. Check the container's logs; for a stack, roll back by pinning the previous tag and deploying. |
+| Nothing ran at all | The window is paused (the switch at the top of the card), or the hub was stopped through the whole window (missed windows aren't caught up). Check the days, time and time zone, or use **Run now**. |
+
 ## High CPU on a server
 
 TainerHub's agents are designed to be light, but a few things make a difference:

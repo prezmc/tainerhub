@@ -64,6 +64,9 @@ type Server struct {
 	// More test hooks; nil uses s.Store.
 	regCreds registryCredStore
 	audited  func(store.AuditEntry)
+	autoDB   autoUpdateStore // automatic updates and stack jobs (see autoupdate.go)
+
+	autoUp autoUpdater // automatic updates: window schedule and runs
 }
 
 var roleRank = auth.RoleRank
@@ -184,6 +187,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/exec/{sid}/input", s.need("admin", s.execInput))
 	mux.Handle("POST /api/exec/{sid}/resize", s.need("admin", s.execResize))
 	mux.Handle("DELETE /api/exec/{sid}", s.need("admin", s.execClose))
+	// automatic updates (see autoupdate.go); changes need a fresh sign-in
+	mux.Handle("GET /api/auto-updates", s.need("admin", s.listAutoUpdates))
+	mux.Handle("GET /api/auto-updates/settings", s.need("admin", s.getAutoSettings))
+	mux.Handle("PUT /api/auto-updates/settings", s.need("admin", s.putAutoSettings))
+	mux.Handle("POST /api/auto-updates/run", s.need("admin", s.runAutoUpdatesNow))
+	mux.Handle("GET /api/auto-updates/runs/latest", s.need("admin", s.latestAutoRunHandler))
+	mux.Handle("PUT /api/stacks/{sid}/auto-update", s.need("admin", s.stackAutoUpdate))
+	mux.Handle("PUT /api/hosts/{id}/containers/{name}/auto-update", s.need("admin", s.containerAutoUpdate))
 	mux.Handle("POST /api/hosts/{id}/update", s.need("admin", s.updateHost))
 	mux.Handle("POST /api/hosts/{id}/lighter-stats", s.need("admin", s.lighterStats))
 	mux.Handle("PUT /api/hosts/{id}/stats-source", s.need("admin", s.statsSource))
@@ -344,6 +355,18 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, nonNil(entries))
+}
+
+// writeAudit saves an entry made outside a request (background jobs,
+// automatic updates).
+func (s *Server) writeAudit(ctx context.Context, e store.AuditEntry) {
+	if s.audited != nil {
+		s.audited(e)
+		return
+	}
+	if err := s.Store.Audit(context.WithoutCancel(ctx), e); err != nil {
+		s.Log.Warn("audit write failed", "err", err)
+	}
 }
 
 func (s *Server) record(r *http.Request, u *store.User, action, target string, detail any) {

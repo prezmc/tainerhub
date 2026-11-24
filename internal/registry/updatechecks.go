@@ -90,7 +90,10 @@ func (r *Registry) ImagesCheckedAt(hostID string) time.Time {
 	return time.Time{}
 }
 
-func (r *Registry) imageCheckRunning(hostID string) bool {
+// ImageCheckRunning reports whether an image update check is in flight on
+// the host (scheduled, asked for in the UI, or by automatic updates), so
+// callers can wait for it instead of stacking another.
+func (r *Registry) ImageCheckRunning(hostID string) bool {
 	r.checkMu.Lock()
 	defer r.checkMu.Unlock()
 	c := r.checks[hostID]
@@ -184,7 +187,7 @@ func (u *UpdateChecker) tick(ctx context.Context) {
 			continue // went offline since All()
 		default:
 		}
-		if u.Reg.imageCheckRunning(a.HostID) {
+		if u.Reg.ImageCheckRunning(a.HostID) {
 			continue // one is already running (asked for in the UI): don't stack another
 		}
 		p.running = true

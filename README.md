@@ -52,7 +52,7 @@ Start, stop, restart, update and remove containers on any host from one list. Gr
 </td>
 <td width="50%" valign="top">
 <h3>Keep TainerHub and Docker updated</h3>
-<p>Update TainerHub on one server or all of them, and upgrade Docker Engine, from the Hosts page. Containers get an <strong>update</strong> badge when a newer image is out.</p>
+<p>Update TainerHub on one server or all of them, and upgrade Docker Engine, from the Hosts page. Containers get an <strong>update</strong> badge when a newer image is out, and stacks and containers you opt in are <strong>updated automatically</strong> in a nightly maintenance window.</p>
 <img src="docs/images/hosts.png" width="420" alt="The Hosts page: update card, Docker Engine versions, container stats and host cards">
 </td>
 </tr>

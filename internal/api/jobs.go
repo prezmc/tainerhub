@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -58,6 +59,24 @@ func (j *job) finish(err string) {
 	j.done, j.err, j.finished = true, err, time.Now()
 	j.wake()
 	j.mu.Unlock()
+}
+
+// wait blocks until the job finishes and returns its error text ("" for
+// success), or until ctx ends.
+func (j *job) wait(ctx context.Context) (string, error) {
+	for {
+		j.mu.Lock()
+		done, errText, changed := j.done, j.err, j.changed
+		j.mu.Unlock()
+		if done {
+			return errText, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-changed:
+		}
+	}
 }
 
 func (j *job) wake() { close(j.changed); j.changed = make(chan struct{}) }

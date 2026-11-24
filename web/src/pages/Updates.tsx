@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowUpCircle, CircleCheck, Feather, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react'
 import { api, errorText, pullErrorText, timeAgo, type Host, type HubState } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, Modal, cx, useConfirm, useToast } from '../ui'
+import { AutoUpdatesSummary } from '../autoupdatesui'
 
 type HostUpdate = {
   id: string
@@ -224,6 +225,7 @@ export function UpdatesCard() {
           </Button>
         )}
       </div>
+      <AutoUpdatesSummary />
       {!upToDate && d.latest && (
         <ul className="mt-4 divide-y divide-line rounded-[3px] ring-1 ring-line">
           {stale.map((h) => (

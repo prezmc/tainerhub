@@ -4,6 +4,7 @@ import { CircleCheck, CircleAlert, ExternalLink, Lock, LockOpen, ShieldCheck } f
 import { api, errorText } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, Input, PageHeader, useConfirm, useToast } from '../ui'
 import { RegistriesCard } from '../registries'
+import { AutoUpdatesCard } from '../autoupdatesui'
 
 type HTTPSSettings = {
   publicURL: string
@@ -104,6 +105,7 @@ export function SettingsPage() {
     return (
       <div className="max-w-4xl space-y-6">
         <PageHeader title="Settings" />
+        <AutoUpdatesCard />
         <RegistriesCard />
       </div>
     )
@@ -112,7 +114,7 @@ export function SettingsPage() {
 
   return (
     <div className="max-w-4xl space-y-6">
-      <PageHeader title="Settings" subtitle="HTTPS and passkeys through the reverse proxy you already run, and logins for private container registries." />
+      <PageHeader title="Settings" subtitle="HTTPS and passkeys through the reverse proxy you already run, automatic updates, and logins for private container registries." />
 
       <Card className="flex flex-wrap items-center gap-4 px-5 py-4">
         {on ? <Lock className="size-5 text-lime-300" /> : <LockOpen className="size-5 text-ink-100/50" />}
@@ -272,6 +274,7 @@ export function SettingsPage() {
         )
       )}
 
+      <AutoUpdatesCard />
       <RegistriesCard />
     </div>
   )

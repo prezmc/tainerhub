@@ -100,6 +100,40 @@ To update:
 
 Images pinned by digest (`image@sha256:...`) are never reported as outdated.
 
+To have this done for you at night, see [Automatic updates](#automatic-updates).
+
+### Automatic updates
+
+Automatic updates are off until an admin turns them on for a stack or a container, one at a time:
+
+- **A stack**: the **Automatic updates** switch on the stack's page (managed stacks only).
+- **A standalone container**: the same switch in its details panel. A container that belongs to a compose project can't be turned on by itself, because its stack's containers update together: turn it on for the stack (take the project over first if it was started outside TainerHub).
+
+Opted-in stacks show an **auto** badge in the Stacks list.
+
+**When.** Under **Settings → Automatic updates** you choose the days, a start time and a time zone (empty means the hub's local time, which is often UTC inside a container; **Use my time zone** fills in your browser's), and how long the window lasts (2 hours by default). The default is every day at 03:00. The switch at the top pauses every scheduled window without forgetting what was opted in. **Run now** runs the whole procedure straight away, even while paused.
+
+**What happens in a window.**
+
+1. For each host with opted-in targets, the hub runs a fresh image update check with the saved registry logins (waiting for a check that is already running there rather than starting a second one).
+2. A container is updated when its image has a newer version. A stack is updated when any image its containers run, or that its compose file names, has a newer version.
+3. An update is the same thing you'd click: a stack gets **Pull & redeploy** (a job by "Automatic updates" you can open from the stack's page), a container gets **Pull & recreate** (which puts the old container back if the new one won't start).
+4. The hub then waits up to 2 minutes for the containers to be running, and healthy if they have a health check (a one-off service that exited with code 0, such as a migration step, counts as fine; a container that was stopped is recreated stopped and not waited for). If they aren't, the update is marked **failed** (nothing more is rolled back: the old container is already gone, or the stack is on its new images; check its logs).
+5. The outcome (**ok**, **failed** with the error, or **skipped** with the reason) is kept on the target, listed under **Recent automatic updates** in Settings, and shown under the switch. Every update tried is written to the audit log (actor `automatic updates`, actions `update.auto_applied` and `update.auto_failed`, with the images and, for containers, the old and new image IDs) and to the live activity feed.
+
+Hosts are worked through in parallel, at most 4 at a time; the targets on one host are updated one after the other. When the window's time is up, targets not reached yet are skipped and left for the next window.
+
+**Safety rules.**
+
+- Nothing is updated unless an admin opted it in. Turning a target on or off, changing the window and **Run now** need a recent sign-in, and API tokens can't do them. Each is audited.
+- TainerHub's own containers and compose project (the hub, its database, the agents, anything named `tainerhub…`) are never updated automatically: use the update card on the Hosts page.
+- A target is skipped, not forced, when its host is offline, a job is already running for it (a deploy, a move), or (for stacks) it has saved changes that haven't been deployed, since Pull & redeploy would deploy those too. Stacks never deployed by TainerHub are skipped as well.
+- Images pinned by digest never have a newer version, so such containers can't be opted in.
+
+**Stacks that build images.** A service with `build:` makes its own image, which has no registry digest to compare, so TainerHub can't tell whether its base image changed. A stack that builds is updated only when one of its pulled images has a newer version (Pull & redeploy then also rebuilds with `--pull`, refreshing the base images). Otherwise it's skipped as "builds". Redeploy it yourself when you know a base image changed.
+
+The hub reads `image:` lines from the compose file without evaluating variables, so an image written as `${REGISTRY}/app:1` only counts through the containers running it.
+
 ### Details panel
 
 <img src="images/container-details.png" width="900" alt="The container details panel">

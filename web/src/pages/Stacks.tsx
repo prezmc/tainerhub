@@ -142,6 +142,11 @@ function StackRow({ s, actions, adopt }: { s: StackSummary; actions: MenuItem[];
             changes not deployed
           </Badge>
         )}
+        {s.autoUpdate && (
+          <span title="Updated automatically in the maintenance window">
+            <Badge tone="info">auto</Badge>
+          </span>
+        )}
         {s.containers > 0 && (
           <span className="text-xs tabular-nums text-ink-100/60">
             {s.running}/{s.containers} running

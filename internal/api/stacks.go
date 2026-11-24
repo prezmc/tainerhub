@@ -37,7 +37,8 @@ type stackSummary struct {
 	UpdatedAt  *time.Time `json:"updatedAt,omitempty"`
 	UpdatedBy  string     `json:"updatedBy,omitempty"`
 	DeployedAt *time.Time `json:"deployedAt,omitempty"`
-	Pending    bool       `json:"pending"` // saved changes that haven't been deployed
+	Pending    bool       `json:"pending"`              // saved changes that haven't been deployed
+	AutoUpdate bool       `json:"autoUpdate,omitempty"` // opted in to automatic updates
 	Job        *jobRef    `json:"job,omitempty"`
 }
 
@@ -95,6 +96,16 @@ func (s *Server) stackSummaries(ctx context.Context) ([]stackSummary, error) {
 		}
 	}
 	jobs := s.jobs.running()
+	auto := map[string]bool{}
+	if ts, err := s.aus().ListAutoUpdateTargets(ctx); err != nil {
+		s.Log.Warn("list automatic update targets", "err", err)
+	} else {
+		for _, t := range ts {
+			if t.Kind == "stack" {
+				auto[t.StackID] = true
+			}
+		}
+	}
 
 	out := []stackSummary{}
 	managed := map[string]bool{}
@@ -105,7 +116,7 @@ func (s *Server) stackSummaries(ctx context.Context) ([]stackSummary, error) {
 		sum := stackSummary{
 			ID: st.ID, Name: st.Name, HostID: st.HostID, HostName: hostName[st.HostID], Managed: true, Online: online,
 			UpdatedAt: &updated, UpdatedBy: st.UpdatedBy, DeployedAt: st.DeployedAt,
-			Pending: st.DeployedHash != stackHash(st),
+			Pending: st.DeployedHash != stackHash(st), AutoUpdate: auto[st.ID],
 		}
 		if j, ok := jobs[st.ID]; ok {
 			sum.Job = &j
@@ -455,9 +466,34 @@ func (e *busyError) Error() string {
 	return "a " + e.action + " is already running for this stack"
 }
 
+// jobActor is who started a stack job: a signed-in user, or automatic
+// updates (which has no user and no IP).
+type jobActor struct {
+	Name   string  // shown on the job and in the activity feed
+	Audit  string  // the audit log's actor
+	UserID *string // nil for automatic updates
+	IP     string
+	Auto   bool // automatic updates write their own activity entry
+}
+
+func (s *Server) requestActor(r *http.Request) jobActor {
+	u := userFrom(r)
+	id := u.ID
+	return jobActor{Name: u.Username, Audit: u.Username, UserID: &id, IP: s.Auth.ClientIP(r)}
+}
+
 // startStackJob sends a stack command to the host's agent and follows it in
 // the background: output goes to the job, and the outcome to the audit log.
 func (s *Server) startStackJob(r *http.Request, st store.Stack, action string, pull, volumes bool) (*job, error) {
+	if s.Reg.Get(st.HostID) == nil {
+		return nil, registry.ErrOffline
+	}
+	return s.startStackJobAs(st, action, pull, volumes, s.requestActor(r))
+}
+
+// startStackJobAs is startStackJob for a given actor (automatic updates
+// start jobs without a request).
+func (s *Server) startStackJobAs(st store.Stack, action string, pull, volumes bool, actor jobActor) (*job, error) {
 	a := s.Reg.Get(st.HostID)
 	if a == nil {
 		return nil, registry.ErrOffline
@@ -469,8 +505,7 @@ func (s *Server) startStackJob(r *http.Request, st store.Stack, action string, p
 	} else if action == wire.StackDeploy && len(st.Files) > 0 && !hello.Stacks.Files {
 		return nil, errors.New("this host's agent is too old for stacks with extra files (such as a Dockerfile); update it to the latest tainerhub-agent image")
 	}
-	u := userFrom(r)
-	j, ok := s.jobs.start(&job{StackID: st.ID, Stack: st.Name, HostID: st.HostID, Host: a.Name, Action: actionLabel(action, pull), Actor: u.Username})
+	j, ok := s.jobs.start(&job{StackID: st.ID, Stack: st.Name, HostID: st.HostID, Host: a.Name, Action: actionLabel(action, pull), Actor: actor.Name})
 	if !ok {
 		return nil, &busyError{jobID: j.ID, action: j.Action}
 	}
@@ -487,7 +522,7 @@ func (s *Server) startStackJob(r *http.Request, st store.Stack, action string, p
 		j.finish(err.Error())
 		return nil, err
 	}
-	ip := s.Auth.ClientIP(r)
+	db := s.aus()
 	go func() {
 		final, gotEnd := "", false
 		timeout := time.NewTimer(35 * time.Minute) // the agent gives up after 30
@@ -521,15 +556,17 @@ func (s *Server) startStackJob(r *http.Request, st store.Stack, action string, p
 		if final == "" {
 			switch action {
 			case wire.StackDeploy:
-				if err := s.Store.MarkStackDeployed(ctx, st.ID, hash); err != nil {
+				if err := db.MarkStackDeployed(ctx, st.ID, hash); err != nil {
 					s.Log.Warn("mark stack deployed", "err", err)
 				}
 			case wire.StackRemove:
-				if err := s.Store.DeleteStack(ctx, st.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+				if err := db.DeleteStack(ctx, st.ID); err != nil && !errors.Is(err, store.ErrNotFound) {
 					s.Log.Warn("delete stack", "err", err)
 				}
 			}
-			s.Reg.AddActivity(registry.Activity{Kind: "user", Action: "stack." + j.Action, HostID: st.HostID, Host: a.Name, Container: st.Name, Actor: u.Username})
+			if !actor.Auto {
+				s.Reg.AddActivity(registry.Activity{Kind: "user", Action: "stack." + j.Action, HostID: st.HostID, Host: a.Name, Container: st.Name, Actor: actor.Name})
+			}
 		}
 		detail := map[string]any{"host": a.Name}
 		if pull {
@@ -541,11 +578,9 @@ func (s *Server) startStackJob(r *http.Request, st store.Stack, action string, p
 		if final != "" {
 			detail["error"] = final
 		}
-		e := store.AuditEntry{Actor: u.Username, UserID: &u.ID, Action: "stack." + j.Action, Target: a.Name + "/" + st.Name, IP: ip}
+		e := store.AuditEntry{Actor: actor.Audit, UserID: actor.UserID, Action: "stack." + j.Action, Target: a.Name + "/" + st.Name, IP: actor.IP}
 		e.Detail, _ = json.Marshal(detail)
-		if err := s.Store.Audit(ctx, e); err != nil {
-			s.Log.Warn("audit write failed", "err", err)
-		}
+		s.writeAudit(ctx, e)
 		j.finish(final)
 	}()
 	return j, nil

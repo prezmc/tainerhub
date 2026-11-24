@@ -372,6 +372,8 @@ export interface StackSummary {
   deployedAt?: string
   /** Saved changes that haven't been deployed yet. */
   pending: boolean
+  /** Opted in to automatic updates. */
+  autoUpdate?: boolean
   job?: { id: string; action: string }
 }
 

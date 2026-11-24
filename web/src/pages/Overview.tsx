@@ -359,6 +359,8 @@ const userVerbs: Record<string, string> = {
   'stack.restart': 'restarted stack',
   'stack.down': 'took down stack',
   'stack.remove': 'deleted stack',
+  'update.auto_applied': 'updated',
+  'update.auto_failed': 'failed to update',
 }
 
 function describe(a: Activity): { text: React.ReactNode; color: string } {
