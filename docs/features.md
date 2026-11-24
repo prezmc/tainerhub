@@ -400,6 +400,8 @@ The owner is the account created at setup. There is one owner, and nobody else c
 
 These rules are enforced by the hub's API, not just hidden in the UI.
 
+To script TainerHub with an API token, see the [API guide](api.md).
+
 ## Audit log
 
 <img src="images/audit.png" width="900" alt="The Audit log page">

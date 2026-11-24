@@ -43,6 +43,7 @@ The hub's own server is managed automatically. To add more, go to **Hosts → Ad
 | [Features](docs/features.md) | A tour of every page: Overview, Containers, Stacks, Resources, Hosts, Users and roles, Audit, Settings, Account, the command palette. |
 | [HTTPS and passkeys](docs/https-and-passkeys.md) | Putting TainerHub behind Nginx Proxy Manager from the Settings page, keeping it LAN-only, and fixing test failures. |
 | [Security](docs/security.md) | The security model, what it can't protect against, and a hardening checklist. |
+| [API](docs/api.md) | API tokens, calling the JSON API with curl, live event streams, every endpoint with its role, recipes and security notes. |
 | [Troubleshooting](docs/troubleshooting.md) | Agent offline, expired join tokens, "Stacks unavailable", passkeys, update errors, high CPU, lost access, logs and profiling. |
 
 ## Status
