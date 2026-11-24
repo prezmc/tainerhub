@@ -17,12 +17,31 @@ const pastTense: Record<Action, string> = {
   recreate: 'updated',
 }
 
-/** Live data: kept fresh by the SSE stream in AppLayout; polling is only a fallback. */
+/** True while AppLayout's live fleet stream is connected. */
+export const LiveContext = createContext(false)
+export const useLive = () => useContext(LiveContext)
+
+/** The query options for the fleet's hosts: the live stream keeps them fresh, polling only while it's down. */
+export function useHostsQuery() {
+  const live = useLive()
+  return useQuery({ queryKey: ['hosts'], queryFn: () => api<Host[]>('/api/hosts'), refetchInterval: live ? false : 30000 })
+}
+
+/** Live data: kept fresh by the SSE stream in AppLayout; polling is only a fallback while it's down. */
 export function useFleet() {
-  const containers = useQuery({ queryKey: ['containers'], queryFn: () => api<Container[]>('/api/containers'), refetchInterval: 30000 })
-  const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api<Host[]>('/api/hosts'), refetchInterval: 30000 })
+  const live = useLive()
+  const containers = useQuery({ queryKey: ['containers'], queryFn: () => api<Container[]>('/api/containers'), refetchInterval: live ? false : 30000 })
+  const hosts = useHostsQuery()
   const activity = useQuery<Activity[]>({ queryKey: ['activity'], queryFn: () => Promise.resolve([]), staleTime: Infinity })
-  return { containers: containers.data ?? [], hosts: hosts.data ?? [], activity: activity.data ?? [], loading: containers.isPending || hosts.isPending }
+  // An error only matters while there's nothing to show: stale data beats an error.
+  const error = (!containers.data && containers.error) || (!hosts.data && hosts.error) || null
+  return {
+    containers: containers.data ?? [],
+    hosts: hosts.data ?? [],
+    activity: activity.data ?? [],
+    loading: (containers.isPending || hosts.isPending) && !error,
+    error: error ? errorText(error) : null,
+  }
 }
 
 /** Describes TainerHub's own containers, which are risky to stop or remove from TainerHub. */
@@ -44,7 +63,7 @@ const isAnonymous = (name: string) => /^[0-9a-f]{64}$/.test(name)
  */
 function RemoveVolumesOption({ c, onChange }: { c: Container; onChange: (v: VolumeChoice) => void }) {
   const [on, setOn] = useState(false)
-  const detail = useQuery({ queryKey: ['detail', c.hostId, c.id], queryFn: () => api<DetailResponse>(`/api/hosts/${c.hostId}/containers/${encodeURIComponent(c.id)}`) })
+  const detail = useContainerDetail(c)
   const volumes = useQuery({ queryKey: ['volumes', c.hostId], queryFn: () => api<VolumeRes[]>(`/api/hosts/${c.hostId}/volumes`) })
   const mounts = (detail.data?.detail.mounts ?? []).filter((m) => m.type === 'volume' && m.name)
   const rows = mounts.map((m) => {
@@ -110,6 +129,8 @@ export function useContainerAction() {
     },
     onError: (e, { c }) => toast('bad', `${c.name}: ${errorText(e)}`),
   })
+  const mutate = m.mutate
+  const removeWithVolumes = removeVolumes.mutate
   const run = useCallback(
     async (c: Container, action: Action): Promise<boolean> => {
       const own = ownContainer(c)
@@ -150,21 +171,30 @@ export function useContainerAction() {
           )
           if (!(await confirm({ ...d, body: full, danger: true }))) return false
           if (volumeChoice.current.on) {
-            removeVolumes.mutate({ c, names: volumeChoice.current.names })
+            removeWithVolumes({ c, names: volumeChoice.current.names })
             return true
           }
-          m.mutate({ c, action })
+          mutate({ c, action })
           return true
         }
         if (!(await confirm({ ...d, body, danger: action !== 'recreate' }))) return false
       }
-      m.mutate({ c, action })
+      mutate({ c, action })
       return true
     },
-    [confirm, m, qc, removeVolumes],
+    [confirm, mutate, qc, removeWithVolumes],
   )
   const pendingId = m.isPending ? m.variables?.c.id : removeVolumes.isPending ? removeVolumes.variables?.c.id : undefined
   return { run, pendingId }
+}
+
+/** Everything Docker knows about one container (the same query the details panel uses). */
+export function useContainerDetail(c: Container, refetchInterval?: number) {
+  return useQuery({
+    queryKey: ['detail', c.hostId, c.id],
+    queryFn: () => api<DetailResponse>(`/api/hosts/${c.hostId}/containers/${encodeURIComponent(c.id)}`),
+    refetchInterval,
+  })
 }
 
 // ---- logs drawer, opened from anywhere ----

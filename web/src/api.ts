@@ -1,9 +1,7 @@
-import {
-  startAuthentication,
-  startRegistration,
-  type PublicKeyCredentialCreationOptionsJSON,
-  type PublicKeyCredentialRequestOptionsJSON,
-} from '@simplewebauthn/browser'
+import type { PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
+
+// The WebAuthn helpers are only needed during a passkey ceremony: load them then.
+const webauthn = () => import('@simplewebauthn/browser')
 
 export class ApiError extends Error {
   status: number
@@ -25,8 +23,19 @@ export async function api<T = unknown>(path: string, opts: { method?: string; bo
   })
   if (res.status === 204) return undefined as T
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new ApiError((data as { error?: string }).error ?? res.statusText, res.status, data as Record<string, unknown>)
+  if (!res.ok) {
+    const err = new ApiError((data as { error?: string }).error ?? res.statusText, res.status, data as Record<string, unknown>)
+    if (needsReauth(err)) for (const fn of reauthListeners) fn()
+    throw err
+  }
   return data as T
+}
+
+const reauthListeners = new Set<() => void>()
+/** Called whenever the hub refuses something until the user signs in again. */
+export function onReauthNeeded(fn: () => void): () => void {
+  reauthListeners.add(fn)
+  return () => reauthListeners.delete(fn)
 }
 
 export type Role = 'owner' | 'admin' | 'operator' | 'viewer'
@@ -192,19 +201,19 @@ export const can = (u: User | undefined, role: Role) => !!u && roleRank[u.role] 
 
 export async function passkeySetup(input: { token: string; username: string; displayName: string; passkeyName: string }) {
   const opts = await api<{ publicKey: PublicKeyCredentialCreationOptionsJSON }>('/api/setup/begin', { method: 'POST', body: input })
-  const cred = await startRegistration({ optionsJSON: opts.publicKey })
+  const cred = await (await webauthn()).startRegistration({ optionsJSON: opts.publicKey })
   return api<{ user: User; recoveryCodes: string[] }>('/api/setup/finish', { method: 'POST', body: cred })
 }
 
 export async function passkeyLogin() {
   const opts = await api<{ publicKey: PublicKeyCredentialRequestOptionsJSON }>('/api/login/begin', { method: 'POST', body: {} })
-  const cred = await startAuthentication({ optionsJSON: opts.publicKey })
+  const cred = await (await webauthn()).startAuthentication({ optionsJSON: opts.publicKey })
   return api<{ user: User }>('/api/login/finish', { method: 'POST', body: cred })
 }
 
 export async function passkeyAdd(name: string) {
   const opts = await api<{ publicKey: PublicKeyCredentialCreationOptionsJSON }>('/api/me/passkeys/begin', { method: 'POST', body: { name } })
-  const cred = await startRegistration({ optionsJSON: opts.publicKey })
+  const cred = await (await webauthn()).startRegistration({ optionsJSON: opts.publicKey })
   await api('/api/me/passkeys/finish', { method: 'POST', body: cred })
 }
 

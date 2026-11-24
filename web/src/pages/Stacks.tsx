@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link, useNavigate, useSearch } from '@tanstack/react-router'
+import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { Ellipsis, Layers, Play, Plus, RefreshCw, RotateCw, Search, Square, Download, ArrowDownToLine, ExternalLink, PencilLine } from 'lucide-react'
 import { can, timeAgo, type StackAction, type StackSummary } from '../api'
 import { Badge, Button, Card, EmptyState, IconButton, Menu, PageHeader, StatusDot, cx, type MenuItem } from '../ui'
@@ -21,7 +21,7 @@ export function StacksPage() {
   const operator = can(me.user, 'operator')
   const stacks = useStacks()
   const { run } = useStackAction()
-  const search = useSearch({ strict: false }) as { q?: string }
+  const search = getRouteApi('/app/stacks').useSearch()
   const [filter, setFilter] = useState(search.q ?? '')
   const navigate = useNavigate()
 
@@ -155,7 +155,7 @@ function StackRow({ s, actions, adopt }: { s: StackSummary; actions: MenuItem[];
             Manage in TainerHub
           </Button>
         ) : (
-          actions.length > 0 && <Menu trigger={(toggle) => <IconButton icon={Ellipsis} label={`Actions for ${s.name}`} onClick={toggle} />} items={actions} />
+          actions.length > 0 && <Menu trigger={(toggle, menu) => <IconButton {...menu} icon={Ellipsis} label={`Actions for ${s.name}`} onClick={toggle} />} items={actions} />
         )}
       </div>
     </div>

@@ -2,9 +2,10 @@ import { Link, Navigate, Outlet, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { Fingerprint, LogOut, Search, TriangleAlert } from 'lucide-react'
-import { api, ApiError, can, type Activity, type Container, type Host, type Me } from '../api'
-import { DetailsContext, LogsContext, PaletteContext, TerminalContext } from '../fleet'
-import { Kbd, Menu, cx } from '../ui'
+import { api, ApiError, can, errorText, type Activity, type Container, type Host, type Me } from '../api'
+import { DetailsContext, LiveContext, LogsContext, PaletteContext, TerminalContext } from '../fleet'
+import { Kbd, Menu, cx, useToast } from '../ui'
+import { ReauthPrompt } from '../reauth'
 import { CommandPalette } from './CommandPalette'
 import { Logo } from './Logo'
 import { LogsPanel } from './LogsPanel'
@@ -29,7 +30,12 @@ function useFleetStream() {
     const connect = () => {
       es = new EventSource('/api/events')
       es.addEventListener('fleet', (e) => {
-        const d = JSON.parse((e as MessageEvent).data) as { hosts: Host[]; containers: Container[]; activity: Activity[] }
+        let d: { hosts: Host[]; containers: Container[]; activity: Activity[] }
+        try {
+          d = JSON.parse((e as MessageEvent).data)
+        } catch {
+          return // a garbled event: wait for the next one
+        }
         qc.setQueryData(['hosts'], d.hosts)
         qc.setQueryData(['containers'], d.containers)
         qc.setQueryData(['activity'], d.activity)
@@ -39,6 +45,9 @@ function useFleetStream() {
       es.onerror = () => {
         setLive(false)
         es?.close()
+        // EventSource can't show the status: if the session expired, /api/me
+        // answers 401 and AppLayout sends the user to sign in.
+        qc.invalidateQueries({ queryKey: ['me'] })
         retry = setTimeout(connect, delay)
         delay = Math.min(delay * 2, 30000)
       }
@@ -70,12 +79,14 @@ function NavPill({ to, label, exact }: { to: NavTo; label: string; exact?: boole
 export function AppLayout() {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const toast = useToast()
   const me = useQuery({ queryKey: ['me'], queryFn: () => api<Me>('/api/me') })
   const live = useFleetStream()
   const [logsFor, setLogsFor] = useState<Container | null>(null)
   const [detailsFor, setDetailsFor] = useState<Container | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const openPalette = useCallback(() => setPaletteOpen(true), [])
+  const closePalette = useCallback(() => setPaletteOpen(false), [])
   const [jobId, setJobId] = useState<string | null>(null)
   const [termFor, setTermFor] = useState<Container | null>(null)
   // The logs, job and terminal drawers share the bottom of the screen: one at a time.
@@ -109,17 +120,21 @@ export function AppLayout() {
   }, [])
 
   if (me.isPending) return <div className="flex min-h-screen items-center justify-center text-sm text-ink-100/60">Loading…</div>
-  if (me.isError) {
-    if (me.error instanceof ApiError && me.error.status === 401) {
-      // Back to this page after signing in (Login only follows same-site paths).
-      const here = window.location.pathname + window.location.search
-      return <Navigate to="/login" search={{ next: here === '/' ? undefined : here }} />
-    }
-    return <div className="p-8 text-sm text-rose-300">{me.error.message}</div>
+  if (me.isError && me.error instanceof ApiError && me.error.status === 401) {
+    // Back to this page after signing in (Login only follows same-site paths).
+    const here = window.location.pathname + window.location.search
+    return <Navigate to="/login" search={{ next: here === '/' ? undefined : here }} />
   }
+  // A failed refetch (a network blip) keeps showing the app with the data it has.
+  if (!me.data) return <div className="p-8 text-sm text-rose-300">{me.error?.message ?? 'Loading…'}</div>
 
   const logout = async () => {
-    await api('/api/logout', { method: 'POST' })
+    try {
+      await api('/api/logout', { method: 'POST' })
+    } catch (e) {
+      toast('bad', `Couldn't sign out: ${errorText(e)}`)
+      return
+    }
     qc.clear()
     navigate({ to: '/login' })
   }
@@ -132,6 +147,7 @@ export function AppLayout() {
 
   return (
     <MeContext.Provider value={me.data}>
+      <LiveContext.Provider value={live}>
       <LogsContext.Provider value={openLogs}>
         <JobContext.Provider value={openJob}>
         <TerminalContext.Provider value={openTerminal}>
@@ -170,8 +186,9 @@ export function AppLayout() {
                   title={live ? 'Live: receiving updates from the hub' : 'Reconnecting to the live update stream'}
                 />
                 <Menu
-                  trigger={(toggle) => (
+                  trigger={(toggle, menu) => (
                     <button
+                      {...menu}
                       onClick={toggle}
                       aria-label="Account menu"
                       className="tag tag-sm flex size-9 items-center justify-center bg-lime-400 font-display text-sm font-bold text-ink-950 transition hover:bg-lime-300"
@@ -214,12 +231,14 @@ export function AppLayout() {
               <TerminalPanel key={termFor.hostId + termFor.id} container={termFor} onClose={() => setTermFor(null)} />
             </Suspense>
           )}
-          <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onLogs={openLogs} onDetails={setDetailsFor} />
+          <CommandPalette open={paletteOpen} onClose={closePalette} onLogs={openLogs} onDetails={setDetailsFor} />
+          <ReauthPrompt />
         </PaletteContext.Provider>
         </DetailsContext.Provider>
         </TerminalContext.Provider>
         </JobContext.Provider>
       </LogsContext.Provider>
+      </LiveContext.Provider>
     </MeContext.Provider>
   )
 }

@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { useRouter } from '@tanstack/react-router'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Fingerprint, KeyRound, LockKeyhole, LogIn, LogOut, MonitorSmartphone, Plus, RefreshCw, Save, ShieldAlert, Trash2 } from 'lucide-react'
 import { api, errorText, needsReauth, passkeyAdd, passkeysUsable, timeAgo } from '../api'
 import { Badge, Button, Card, ErrorNote, IconButton, Input, Modal, PageHeader, RecoveryCodes, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
+import { useSignInAgain } from '../reauth'
 
 export function AccountPage() {
   const me = useMe()
@@ -15,7 +15,7 @@ export function AccountPage() {
   const [codes, setCodes] = useState<string[] | null>(null)
   const [reauth, setReauth] = useState(false)
   // Sensitive changes need a recent sign-in; offer one instead of a bare error.
-  const onError = (e: unknown) => (needsReauth(e) ? setReauth(true) : toast('bad', errorText(e)))
+  const onError = (e: unknown) => (needsReauth(e) ? setReauth(true) : toast('bad', errorText(e))) // ReauthPrompt also opens
 
   const add = useMutation({
     mutationFn: () => passkeyAdd(name),
@@ -183,18 +183,7 @@ export function AccountPage() {
 
 /** Shown when the hub wants a recent sign-in before a sensitive change. */
 function ReauthCard() {
-  const qc = useQueryClient()
-  const router = useRouter()
-  const [busy, setBusy] = useState(false)
-  const signInAgain = async () => {
-    setBusy(true)
-    try {
-      await api('/api/logout', { method: 'POST' })
-    } finally {
-      qc.clear()
-      router.history.push('/login?next=' + encodeURIComponent('/account'))
-    }
-  }
+  const { go: signInAgain, busy } = useSignInAgain()
   return (
     <Card className="p-6">
       <div className="flex flex-wrap items-center gap-4">

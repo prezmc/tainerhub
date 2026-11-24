@@ -1,12 +1,12 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { ArrowRightLeft, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
-import { api, can, errorText, mem, timeAgo, type Container, type DetailResponse } from '../api'
-import { useContainerAction, useOpenLogs, useOpenTerminal } from '../fleet'
+import { can, errorText, mem, timeAgo, type Container } from '../api'
+import { useContainerAction, useContainerDetail, useOpenLogs, useOpenTerminal } from '../fleet'
 import { StackLink } from '../stacks'
 import { PortLink } from './Containers'
 import { useFleet } from '../fleet'
-import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf } from '../ui'
+import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf, useLayer } from '../ui'
 import { useMe } from './AppLayout'
 import { ContainerMoveNotes, MoveContainerDialog, movable } from './MoveContainer'
 
@@ -16,17 +16,10 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
   const openLogs = useOpenLogs()
   const { run, pendingId } = useContainerAction()
   const host = useFleet().hosts.find((h) => h.id === container.hostId)
-  const q = useQuery({
-    queryKey: ['inspect', container.hostId, container.id],
-    queryFn: () => api<DetailResponse>(`/api/hosts/${container.hostId}/containers/${encodeURIComponent(container.id)}`),
-    refetchInterval: 15000,
-  })
+  const q = useContainerDetail(container, 15000)
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  const layer = useRef<HTMLDivElement>(null)
+  useLayer(true, layer, onClose, { modal: true })
 
   const d = q.data?.detail
   const running = container.state === 'running'
@@ -35,13 +28,15 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
   const openTerminal = useOpenTerminal()
   const [moving, setMoving] = useState(false)
 
-  return (
-    <div className="fixed inset-0 z-40">
+  return createPortal(
+    <div ref={layer} className="fixed inset-0 z-40">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
       <aside
         role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
         aria-label={`${container.name} details`}
-        className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-panel shadow-2xl shadow-black/70 ring-1 ring-white/15 animate-[slide_180ms_ease-out]"
+        className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-panel outline-none shadow-2xl shadow-black/70 ring-1 ring-white/15 animate-[slide_180ms_ease-out]"
       >
         <header className="border-b border-white/10 p-6">
           <div className="flex items-start gap-3">
@@ -239,7 +234,8 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
           )}
         </div>
       </aside>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
