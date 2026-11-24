@@ -5,6 +5,7 @@
 A self-hosted Docker manager for your homelab: one web UI for every Docker server you own.
 
 <p align="center"><img src="docs/images/tour.gif" width="900" alt="A quick tour of TainerHub"></p>
+<p align="center"><sub>Prefer video? <a href="docs/images/tour.mp4">Watch the tour as an MP4</a> (0.4 MB).</sub></p>
 
 You run one **hub**. It holds the web UI, the API and a small database. Each Docker server runs a small **agent** that connects out to the hub, so your servers open no ports. From one page you can watch every container, read logs, open a terminal, deploy compose stacks, clean up images and keep TainerHub and Docker itself up to date. It installs with one command, works with a password over plain HTTP on your LAN, and adds HTTPS and passkeys through the reverse proxy you already run.
 
