@@ -5,6 +5,7 @@ import { api, errorText, needsReauth, passkeyAdd, passkeysUsable, timeAgo } from
 import { Badge, Button, Card, ErrorNote, IconButton, Input, Modal, PageHeader, RecoveryCodes, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { useSignInAgain } from '../reauth'
+import { ApiTokensCard } from '../tokens'
 
 export function AccountPage() {
   const me = useMe()
@@ -149,6 +150,8 @@ export function AccountPage() {
             </Button>
           </div>
         </Card>
+
+        <ApiTokensCard user={me.user} onReauth={() => setReauth(true)} />
 
         <Card className="p-6">
           <div className="flex flex-wrap items-center gap-4">

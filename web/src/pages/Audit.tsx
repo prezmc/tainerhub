@@ -18,7 +18,7 @@ export function AuditPage() {
   const audit = useQuery({ queryKey: ['audit'], queryFn: () => api<AuditEntry[]>('/api/audit?limit=500'), refetchInterval: 15000 })
   const rows = useMemo(() => {
     const f = q.toLowerCase()
-    return (audit.data ?? []).filter((e) => !f || [e.actor, e.action, e.target, e.ip].some((s) => s.toLowerCase().includes(f)))
+    return (audit.data ?? []).filter((e) => !f || [e.actor, e.action, e.target, e.ip, e.detail?.token ?? ''].some((s) => s.toLowerCase().includes(f)))
   }, [audit.data, q])
 
   return (
@@ -52,7 +52,11 @@ export function AuditPage() {
                 <td className="whitespace-nowrap px-5 py-3 text-ink-100/60" title={new Date(e.at).toLocaleString()}>
                   {timeAgo(e.at)}
                 </td>
-                <td className="px-5 py-3 text-ink-50">{e.actor}</td>
+                <td className="px-5 py-3 text-ink-50">
+                  {e.actor}
+                  {/* Actions taken with an API token name the token. */}
+                  {e.detail?.token && <div className="text-xs text-ink-100/50">via token <span className="text-violet-300">{e.detail.token}</span></div>}
+                </td>
                 <td className="px-5 py-3">
                   <Badge tone={toneFor(e)} className="mono">
                     {e.action}

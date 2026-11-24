@@ -89,6 +89,8 @@ type authStore interface {
 	GetSession(ctx context.Context, tokenHash []byte) (store.Session, error)
 	DeleteOtherSessions(ctx context.Context, userID string, keep []byte) (int64, error)
 	SetPasswordAndRevoke(ctx context.Context, userID, hash string, keep []byte) error
+	APITokenUser(ctx context.Context, tokenHash []byte) (store.APIToken, store.User, error)
+	TouchAPIToken(ctx context.Context, id, ip string) error
 }
 
 func (s *Service) st() authStore {
@@ -674,13 +676,19 @@ func (s *Service) startSession(w http.ResponseWriter, r *http.Request, u store.U
 	return nil
 }
 
-// UserFromRequest returns the signed-in user, enforcing idle and absolute timeouts.
+// UserFromRequest returns the caller: the API token's user (with the
+// token's effective role) or the signed-in user. See Authenticate.
 func (s *Service) UserFromRequest(r *http.Request) (store.User, error) {
-	ck, err := r.Cookie(s.sessionCookie(r))
-	if err != nil || ck.Value == "" {
+	u, _, err := s.Authenticate(r)
+	return u, err
+}
+
+// userFromSession returns the signed-in user, enforcing idle and absolute timeouts.
+func (s *Service) userFromSession(r *http.Request) (store.User, error) {
+	h := s.sessionHash(r)
+	if h == nil {
 		return store.User{}, ErrUnauthorized
 	}
-	h := Hash(ck.Value)
 	ss, u, err := s.Store.SessionUser(r.Context(), h) // session and user in one query
 	if err != nil {
 		return store.User{}, ErrUnauthorized
@@ -709,7 +717,11 @@ func freshSignIn(created, now time.Time) bool {
 }
 
 // sessionHash is the stored hash of this request's session token, or nil.
+// A request with a bearer token has no session: its cookies are ignored.
 func (s *Service) sessionHash(r *http.Request) []byte {
+	if HasBearer(r) {
+		return nil
+	}
 	ck, err := r.Cookie(s.sessionCookie(r))
 	if err != nil || ck.Value == "" {
 		return nil
@@ -720,6 +732,9 @@ func (s *Service) sessionHash(r *http.Request) []byte {
 // RequireFreshSignIn returns ErrReauth unless this request's session was
 // created by a sign-in within ReauthWindow.
 func (s *Service) RequireFreshSignIn(r *http.Request) error {
+	if HasBearer(r) {
+		return ErrTokenAuth
+	}
 	h := s.sessionHash(r)
 	if h == nil {
 		return ErrUnauthorized
@@ -739,6 +754,9 @@ func (s *Service) RequireFreshSignIn(r *http.Request) error {
 
 // SignOutOtherSessions ends every session of u except this request's one.
 func (s *Service) SignOutOtherSessions(r *http.Request, u store.User) (int64, error) {
+	if HasBearer(r) {
+		return 0, ErrTokenAuth
+	}
 	h := s.sessionHash(r)
 	if h == nil {
 		return 0, ErrUnauthorized
@@ -747,8 +765,8 @@ func (s *Service) SignOutOtherSessions(r *http.Request, u store.User) (int64, er
 }
 
 func (s *Service) Logout(w http.ResponseWriter, r *http.Request) {
-	if ck, err := r.Cookie(s.sessionCookie(r)); err == nil {
-		_ = s.Store.DeleteSession(r.Context(), Hash(ck.Value))
+	if h := s.sessionHash(r); h != nil {
+		_ = s.Store.DeleteSession(r.Context(), h)
 	}
 	s.clearCookie(w, r, s.sessionCookie(r))
 }

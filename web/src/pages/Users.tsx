@@ -4,6 +4,7 @@ import { Link2, Trash2, UserPlus, Users as UsersIcon } from 'lucide-react'
 import { api, errorText, roleRank, timeAgo, type Role, type User } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, IconButton, Input, Modal, PageHeader, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
+import { AllTokensSection } from '../tokens'
 
 type UserRow = User & { hasPassword: boolean; manageable: boolean }
 type Invite = { id: string; role: Role; note: string; createdBy: string; createdAt: string; expiresAt: string }
@@ -154,6 +155,8 @@ export function UsersPage() {
           </Card>
         </section>
       )}
+
+      <AllTokensSection />
 
       <Modal open={inviting} onClose={() => setInviting(false)} title={link ? 'Send this link' : 'Invite someone'}>
         {link ? (

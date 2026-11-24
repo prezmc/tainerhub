@@ -221,6 +221,9 @@ func (s *Service) LoginWithPassword(w http.ResponseWriter, r *http.Request, user
 // signing in again); a user without one (passkey-only) needs a recent
 // sign-in instead, so a stolen session can't add a password.
 func (s *Service) ChangePassword(r *http.Request, u store.User, current, next string) error {
+	if HasBearer(r) {
+		return ErrTokenAuth
+	}
 	ctx := r.Context()
 	if u.PasswordHash != "" {
 		// Guessing the current password is a sign-in attempt like any other.

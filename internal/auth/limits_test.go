@@ -25,7 +25,9 @@ type fakeStore struct {
 	revokedKeep   []byte
 	revokeCalls   int
 	passwordSetTo string
-	recoveryIDs   []string // user IDs UseRecoveryCode was called with
+	recoveryIDs   []string            // user IDs UseRecoveryCode was called with
+	tokens        map[string]tokenRow // API tokens by hash (see tokens_test.go)
+	touches       int
 }
 
 func (f *fakeStore) UserByUsername(ctx context.Context, username string) (store.User, error) {

@@ -57,10 +57,11 @@ type Server struct {
 
 	// Test hooks; nil uses s.Auth.
 	whoami     func(*http.Request) (store.User, error)
+	authn      func(*http.Request) (store.User, *auth.TokenInfo, error)
 	freshCheck func(*http.Request) error
 }
 
-var roleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3, "owner": 4}
+var roleRank = auth.RoleRank
 
 type ctxKey struct{}
 
@@ -93,6 +94,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/me/recovery-codes", s.need("viewer", s.regenRecovery))
 	mux.Handle("POST /api/me/password", s.need("viewer", s.changePassword))
 	mux.Handle("POST /api/me/sessions/sign-out-others", s.need("viewer", s.signOutOthers))
+	mux.Handle("GET /api/me/tokens", s.need("viewer", s.listMyTokens))
+	mux.Handle("POST /api/me/tokens", s.need("viewer", s.createToken))
+	mux.Handle("DELETE /api/me/tokens/{tid}", s.need("viewer", s.revokeMyToken))
 	mux.Handle("GET /api/containers", s.need("viewer", s.containers))
 	mux.Handle("GET /api/events", s.need("viewer", s.events))
 	mux.Handle("GET /api/hosts", s.need("viewer", s.hosts))
@@ -155,6 +159,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/invites/{iid}", s.need("admin", s.deleteInvite))
 	mux.Handle("PUT /api/users/{uid}/role", s.need("admin", s.setRole))
 	mux.Handle("DELETE /api/users/{uid}", s.need("admin", s.deleteUser))
+	mux.Handle("GET /api/tokens", s.need("admin", s.listAllTokens))
+	mux.Handle("DELETE /api/tokens/{tid}", s.need("admin", s.revokeAnyToken))
 	mux.Handle("GET /api/updates", s.need("admin", s.updates))
 	mux.Handle("POST /api/updates/check", s.need("admin", s.checkUpdates))
 	mux.Handle("GET /api/settings/https", s.need("admin", s.httpsSettings))
@@ -195,7 +201,10 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		// A request with a bearer token is authenticated by it alone, never
+		// by cookies (see auth.HasBearer), so there is nothing for a forged
+		// cross-site request to ride on: the CSRF checks don't apply.
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions && !auth.HasBearer(r) {
 			// SameSite=Strict cookies plus a custom header (which cross-site
 			// forms cannot send) plus an Origin check.
 			if r.Header.Get("X-TainerHub") != "1" {
@@ -285,8 +294,19 @@ func localOnlyHost(host string) bool {
 
 func (s *Server) need(role string, fn http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u, err := s.Auth.UserFromRequest(r)
-		if err != nil {
+		authn := s.authn
+		if authn == nil {
+			authn = s.Auth.Authenticate
+		}
+		u, tok, err := authn(r)
+		switch {
+		case errors.Is(err, auth.ErrRateLimited):
+			jsonErr(w, http.StatusTooManyRequests, err.Error())
+			return
+		case errors.Is(err, auth.ErrBadToken):
+			jsonErr(w, http.StatusUnauthorized, err.Error())
+			return
+		case err != nil:
 			jsonErr(w, http.StatusUnauthorized, "not signed in")
 			return
 		}
@@ -294,7 +314,11 @@ func (s *Server) need(role string, fn http.HandlerFunc) http.Handler {
 			jsonErr(w, http.StatusForbidden, "your role can't do that")
 			return
 		}
-		fn(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, u)))
+		ctx := context.WithValue(r.Context(), ctxKey{}, u)
+		if tok != nil {
+			ctx = auth.WithToken(ctx, tok)
+		}
+		fn(w, r.WithContext(ctx))
 	})
 }
 
@@ -312,7 +336,19 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) record(r *http.Request, u *store.User, action, target string, detail any) {
-	e := store.AuditEntry{Action: action, Target: target, IP: s.Auth.ClientIP(r), Actor: "anonymous"}
+	e := auditEntry(r, u, action, target, detail)
+	e.IP = s.Auth.ClientIP(r)
+	if err := s.Store.Audit(context.WithoutCancel(r.Context()), e); err != nil {
+		s.Log.Warn("audit write failed", "err", err)
+	}
+}
+
+// auditEntry builds an audit entry (without the IP). The actor is always
+// the username; when the request came with an API token, the detail also
+// names that token ({"token": "<name>"}), so the log shows which script
+// acted.
+func auditEntry(r *http.Request, u *store.User, action, target string, detail any) store.AuditEntry {
+	e := store.AuditEntry{Action: action, Target: target, Actor: "anonymous"}
 	if u != nil {
 		id := u.ID
 		e.UserID = &id
@@ -321,9 +357,24 @@ func (s *Server) record(r *http.Request, u *store.User, action, target string, d
 	if detail != nil {
 		e.Detail, _ = json.Marshal(detail)
 	}
-	if err := s.Store.Audit(context.WithoutCancel(r.Context()), e); err != nil {
-		s.Log.Warn("audit write failed", "err", err)
+	if t := auth.TokenFrom(r.Context()); t != nil {
+		e.Detail = withToken(e.Detail, t.Name)
 	}
+	return e
+}
+
+// withToken adds "token": name to a JSON detail object. A detail that isn't
+// an object (none is today) is kept under "detail".
+func withToken(detail json.RawMessage, name string) json.RawMessage {
+	m := map[string]any{}
+	if len(detail) > 0 && string(detail) != "null" {
+		if err := json.Unmarshal(detail, &m); err != nil {
+			m = map[string]any{"detail": detail}
+		}
+	}
+	m["token"] = name
+	out, _ := json.Marshal(m)
+	return out
 }
 
 // ---------------- auth endpoints ----------------
@@ -436,6 +487,9 @@ func (s *Server) loginPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
+	if !s.notViaToken(w, r) {
+		return
+	}
 	var in struct{ Current, New string }
 	if !readJSON(w, r, &in) {
 		return
@@ -445,6 +499,9 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, auth.ErrReauth):
 		reauthErr(w)
+		return
+	case errors.Is(err, auth.ErrTokenAuth):
+		jsonErr(w, http.StatusForbidden, err.Error())
 		return
 	case errors.Is(err, auth.ErrRateLimited):
 		jsonErr(w, http.StatusTooManyRequests, err.Error())
@@ -466,6 +523,9 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 
 // signOutOthers ends every session of the caller except this one.
 func (s *Server) signOutOthers(w http.ResponseWriter, r *http.Request) {
+	if !s.notViaToken(w, r) {
+		return
+	}
 	u := userFrom(r)
 	n, err := s.Auth.SignOutOtherSessions(r, u)
 	if err != nil {
@@ -484,7 +544,12 @@ func reauthErr(w http.ResponseWriter) {
 
 // fresh checks that the caller signed in recently, answering 403 if not.
 // Used for changes that would give a stolen session lasting access.
+// API tokens are refused outright: they are long-lived by design, and must
+// not be able to mint more access (invites, roles, passkeys, more tokens).
 func (s *Server) fresh(w http.ResponseWriter, r *http.Request) bool {
+	if !s.notViaToken(w, r) {
+		return false
+	}
 	check := s.freshCheck
 	if check == nil {
 		check = s.Auth.RequireFreshSignIn
@@ -495,6 +560,8 @@ func (s *Server) fresh(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	case errors.Is(err, auth.ErrReauth):
 		reauthErr(w)
+	case errors.Is(err, auth.ErrTokenAuth):
+		jsonErr(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, auth.ErrUnauthorized):
 		jsonErr(w, http.StatusUnauthorized, "not signed in")
 	default:
