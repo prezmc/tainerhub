@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,6 +34,8 @@ type renewHarness struct {
 	reg   *registry.Registry
 	srv   *httptest.Server
 	gw    *gateway.Gateway
+
+	dropRenewals atomic.Int32 // renewal replies still to lose on the way
 }
 
 func newRenewHarness(t *testing.T) *renewHarness {
@@ -57,7 +60,15 @@ func newRenewHarness(t *testing.T) *renewHarness {
 		t.Fatal(err)
 	}
 	h.gw = gw
-	h.srv = httptest.NewUnstartedServer(gw.Handler())
+	inner := gw.Handler()
+	h.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == wire.PathRenew && h.dropRenewals.Add(-1) >= 0 {
+			// The hub does the renewal, but the reply never arrives.
+			inner.ServeHTTP(httptest.NewRecorder(), r)
+			panic(http.ErrAbortHandler)
+		}
+		inner.ServeHTTP(w, r)
+	}))
 	h.srv.TLS = gw.TLSConfig(srvCert)
 	h.srv.EnableHTTP2 = true
 	h.srv.StartTLS()
@@ -161,12 +172,23 @@ func TestRenewReplacesSerial(t *testing.T) {
 	if leaf.Subject.CommonName != renewHostID {
 		t.Fatalf("renewed cert is for %q; the CSR subject must be ignored", leaf.Subject.CommonName)
 	}
-	if got := h.store.serial(renewHostID); got != pki.SerialString(leaf) {
-		t.Fatalf("stored serial %s, want the new one %s", got, pki.SerialString(leaf))
+	// The new serial is pending; the old one still works until the agent
+	// connects with the new certificate.
+	if got, p := h.store.serial(renewHostID), h.store.pending(renewHostID); got != pki.SerialString(old.Leaf) || p != pki.SerialString(leaf) {
+		t.Fatalf("stored serial %s pending %s, want old %s pending %s", got, p, pki.SerialString(old.Leaf), pki.SerialString(leaf))
 	}
 	acts := h.reg.Activity(10)
 	if len(acts) == 0 || acts[0].Action != "certificate renewed" {
 		t.Errorf("no activity entry for the renewal: %+v", acts)
+	}
+	if code := h.connectStatus(t, old); code != http.StatusOK {
+		t.Fatalf("connect with the old cert before the new one was used = %d, want 200", code)
+	}
+	if code := h.connectStatus(t, renewed); code != http.StatusOK {
+		t.Fatalf("connect with the renewed cert = %d", code)
+	}
+	if got, p := h.store.serial(renewHostID), h.store.pending(renewHostID); got != pki.SerialString(leaf) || p != "" {
+		t.Fatalf("after connecting with the new cert: serial %s pending %q, want %s and none", got, p, pki.SerialString(leaf))
 	}
 
 	// The old certificate is now refused, for connecting and for renewing.
@@ -177,7 +199,7 @@ func TestRenewReplacesSerial(t *testing.T) {
 		t.Fatalf("renew with the old cert = %d, want 403", code)
 	}
 	if code := h.connectStatus(t, renewed); code != http.StatusOK {
-		t.Fatalf("connect with the renewed cert = %d", code)
+		t.Fatalf("connect with the renewed cert again = %d", code)
 	}
 
 	// No client certificate at all is refused.
@@ -207,6 +229,7 @@ func TestConcurrentRenewalsOnlyOneWins(t *testing.T) {
 	cert := h.issue(t, time.Hour)
 	const n = 8
 	codes := make([]int, n)
+	certs := make([]tls.Certificate, n)
 	var start, wg sync.WaitGroup
 	start.Add(1)
 	for i := range n {
@@ -214,7 +237,7 @@ func TestConcurrentRenewalsOnlyOneWins(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			start.Wait()
-			codes[i], _ = h.renew(t, cert)
+			codes[i], certs[i] = h.renew(t, cert)
 		}()
 	}
 	start.Done()
@@ -232,8 +255,149 @@ func TestConcurrentRenewalsOnlyOneWins(t *testing.T) {
 	h.store.mu.Lock()
 	stored := h.store.renewals
 	h.store.mu.Unlock()
-	if ok != 1 || stored != 1 {
-		t.Fatalf("%d renewals succeeded (%d stored), want exactly 1: %v", ok, stored, codes)
+	// Each stored renewal is one the hub answered; a later one (a retry
+	// that saw the earlier one's result) replaces it.
+	if ok == 0 || stored != ok {
+		t.Fatalf("%d renewals succeeded, %d stored: %v", ok, stored, codes)
+	}
+	// Whatever the interleaving, only one of the issued certificates works.
+	works := 0
+	for i, c := range certs {
+		if codes[i] == http.StatusOK && h.connectStatus(t, c) == http.StatusOK {
+			works++
+		}
+	}
+	if works != 1 {
+		t.Fatalf("%d renewed certificates work, want exactly 1", works)
+	}
+}
+
+// A renewal whose reply is lost leaves the agent with its old certificate,
+// which keeps working: it can connect, and renewing again succeeds. Once
+// the new certificate has connected, the old one stops working.
+func TestRenewSurvivesLostReply(t *testing.T) {
+	h := newRenewHarness(t)
+	old := h.issue(t, time.Hour)
+	_, csr, _ := pki.NewKeyAndCSR("x")
+	body, _ := json.Marshal(wire.RenewRequest{CSR: csr})
+	h.dropRenewals.Store(1)
+	if code, _, err := h.post(old, wire.PathRenew, body); err == nil && code == http.StatusOK {
+		t.Fatal("the renewal reply was meant to be lost")
+	}
+	lost := h.store.pending(renewHostID)
+	if lost == "" {
+		t.Fatal("the hub did not record the lost renewal")
+	}
+	if code := h.connectStatus(t, old); code != http.StatusOK {
+		t.Fatalf("connect with the old cert after a lost renewal = %d, want 200", code)
+	}
+	code, renewed := h.renew(t, old)
+	if code != http.StatusOK {
+		t.Fatalf("retried renewal = %d, want 200", code)
+	}
+	if p := h.store.pending(renewHostID); p == lost || p != pki.SerialString(renewed.Leaf) {
+		t.Fatalf("pending serial %s; lost %s, retry %s", p, lost, pki.SerialString(renewed.Leaf))
+	}
+	if code := h.connectStatus(t, renewed); code != http.StatusOK {
+		t.Fatalf("connect with the renewed cert = %d", code)
+	}
+	if code := h.connectStatus(t, old); code != http.StatusForbidden {
+		t.Fatalf("connect with the old cert after the new one connected = %d, want 403", code)
+	}
+	if code, _ := h.renew(t, old); code != http.StatusForbidden {
+		t.Fatalf("renew with the old cert after the new one connected = %d, want 403", code)
+	}
+}
+
+// The real agent: its first renewal's reply is lost, it carries on with the
+// old certificate and renews again, then switches to the new one.
+func TestAgentRetriesRenewalAfterLostReply(t *testing.T) {
+	h := newRenewHarness(t)
+	cert := h.issue(t, 10*time.Minute) // due for renewal at once
+	oldSerial := pki.SerialString(cert.Leaf)
+	h.dropRenewals.Store(1)
+	dir := h.startEnrolledAgent(t, cert)
+	waitFor(t, "renewed certificate in use", func() bool {
+		return h.reg.Get(renewHostID) != nil && h.store.serial(renewHostID) != oldSerial && h.store.pending(renewHostID) == ""
+	})
+	h.store.mu.Lock()
+	n := h.store.renewals
+	h.store.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("%d renewals recorded, want 2 (the lost one and the retry)", n)
+	}
+	h.checkRenewedOnDisk(t, dir, oldSerial)
+	if code := h.connectStatus(t, cert); code != http.StatusForbidden {
+		t.Fatalf("connect with the old cert = %d, want 403", code)
+	}
+}
+
+// Renewing with a renewed certificate that has not connected yet shows the
+// agent got it: it becomes current and the one it replaced stops working.
+func TestRenewWithPendingCertPromotesIt(t *testing.T) {
+	h := newRenewHarness(t)
+	old := h.issue(t, time.Hour)
+	_, first := h.renew(t, old)
+	code, second := h.renew(t, first)
+	if code != http.StatusOK {
+		t.Fatalf("renew with the pending cert = %d", code)
+	}
+	if s, p := h.store.serial(renewHostID), h.store.pending(renewHostID); s != pki.SerialString(first.Leaf) || p != pki.SerialString(second.Leaf) {
+		t.Fatalf("serial %s pending %s", s, p)
+	}
+	if code := h.connectStatus(t, old); code != http.StatusForbidden {
+		t.Fatalf("connect with the original cert = %d, want 403", code)
+	}
+}
+
+// A revoked host's pending certificate is refused like its current one.
+func TestPendingCertRevoked(t *testing.T) {
+	h := newRenewHarness(t)
+	old := h.issue(t, time.Hour)
+	_, renewed := h.renew(t, old)
+	h.store.mu.Lock()
+	h.store.hosts[renewHostID].Revoked = true
+	h.store.mu.Unlock()
+	for _, c := range []tls.Certificate{old, renewed} {
+		if code := h.connectStatus(t, c); code != http.StatusForbidden {
+			t.Fatalf("connect on a revoked host = %d, want 403", code)
+		}
+		if code, _ := h.renew(t, c); code != http.StatusForbidden {
+			t.Fatalf("renew on a revoked host = %d, want 403", code)
+		}
+	}
+}
+
+// Connecting with the renewed certificate drops a session still using the
+// old one (perhaps someone else holding its key).
+func TestPromotionDropsOldSession(t *testing.T) {
+	h := newRenewHarness(t)
+	old := h.issue(t, time.Hour)
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	req, _ := http.NewRequest(http.MethodPost, h.srv.URL+wire.PathConnect, pr)
+	resp, err := h.client(old).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	oldGone := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, resp.Body); close(oldGone) }()
+	waitFor(t, "old session", func() bool { return h.reg.Get(renewHostID) != nil })
+
+	_, renewed := h.renew(t, old)
+	select {
+	case <-oldGone:
+		t.Fatal("old session dropped by the renewal alone")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if code := h.connectStatus(t, renewed); code != http.StatusOK {
+		t.Fatalf("connect with the renewed cert = %d", code)
+	}
+	select {
+	case <-oldGone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("old session still open after the renewed certificate connected")
 	}
 }
 

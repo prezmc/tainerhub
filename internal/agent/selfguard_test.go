@@ -26,9 +26,10 @@ const (
 // containers were actually stopped or removed.
 func guardEngine(t *testing.T, inspectFails bool) (*SocketDocker, func() []string) {
 	t.Helper()
-	old := selfHostname
+	old, oldProc := selfHostname, selfProcFiles
 	selfHostname = func() (string, error) { return selfID[:12], nil }
-	t.Cleanup(func() { selfHostname = old })
+	selfProcFiles = nil // the test machine may itself be a container
+	t.Cleanup(func() { selfHostname, selfProcFiles = old, oldProc })
 
 	containers := map[string]map[string]any{}
 	add := func(id, name, project string) {
@@ -158,5 +159,81 @@ func TestStackRefusesOwnProject(t *testing.T) {
 	var out bytes.Buffer
 	if err := r.Run(ctx, wire.StackCommand{Name: "site", Action: wire.StackDeploy, Compose: goodCompose}, &out); err != nil {
 		t.Fatalf("other stacks still deploy: %v", err)
+	}
+}
+
+func TestRecreateRefusesTainerHub(t *testing.T) {
+	d, done := guardEngine(t, false)
+	ctx := context.Background()
+	for _, target := range []string{selfID[:12], "tainerhub-tainerhub-1"} {
+		_, err := d.Operate(ctx, wire.Operation{Kind: wire.OpContainerRecreate, Target: target})
+		if err == nil || !strings.Contains(err.Error(), "TainerHub itself") {
+			t.Fatalf("recreate %s: expected refusal, got %v", target, err)
+		}
+	}
+	if got := done(); len(got) != 0 {
+		t.Fatalf("nothing should have reached Docker: %v", got)
+	}
+}
+
+// With a custom hostname the agent finds its container ID in /proc instead.
+func TestSelfFoundFromProcWithCustomHostname(t *testing.T) {
+	d, done := guardEngine(t, false)
+	selfHostname = func() (string, error) { return "my-agent", nil }
+	dir := t.TempDir()
+	mountinfo := filepath.Join(dir, "mountinfo")
+	lines := "1234 1 0:52 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/" + otherID + "/diff\n" +
+		"1300 1234 254:1 /docker/volumes/" + hubID + "/_data /data rw - ext4 /dev/vda1 rw\n" +
+		"1301 1234 254:1 /docker/containers/" + selfID + "/hostname /etc/hostname rw,relatime - ext4 /dev/vda1 rw\n"
+	mustOK(t, os.WriteFile(mountinfo, []byte(lines), 0o644))
+	selfProcFiles = []string{filepath.Join(dir, "missing"), mountinfo}
+
+	ctx := context.Background()
+	if err := d.Action(ctx, "tainerhub-agent-1", wire.ActionStop); err == nil {
+		t.Fatal("own container should be protected via /proc")
+	}
+	if err := d.Action(ctx, "tainerhub-tainerhub-1", wire.ActionStop); err == nil {
+		t.Fatal("the hub in the agent's project should be protected")
+	}
+	if err := d.Action(ctx, "web", wire.ActionStop); err != nil {
+		t.Fatal(err)
+	}
+	if got := done(); len(got) != 1 {
+		t.Fatalf("expected only web stopped, got %v", got)
+	}
+}
+
+// A lookup that finds nothing is not remembered, so protection comes back
+// once the agent's container can be found.
+func TestSelfLookupFailureNotCached(t *testing.T) {
+	d, _ := guardEngine(t, false)
+	selfHostname = func() (string, error) { return "my-agent", nil }
+	cg := filepath.Join(t.TempDir(), "cgroup")
+	mustOK(t, os.WriteFile(cg, []byte("0::/\n"), 0o644)) // cgroup v2: no ID here
+	selfProcFiles = []string{cg}
+	ctx := context.Background()
+	if p := d.OwnProject(ctx); p != "" {
+		t.Fatalf("own project = %q, want unknown", p)
+	}
+	mustOK(t, os.WriteFile(cg, []byte("12:cpu:/docker/"+selfID+"\n"), 0o644))
+	if p := d.OwnProject(ctx); p != "tainerhub" {
+		t.Fatalf("own project = %q once the ID is visible; the failure was cached", p)
+	}
+}
+
+func TestContainerIDIn(t *testing.T) {
+	for line, want := range map[string]string{
+		"0::/system.slice/docker-" + selfID + ".scope":                                       selfID,
+		"4:memory:/docker/" + selfID:                                                         selfID,
+		"500 400 0:1 /containers/" + selfID + "/resolv.conf /etc/resolv.conf rw - ext4 x rw": selfID,
+		"overlay / overlay rw,upperdir=/var/lib/docker/overlay2/" + selfID + "/diff":         "",
+		"/var/lib/docker/volumes/" + selfID + "/_data":                                       "",
+		"/var/lib/docker/containers/" + selfID + "ff/hostname":                               "", // too long
+		"/var/lib/docker/containers/" + strings.ToUpper(selfID) + "/hostname":                "",
+		"0::/": "",
+	} {
+		if got := containerIDIn(line); got != want {
+			t.Errorf("containerIDIn(%q) = %q, want %q", line, got, want)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"sync"
@@ -22,10 +23,15 @@ const (
 	enrollFailures = 10
 	enrollWindow   = 15 * time.Minute
 
-	// Connections one IP address may hold open before showing a client
-	// certificate. Generous, because many agents may share a NAT address
-	// and all reconnect at once after a hub restart.
+	// Connections one IP address may hold open after a handshake without a
+	// client certificate. Generous, because many agents may share a NAT
+	// address and enroll together.
 	maxUnauthConnsPerIP = 32
+
+	// certlessGrace is how long a connection without a client certificate
+	// may stay open unless it is enrolling. Enrolling agents send their
+	// request straight away; nothing else works without a certificate.
+	certlessGrace = 5 * time.Second
 
 	// bodyTimeout bounds reading an enroll or renew request body, which is
 	// a few KiB: a client trickling it in a byte at a time is dropped.
@@ -83,56 +89,154 @@ func (l *failLimiter) fail(ip string, now time.Time) {
 	w.n++
 }
 
-// connCap limits the connections each IP address holds open without having
-// presented a client certificate signed by our CA (enrolling agents, or
-// anyone else). It works as an http.Server ConnState hook. Agents with a
-// certificate are let through regardless, once their first request arrives.
+// connCap limits the connections each IP address holds open after a TLS
+// handshake in which it showed no client certificate (enrolling agents, or
+// anyone else), and closes each of those within its grace period unless it
+// is busy enrolling. Connections are only counted once their handshake is
+// done, so strangers sharing a NAT address with agents can't use up the
+// allowance before the agents have shown their certificates, and agents
+// with a certificate are never counted at all.
 type connCap struct {
-	max int
+	max   int
+	grace time.Duration
 
-	mu      sync.Mutex
-	perIP   map[string]int
-	counted map[net.Conn]string
+	mu    sync.Mutex
+	perIP map[string]int
+	conns map[net.Conn]*certless // keyed by the raw connection under TLS
 }
 
-func newConnCap(max int) *connCap {
-	return &connCap{max: max, perIP: map[string]int{}, counted: map[net.Conn]string{}}
+// certless is one counted connection.
+type certless struct {
+	conn      net.Conn
+	ip        string
+	timer     *time.Timer
+	enrolling int // enrollment requests being served on it
 }
 
-func (c *connCap) state(conn net.Conn, s http.ConnState) {
-	switch s {
-	case http.StateNew:
-		ip := addrIP(conn.RemoteAddr())
-		c.mu.Lock()
-		if c.perIP[ip] >= c.max {
-			c.mu.Unlock()
-			_ = conn.Close() // the server sees the closed conn and moves on
+func newConnCap(max int, grace time.Duration) *connCap {
+	return &connCap{max: max, grace: grace, perIP: map[string]int{}, conns: map[net.Conn]*certless{}}
+}
+
+var errTooManyConns = errors.New("too many connections without a client certificate from this address")
+
+// tlsConfig wraps base so each connection's handshake reports to the cap.
+func (c *connCap) tlsConfig(base *tls.Config) *tls.Config {
+	cfg := base.Clone()
+	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		raw := hello.Conn
+		per := base.Clone()
+		verify := per.VerifyConnection
+		per.VerifyConnection = func(cs tls.ConnectionState) error {
+			if verify != nil {
+				if err := verify(cs); err != nil {
+					return err
+				}
+			}
+			// With a certificate the handshake goes on to prove the client
+			// holds its key, or fails; either way it isn't counted.
+			if len(cs.PeerCertificates) > 0 {
+				return nil
+			}
+			return c.admit(raw)
+		}
+		return per, nil
+	}
+	return cfg
+}
+
+// admit counts a connection that finished its handshake without a client
+// certificate, refusing it if its address already has too many.
+func (c *connCap) admit(conn net.Conn) error {
+	ip := addrIP(conn.RemoteAddr())
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.conns[conn]; ok {
+		return nil
+	}
+	if c.perIP[ip] >= c.max {
+		return errTooManyConns
+	}
+	c.perIP[ip]++
+	cl := &certless{conn: conn, ip: ip}
+	cl.timer = time.AfterFunc(c.grace, func() { c.expire(cl) })
+	c.conns[conn] = cl
+	return nil
+}
+
+// expire closes a certificate-less connection whose time is up, unless it
+// is enrolling right now; then it gets another grace period.
+func (c *connCap) expire(cl *certless) {
+	c.mu.Lock()
+	if c.conns[cl.conn] != cl {
+		c.mu.Unlock()
+		return
+	}
+	if cl.enrolling > 0 {
+		cl.timer.Reset(c.grace)
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+	_ = cl.conn.Close() // the server notices and reports it closed
+}
+
+// enrolling marks the request's connection as serving an enrollment until
+// the returned func is called, so it isn't closed part way through.
+func (c *connCap) enrolling(ctx context.Context) (done func()) {
+	conn, _ := ctx.Value(rawConnKey{}).(net.Conn)
+	if c == nil || conn == nil {
+		return func() {}
+	}
+	c.mu.Lock()
+	cl := c.conns[conn]
+	if cl != nil {
+		cl.enrolling++
+	}
+	c.mu.Unlock()
+	return func() {
+		if cl == nil {
 			return
 		}
-		c.perIP[ip]++
-		c.counted[conn] = ip
+		c.mu.Lock()
+		cl.enrolling--
 		c.mu.Unlock()
-	case http.StateActive:
-		// The TLS handshake is done by now, and the handshake has already
-		// checked any client certificate against our CA.
-		if tc, ok := conn.(*tls.Conn); ok && len(tc.ConnectionState().PeerCertificates) > 0 {
-			c.release(conn)
-		}
-	case http.StateClosed, http.StateHijacked:
-		c.release(conn)
+	}
+}
+
+// rawConnKey holds the request's raw connection in its context.
+type rawConnKey struct{}
+
+// connContext is an http.Server ConnContext hook recording the raw
+// connection, which is what the cap knows connections by.
+func (c *connCap) connContext(ctx context.Context, conn net.Conn) context.Context {
+	return context.WithValue(ctx, rawConnKey{}, rawConn(conn))
+}
+
+func rawConn(conn net.Conn) net.Conn {
+	if tc, ok := conn.(*tls.Conn); ok {
+		return tc.NetConn()
+	}
+	return conn
+}
+
+// state is an http.Server ConnState hook that forgets closed connections.
+func (c *connCap) state(conn net.Conn, s http.ConnState) {
+	if s == http.StateClosed || s == http.StateHijacked {
+		c.release(rawConn(conn))
 	}
 }
 
 func (c *connCap) release(conn net.Conn) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	ip, ok := c.counted[conn]
+	cl, ok := c.conns[conn]
 	if !ok {
 		return
 	}
-	delete(c.counted, conn)
-	if c.perIP[ip]--; c.perIP[ip] <= 0 {
-		delete(c.perIP, ip)
+	cl.timer.Stop()
+	delete(c.conns, conn)
+	if c.perIP[cl.ip]--; c.perIP[cl.ip] <= 0 {
+		delete(c.perIP, cl.ip)
 	}
 }
 

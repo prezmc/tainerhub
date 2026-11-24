@@ -437,9 +437,11 @@ func (a *Agent) renew(ctx context.Context, cur tls.Certificate) (tls.Certificate
 	}
 	next := tls.Certificate{Certificate: [][]byte{rr.Cert}, PrivateKey: key, Leaf: leaf}
 	if err := a.saveCreds(key, rr.Cert); err != nil {
-		// The hub has already switched to the new certificate, so the old
-		// one is no longer accepted: keep the new one in memory regardless.
-		a.log.Error("renewed certificate could not be saved; the agent will need re-enrolling if it restarts", "err", err)
+		// The hub keeps accepting the old certificate until we connect
+		// with the new one, so carrying on with the old one is safe; using
+		// a new one we couldn't save would leave the agent locked out
+		// after a restart.
+		return tls.Certificate{}, fmt.Errorf("save the renewed certificate: %w", err)
 	}
 	return next, nil
 }

@@ -499,7 +499,9 @@ func (s *Store) CompleteEnrollment(ctx context.Context, tokenID, hostID, certSer
 	if tag.RowsAffected() != 1 {
 		return errors.New("join token already used")
 	}
-	if _, err := tx.Exec(ctx, `UPDATE hosts SET cert_serial = $2, enrolled_at = now() WHERE id = $1::uuid`, hostID, certSerial); err != nil {
+	// A renewal still waiting for its agent is void too: the new enrollment
+	// replaces every earlier certificate.
+	if _, err := tx.Exec(ctx, `UPDATE hosts SET cert_serial = $2, pending_serial = NULL, enrolled_at = now() WHERE id = $1::uuid`, hostID, certSerial); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -507,18 +509,39 @@ func (s *Store) CompleteEnrollment(ctx context.Context, tokenID, hostID, certSer
 
 func (s *Store) GetHostCert(ctx context.Context, hostID string) (gateway.HostCert, error) {
 	var hc gateway.HostCert
-	err := s.db.QueryRow(ctx, `SELECT name, cert_serial FROM hosts WHERE id = $1::uuid`, hostID).Scan(&hc.Name, &hc.CertSerial)
+	err := s.db.QueryRow(ctx, `SELECT name, cert_serial, COALESCE(pending_serial, '') FROM hosts WHERE id = $1::uuid`, hostID).
+		Scan(&hc.Name, &hc.CertSerial, &hc.PendingSerial)
 	return hc, notFound(err)
 }
 
-// RenewHostCert swaps in a renewed certificate's serial only if the host
-// still has the one the agent presented, so of two concurrent renewals with
-// the same certificate exactly one wins.
-func (s *Store) RenewHostCert(ctx context.Context, hostID, oldSerial, newSerial string) error {
-	if oldSerial == "" { // an empty serial means not enrolled, never renewable
+// RenewHostCert records a renewed certificate's serial as the host's pending
+// one, only if the host's serials are still those the gateway saw, so of two
+// concurrent renewals exactly one wins. The current serial keeps working
+// until PromoteHostCert, so a renewal whose reply was lost can be retried.
+func (s *Store) RenewHostCert(ctx context.Context, hostID string, seen gateway.HostCert, newSerial string) error {
+	if seen.CertSerial == "" || newSerial == "" { // an empty serial means not enrolled, never renewable
 		return gateway.ErrSerialChanged
 	}
-	tag, err := s.db.Exec(ctx, `UPDATE hosts SET cert_serial = $3 WHERE id = $1::uuid AND cert_serial = $2`, hostID, oldSerial, newSerial)
+	tag, err := s.db.Exec(ctx, `UPDATE hosts SET pending_serial = $4
+		WHERE id = $1::uuid AND cert_serial = $2 AND pending_serial IS NOT DISTINCT FROM NULLIF($3, '')`,
+		hostID, seen.CertSerial, seen.PendingSerial, newSerial)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return gateway.ErrSerialChanged
+	}
+	return nil
+}
+
+// PromoteHostCert makes the host's pending serial its current one, once its
+// agent has connected with the new certificate. The old one stops working.
+func (s *Store) PromoteHostCert(ctx context.Context, hostID, serial string) error {
+	if serial == "" {
+		return gateway.ErrSerialChanged
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE hosts SET cert_serial = pending_serial, pending_serial = NULL
+		WHERE id = $1::uuid AND pending_serial = $2`, hostID, serial)
 	if err != nil {
 		return err
 	}

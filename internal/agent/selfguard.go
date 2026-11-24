@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -21,10 +22,17 @@ type selfInfo struct {
 	project string // its compose project ("" if not started by compose)
 }
 
+// selfProcFiles are read for the agent's own container ID when its hostname
+// isn't one (a custom hostname). Under Docker, /proc/self/mountinfo shows
+// the files Docker mounts from /var/lib/docker/containers/<id>/, and with
+// cgroup v1 /proc/self/cgroup names the container's cgroup. Swapped in tests.
+var selfProcFiles = []string{"/proc/self/mountinfo", "/proc/self/cgroup"}
+
 type selfCache struct {
-	mu    sync.Mutex
-	known bool
-	info  selfInfo
+	mu     sync.Mutex
+	known  bool
+	info   selfInfo
+	warned bool // logged that the agent's container could not be found
 }
 
 // self finds the agent's own container. A successful lookup is cached for
@@ -36,30 +44,106 @@ func (d *SocketDocker) self(ctx context.Context) selfInfo {
 	if d.selfc.known {
 		return d.selfc.info
 	}
-	h, _ := selfHostname()
-	if !wire.ValidContainerRef(h) {
-		return selfInfo{}
+	info, sure := d.findSelf(ctx)
+	if sure {
+		d.selfc.known, d.selfc.info = true, info
+		return info
 	}
-	var insp struct {
+	if info.id == "" && !d.selfc.warned {
+		d.selfc.warned = true
+		slog.Warn("could not tell which container this agent runs in, so it can't refuse to stop itself or the hub; it will keep trying")
+	}
+	return info
+}
+
+// findSelf looks up the agent's own container. sure means Docker confirmed
+// it; otherwise info may still hold a likely ID worth protecting.
+func (d *SocketDocker) findSelf(ctx context.Context) (info selfInfo, sure bool) {
+	type inspect struct {
 		ID     string `json:"Id"`
 		Config struct{ Labels map[string]string }
 	}
-	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(h)+"/json", nil, &insp); err != nil {
-		// Still protect a container whose ID matches the hostname.
-		if isShortID(h) {
-			return selfInfo{id: h}
+	lookup := func(ref string) (selfInfo, bool) {
+		var insp inspect
+		if err := d.getJSON(ctx, "/containers/"+url.PathEscape(ref)+"/json", nil, &insp); err != nil {
+			return selfInfo{}, false
 		}
-		return selfInfo{}
+		// Only trust the match when the ID starts with what we looked up:
+		// a container could merely be named like this machine.
+		if insp.ID == "" || !strings.HasPrefix(insp.ID, ref) {
+			return selfInfo{}, false
+		}
+		return selfInfo{id: insp.ID, project: insp.Config.Labels["com.docker.compose.project"]}, true
 	}
-	d.selfc.known = true
-	// Only trust the match when the ID starts with the hostname: outside a
-	// container (or with a custom hostname) a container could merely be
-	// named like this machine.
-	if insp.ID != "" && strings.HasPrefix(insp.ID, h) {
-		d.selfc.info = selfInfo{id: insp.ID, project: insp.Config.Labels["com.docker.compose.project"]}
+	h, _ := selfHostname()
+	if isShortID(h) {
+		if info, ok := lookup(h); ok {
+			return info, true
+		}
 	}
-	return d.selfc.info
+	if id := ownContainerID(selfProcFiles); id != "" {
+		if info, ok := lookup(id); ok {
+			return info, true
+		}
+		// Still protect the container with this ID.
+		return selfInfo{id: id}, false
+	}
+	if isShortID(h) {
+		return selfInfo{id: h}, false
+	}
+	return selfInfo{}, false
 }
+
+// ownContainerID finds a 64-character container ID in the given /proc
+// files, or "". Only IDs in places Docker (or Podman) puts container IDs
+// count: image layer IDs look just the same.
+func ownContainerID(files []string) string {
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil || len(b) > 1<<20 {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if id := containerIDIn(line); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// containerIDMarkers precede a container ID in mountinfo and cgroup lines:
+// /var/lib/docker/containers/<id>/hostname, overlay-containers/<id>/ for
+// Podman, and cgroup v1 paths /docker/<id> or docker-<id>.scope.
+var containerIDMarkers = []string{"/containers/", "/docker/", "docker-", "libpod-"}
+
+func containerIDIn(line string) string {
+	for _, m := range containerIDMarkers {
+		rest := line
+		for {
+			i := strings.Index(rest, m)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(m):]
+			if len(rest) >= 64 && isHex(rest[:64]) && (len(rest) == 64 || !isHexByte(rest[64])) {
+				return rest[:64]
+			}
+		}
+	}
+	return ""
+}
+
+func isHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isHexByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexByte(c byte) bool { return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' }
 
 // OwnProject is the compose project the agent runs in ("" if unknown). On
 // the hub's server that is also the hub's and its database's project.
