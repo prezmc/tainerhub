@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query'
 import { Boxes, Download, Eraser, HardDrive, Layers, Network, RefreshCw, Search, Trash2, WifiOff, type LucideIcon } from 'lucide-react'
-import { api, can, errorText, size, timeAgo, type Host, type ImageRes, type NetworkRes, type PruneResult, type VolumeRes } from '../api'
+import { api, can, errorText, pullErrorText, size, timeAgo, type Host, type ImageRes, type NetworkRes, type PruneResult, type VolumeRes } from '../api'
 import { loadPref, savePref, useFleet } from '../fleet'
 import { Button, Card, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
+import { RegistryAuthHint } from '../registries'
 
 type Tab = 'images' | 'volumes' | 'networks'
 type Row<T> = T & { host: Host }
@@ -134,7 +135,7 @@ function useResourceMutation() {
       toast('good', msg)
       qc.invalidateQueries({ queryKey: ['res'] })
     },
-    onError: (e) => toast('bad', errorText(e)),
+    onError: (e) => toast('bad', pullErrorText(e)),
   })
 }
 
@@ -447,7 +448,7 @@ function PullModal({ open, onClose, hosts, defaultHost }: { open: boolean; onClo
           )
         }}
       >
-        <Input label="Image" placeholder="nginx:1.27 or ghcr.io/org/app:tag" value={ref} onChange={(e) => setRef(e.target.value)} autoFocus required className="mono" hint="Public registries for now; private registry credentials come in a later phase." />
+        <Input label="Image" placeholder="nginx:1.27 or ghcr.io/org/app:tag" value={ref} onChange={(e) => setRef(e.target.value)} autoFocus required className="mono" hint="Private registries use the logins saved under Settings → Container registries." />
         <div>
           <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Host</span>
           <div className="flex flex-wrap gap-2">
@@ -464,6 +465,7 @@ function PullModal({ open, onClose, hosts, defaultHost }: { open: boolean; onClo
           </div>
         </div>
         <ErrorNote error={error} />
+        <RegistryAuthHint error={error} />
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowUpCircle, CircleCheck, Feather, LoaderCircle, RefreshCw, TriangleAlert } from 'lucide-react'
-import { api, errorText, timeAgo, type Host, type HubState } from '../api'
+import { api, errorText, pullErrorText, timeAgo, type Host, type HubState } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, Modal, cx, useConfirm, useToast } from '../ui'
 
 type HostUpdate = {
@@ -111,7 +111,7 @@ export function UpdatesCard() {
     try {
       for (const h of list) await updateOne(h)
     } catch (e) {
-      toast('bad', errorText(e))
+      toast('bad', pullErrorText(e))
     } finally {
       setBusy(null)
     }

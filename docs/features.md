@@ -285,8 +285,18 @@ TainerHub won't let a stack take the name of the compose project it runs in itse
 ### Stack limits
 
 - `build:` sections aren't supported. Use images from a registry.
-- You can't enter registry credentials in TainerHub yet, so use public images.
+- Private images need a login saved under Settings → Container registries (see below).
 - `.env` is stored in plain text in the hub's database. Protect and back up the database like the hub's `/data` volume.
+
+### Private registries
+
+Admins save logins under **Settings → Container registries**: the registry's address (`ghcr.io`, `registry.gitlab.com`, `docker.io`, `myregistry.lan:5000`), a username and a password or access token. For GHCR, use a personal access token with `read:packages`. A Docker Hub login also lifts Docker Hub's anonymous pull rate limits.
+
+- Passwords are encrypted (AES-256-GCM) with a key the hub creates in its data folder (`/data/registry.key`), so a database backup alone doesn't reveal them. Back up `/data` with the database: without the key, saved passwords have to be entered again.
+- No page or API shows a saved password again. Changing a login needs a recent sign-in; API tokens can't.
+- A host gets a login only inside the command that pulls from that registry (pulling an image, deploying a stack, Pull & recreate, checking for updates, updating TainerHub) and keeps nothing. For stacks, the hub reads the compose file's `image:` lines to pick the registries.
+- **Test** has an online host's Docker log in with the saved login, without saving it there.
+- The background update check (every 6 hours) runs without logins, so private images show update badges after **Check for updates** on the Containers page (which carries them).
 
 ## Resources
 

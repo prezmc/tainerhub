@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prezmc/tainerhub/internal/regcred"
 	"github.com/prezmc/tainerhub/internal/wire"
 )
 
@@ -110,6 +111,20 @@ func NewSocketDocker(socketPath string) *SocketDocker {
 	return &SocketDocker{c: &http.Client{Transport: tr}, socket: socketPath}
 }
 
+// registryAuthKey carries an X-Registry-Auth header value in a context. It
+// is set only around the one pull or registry lookup that needs it, so no
+// other Docker request carries the login.
+type registryAuthKey struct{}
+
+// withRegistryAuth returns ctx carrying the login for ref's registry, if
+// auths has one.
+func withRegistryAuth(ctx context.Context, auths []wire.RegistryAuth, ref string) context.Context {
+	if a := regcred.ForImage(auths, ref); a != nil {
+		return context.WithValue(ctx, registryAuthKey{}, regcred.XRegistryAuth(*a))
+	}
+	return ctx
+}
+
 func (d *SocketDocker) do(ctx context.Context, method, path string, q url.Values) (*http.Response, error) {
 	return d.doBody(ctx, method, path, q, nil)
 }
@@ -129,11 +144,14 @@ func (d *SocketDocker) doBody(ctx context.Context, method, path string, q url.Va
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, rdr)
-	if body != nil && err == nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
 	if err != nil {
 		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if h, ok := ctx.Value(registryAuthKey{}).(string); ok && h != "" {
+		req.Header.Set("X-Registry-Auth", h)
 	}
 	resp, err := d.c.Do(req)
 	if err != nil {

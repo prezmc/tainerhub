@@ -55,10 +55,15 @@ type Server struct {
 	fleet        *fleetFeed      // shared /api/events producer (see fleet.go)
 	logStreams   logStreamCounts // open log streams per user (see streams.go)
 
+	regKey regKey // registry login encryption, loaded on first use (see registries.go)
+
 	// Test hooks; nil uses s.Auth.
 	whoami     func(*http.Request) (store.User, error)
 	authn      func(*http.Request) (store.User, *auth.TokenInfo, error)
 	freshCheck func(*http.Request) error
+	// More test hooks; nil uses s.Store.
+	regCreds registryCredStore
+	audited  func(store.AuditEntry)
 }
 
 var roleRank = auth.RoleRank
@@ -167,6 +172,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/settings/https/test", s.need("admin", s.httpsTest))
 	mux.Handle("PUT /api/settings/https", s.need("admin", s.httpsEnable))
 	mux.Handle("DELETE /api/settings/https", s.need("admin", s.httpsDisable))
+	// private registry logins (see registries.go); changes need a fresh sign-in
+	mux.Handle("GET /api/registries", s.need("admin", s.listRegistries))
+	mux.Handle("POST /api/registries", s.need("admin", s.addRegistry))
+	mux.Handle("PUT /api/registries/{rid}", s.need("admin", s.updateRegistry))
+	mux.Handle("DELETE /api/registries/{rid}", s.need("admin", s.deleteRegistry))
+	mux.Handle("POST /api/registries/{rid}/test", s.need("admin", s.testRegistry))
 	// terminals: admin-only (a shell sees everything in the container)
 	mux.Handle("POST /api/hosts/{id}/containers/{cid}/exec", s.need("admin", s.execOpen))
 	mux.Handle("GET /api/exec/{sid}", s.stream("admin", s.execStream)) // ends if no longer admin
@@ -338,6 +349,10 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) record(r *http.Request, u *store.User, action, target string, detail any) {
 	e := auditEntry(r, u, action, target, detail)
 	e.IP = s.Auth.ClientIP(r)
+	if s.audited != nil {
+		s.audited(e)
+		return
+	}
 	if err := s.Store.Audit(context.WithoutCancel(r.Context()), e); err != nil {
 		s.Log.Warn("audit write failed", "err", err)
 	}

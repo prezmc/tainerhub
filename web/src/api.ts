@@ -464,3 +464,18 @@ export function stackProblem(h: Host | undefined): string | null {
   if (h.hello.stacks.error) return h.hello.stacks.error
   return null
 }
+
+// Messages Docker and registries give when a pull needs a login (or Docker
+// Hub's anonymous rate limit is hit).
+const registryAuthPattern = /unauthori[sz]ed|authentication required|pull access denied|access to the resource is denied|no basic auth credentials|denied: |toomanyrequests|rate limit/i
+
+/** True when an error looks like a registry refusing an image pull without a login. */
+export const isRegistryAuthError = (text: string | null | undefined) => !!text && registryAuthPattern.test(text)
+
+export const registryHint = 'Private images need a registry login: an admin can add one under Settings → Container registries (a Docker Hub login also lifts its pull rate limits).'
+
+/** errorText plus a pointer to registry logins when the error looks like one. */
+export function pullErrorText(e: unknown): string {
+  const t = errorText(e)
+  return isRegistryAuthError(t) ? `${t}. ${registryHint}` : t
+}

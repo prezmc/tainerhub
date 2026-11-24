@@ -73,6 +73,10 @@ type Registry struct {
 	agents map[string]*Agent
 	// OnEvent, if set, is called for every Docker event an agent reports.
 	OnEvent func(hostID string, ev wire.DockerEvent)
+	// AddAuth, if set, attaches the registry logins a command that pulls
+	// images needs, just before it is sent (see api's addRegistryAuth). Set
+	// it before agents connect.
+	AddAuth func(ctx context.Context, a *Agent, cmd *wire.Command)
 
 	chMu    sync.Mutex
 	changed chan struct{}
@@ -515,8 +519,17 @@ func (a *Agent) Operate(ctx context.Context, op wire.Operation) (json.RawMessage
 	case wire.OpImagePull, wire.OpImagesPrune, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade, wire.OpStackDirRemove:
 		timeout = 16 * time.Minute // the agent gives up after 15
 	}
-	res, err := a.call(ctx, wire.Command{Op: &op}, timeout)
+	cmd := wire.Command{Op: &op}
+	a.addAuth(ctx, &cmd)
+	res, err := a.call(ctx, cmd, timeout)
 	return res.Data, err
+}
+
+// addAuth lets the registry's AddAuth hook attach registry logins.
+func (a *Agent) addAuth(ctx context.Context, cmd *wire.Command) {
+	if a.reg != nil && a.reg.AddAuth != nil {
+		a.reg.AddAuth(ctx, a, cmd)
+	}
 }
 
 func (a *Agent) call(ctx context.Context, cmd wire.Command, timeout time.Duration) (wire.CommandResult, error) {
@@ -601,7 +614,9 @@ func (a *Agent) Stack(ctx context.Context, c wire.StackCommand) (<-chan wire.Log
 	if err := wire.ValidStackCommand(c); err != nil {
 		return nil, err
 	}
-	_, ch, _, err := a.stream(ctx, wire.Command{Stack: &c}, streamStack)
+	cmd := wire.Command{Stack: &c}
+	a.addAuth(ctx, &cmd)
+	_, ch, _, err := a.stream(ctx, cmd, streamStack)
 	return ch, err
 }
 

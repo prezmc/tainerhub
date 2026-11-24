@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleCheck, CircleAlert, ExternalLink, Lock, LockOpen, ShieldCheck } from 'lucide-react'
 import { api, errorText } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, Input, PageHeader, useConfirm, useToast } from '../ui'
+import { RegistriesCard } from '../registries'
 
 type HTTPSSettings = {
   publicURL: string
@@ -99,13 +100,19 @@ export function SettingsPage() {
     onError: (e) => toast('bad', errorText(e)),
   })
 
-  if (!cfg.data) return <PageHeader title="Settings" />
+  if (!cfg.data)
+    return (
+      <div className="max-w-4xl space-y-6">
+        <PageHeader title="Settings" />
+        <RegistriesCard />
+      </div>
+    )
   const s = cfg.data
   const on = !!s.publicURL
 
   return (
     <div className="max-w-4xl space-y-6">
-      <PageHeader title="Settings" subtitle="HTTPS and passkeys, through the reverse proxy you already run." />
+      <PageHeader title="Settings" subtitle="HTTPS and passkeys through the reverse proxy you already run, and logins for private container registries." />
 
       <Card className="flex flex-wrap items-center gap-4 px-5 py-4">
         {on ? <Lock className="size-5 text-lime-300" /> : <LockOpen className="size-5 text-ink-100/50" />}
@@ -264,6 +271,8 @@ export function SettingsPage() {
           </>
         )
       )}
+
+      <RegistriesCard />
     </div>
   )
 }

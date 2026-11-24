@@ -176,3 +176,43 @@ func TestHandleSnapshotComparesHashes(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 }
+
+// The AddAuth hook sees every operation and stack command just before it
+// is sent, so logins reach the agent only inside that command.
+func TestAddAuthHookAttachesLogins(t *testing.T) {
+	r := New()
+	login := wire.RegistryAuth{Registry: "ghcr.io", Username: "u", Password: "p"}
+	r.AddAuth = func(_ context.Context, _ *Agent, cmd *wire.Command) {
+		if cmd.Op != nil && cmd.Op.Kind == wire.OpImagePull {
+			cmd.Op.Auth = []wire.RegistryAuth{login}
+		}
+		if cmd.Stack != nil && cmd.Stack.Action == wire.StackDeploy {
+			cmd.Stack.Auth = []wire.RegistryAuth{login}
+		}
+	}
+	a := r.Attach("h1", "host-1", func() {})
+	next := func() *wire.Command {
+		for {
+			select {
+			case m := <-a.Out():
+				if m.Command != nil {
+					return m.Command
+				}
+			case <-time.After(time.Second):
+				t.Fatal("command not sent")
+			}
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.Operate(ctx, wire.Operation{Kind: wire.OpImagePull, Arg: "ghcr.io/o/a"})
+	if c := next(); len(c.Op.Auth) != 1 || c.Op.Auth[0] != login {
+		t.Fatalf("pull sent %+v", c.Op)
+	}
+	if _, err := a.Stack(ctx, wire.StackCommand{Action: wire.StackDeploy, Name: "web", Compose: "services: {}"}); err != nil {
+		t.Fatal(err)
+	}
+	if c := next(); len(c.Stack.Auth) != 1 {
+		t.Fatalf("deploy sent %+v", c.Stack)
+	}
+}

@@ -223,7 +223,7 @@ func (d *SocketDocker) ensureImage(ctx context.Context, ref string) (string, err
 	if present() {
 		return pinned, nil
 	}
-	if _, err := d.pull(ctx, pinned); err != nil {
+	if _, err := d.pull(ctx, pinned, nil); err != nil {
 		return "", fmt.Errorf("pull the host helper image: %w", err)
 	}
 	if !present() {

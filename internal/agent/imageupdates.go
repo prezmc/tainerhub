@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prezmc/tainerhub/internal/regcred"
 	"github.com/prezmc/tainerhub/internal/wire"
 )
 
@@ -25,9 +26,9 @@ func updateable(ref string) bool {
 
 // checkUpdates asks the registry for the current digest of every image
 // reference the containers use and compares it with what's on disk. It uses
-// Docker's own registry access (/distribution), so private registries the
-// daemon is logged in to work too.
-func (d *SocketDocker) checkUpdates(ctx context.Context) (wire.ImageUpdates, error) {
+// Docker's own registry access (/distribution), with the login in auths for
+// each image's registry (Docker does the token handshake with it).
+func (d *SocketDocker) checkUpdates(ctx context.Context, auths []wire.RegistryAuth) (wire.ImageUpdates, error) {
 	res := wire.ImageUpdates{Checked: time.Now().Unix(), Images: map[string]bool{}, Errors: map[string]string{}}
 	cs, err := d.List(ctx)
 	if err != nil {
@@ -48,11 +49,11 @@ func (d *SocketDocker) checkUpdates(ctx context.Context) (wire.ImageUpdates, err
 		go func(ref string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			newer, err := d.newerImage(ctx, ref)
+			newer, err := d.newerImage(ctx, ref, auths)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				res.Errors[ref] = err.Error()
+				res.Errors[ref] = regcred.Scrub(err.Error(), auths)
 				return
 			}
 			res.Images[ref] = newer
@@ -62,7 +63,7 @@ func (d *SocketDocker) checkUpdates(ctx context.Context) (wire.ImageUpdates, err
 	return res, nil
 }
 
-func (d *SocketDocker) newerImage(ctx context.Context, ref string) (bool, error) {
+func (d *SocketDocker) newerImage(ctx context.Context, ref string, auths []wire.RegistryAuth) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	var local struct{ RepoDigests []string }
@@ -73,7 +74,7 @@ func (d *SocketDocker) newerImage(ctx context.Context, ref string) (bool, error)
 		return false, errors.New("built locally: no registry digest to compare")
 	}
 	var remote struct{ Descriptor struct{ Digest string } }
-	if err := d.getJSON(ctx, "/distribution/"+url.PathEscape(ref)+"/json", nil, &remote); err != nil {
+	if err := d.getJSON(withRegistryAuth(ctx, auths, ref), "/distribution/"+url.PathEscape(ref)+"/json", nil, &remote); err != nil {
 		return false, err
 	}
 	if remote.Descriptor.Digest == "" {
@@ -93,10 +94,22 @@ type updateCache struct {
 	results map[string]bool
 }
 
+// set keeps the new results. An image whose check failed this time keeps
+// its previous answer: the background checks run without registry logins,
+// so for private images only checks the hub asks for (with logins) count.
 func (u *updateCache) set(r wire.ImageUpdates) {
 	u.mu.Lock()
-	u.results = r.Images
-	u.mu.Unlock()
+	defer u.mu.Unlock()
+	next := make(map[string]bool, len(r.Images))
+	for ref, newer := range r.Images {
+		next[ref] = newer
+	}
+	for ref := range r.Errors {
+		if u.results[ref] {
+			next[ref] = true
+		}
+	}
+	u.results = next
 }
 
 func (u *updateCache) has(ref string) bool {
@@ -115,7 +128,7 @@ var ownImageSettings = []string{"Cmd", "Entrypoint", "WorkingDir", "User", "Expo
 // recreate pulls the container's image and replaces the container with an
 // identical one on the new image. The old container is kept (stopped and
 // renamed) until the new one is running, and put back if it isn't.
-func (d *SocketDocker) recreate(ctx context.Context, id string) (wire.RecreateResult, error) {
+func (d *SocketDocker) recreate(ctx context.Context, id string, auths []wire.RegistryAuth) (wire.RecreateResult, error) {
 	var res wire.RecreateResult
 	var insp map[string]json.RawMessage
 	if err := d.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/json", nil, &insp); err != nil {
@@ -138,7 +151,7 @@ func (d *SocketDocker) recreate(ctx context.Context, id string) (wire.RecreateRe
 		return res, errors.New("this container uses a pinned image (by digest or ID), so there's nothing newer to pull")
 	}
 	res.OldImage = meta.Image
-	if _, err := d.pull(ctx, ref); err != nil {
+	if _, err := d.pull(ctx, ref, auths); err != nil {
 		return res, fmt.Errorf("pull %s: %w", ref, err)
 	}
 	var img struct {
@@ -352,15 +365,15 @@ func (d *SocketDocker) RunUpdateChecks(ctx context.Context, first, every time.Du
 			return
 		case <-t.C:
 		}
-		_ = d.refreshUpdates(ctx)
+		_ = d.refreshUpdates(ctx, nil)
 		t.Reset(every)
 	}
 }
 
-func (d *SocketDocker) refreshUpdates(ctx context.Context) error {
+func (d *SocketDocker) refreshUpdates(ctx context.Context, auths []wire.RegistryAuth) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	r, err := d.checkUpdates(ctx)
+	r, err := d.checkUpdates(ctx, auths)
 	if err == nil {
 		d.updates.set(r)
 	}

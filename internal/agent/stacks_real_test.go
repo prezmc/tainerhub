@@ -207,7 +207,7 @@ func TestRecreateRealDocker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	r, err := d.checkUpdates(ctx)
+	r, err := d.checkUpdates(ctx, nil)
 	if err != nil || r.Images[ref] {
 		t.Fatalf("v1 should be current: %+v %v", r, err)
 	}
@@ -218,12 +218,12 @@ func TestRecreateRealDocker(t *testing.T) {
 	if out, err := exec.Command("docker", "tag", "thdemo-v1:keep", ref).CombinedOutput(); err != nil {
 		t.Fatalf("retag v1: %v %s", err, out)
 	}
-	r, err = d.checkUpdates(ctx)
+	r, err = d.checkUpdates(ctx, nil)
 	if err != nil || !r.Images[ref] {
 		t.Fatalf("v2 should be detected: %+v %v", r, err)
 	}
 
-	res, err := d.recreate(ctx, name)
+	res, err := d.recreate(ctx, name, nil)
 	if err != nil || res.Status != "updated" {
 		t.Fatalf("recreate: %+v %v", res, err)
 	}
@@ -240,7 +240,7 @@ func TestRecreateRealDocker(t *testing.T) {
 	if list, _ := exec.Command("docker", "ps", "-a", "--filter", "name=thdemo-tainerhub-old", "-q").Output(); len(strings.TrimSpace(string(list))) > 0 {
 		t.Fatal("old container left behind")
 	}
-	if res, err := d.recreate(ctx, name); err != nil || res.Status != "current" {
+	if res, err := d.recreate(ctx, name, nil); err != nil || res.Status != "current" {
 		t.Fatalf("second recreate should be a no-op: %+v %v", res, err)
 	}
 }

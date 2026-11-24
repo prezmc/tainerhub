@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, can, errorText, type Activity, type Container, type DetailResponse, type Host, type Me, type VolumeRes } from './api'
+import { api, can, errorText, pullErrorText, type Activity, type Container, type DetailResponse, type Host, type Me, type VolumeRes } from './api'
 import { cx, useConfirm, useToast } from './ui'
 
 export type Action = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'kill' | 'remove' | 'recreate'
@@ -114,7 +114,7 @@ export function useContainerAction() {
       toast('good', `${c.name} ${pastTense[action]}`)
       qc.invalidateQueries({ queryKey: ['containers'] })
     },
-    onError: (e, { c }) => toast('bad', `${c.name}: ${errorText(e)}`),
+    onError: (e, { c }) => toast('bad', `${c.name}: ${pullErrorText(e)}`),
   })
   const volumeChoice = useRef<VolumeChoice>({ on: false, names: [] })
   const removeVolumes = useMutation({

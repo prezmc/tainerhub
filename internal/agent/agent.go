@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/prezmc/tainerhub/internal/pki"
+	"github.com/prezmc/tainerhub/internal/regcred"
 	"github.com/prezmc/tainerhub/internal/wire"
 )
 
@@ -915,7 +916,8 @@ func (s *session) handle(c wire.Command) {
 			if err := wire.ValidOperation(*c.Op); err != nil {
 				res.Error = err.Error()
 			} else if data, err := s.operate(ctx, *c.Op); err != nil {
-				res.Error = err.Error()
+				// Registry logins never travel back in an error (nor into the log below).
+				res.Error = regcred.Scrub(err.Error(), c.Op.Auth)
 			} else {
 				res.OK = true
 				if data != nil {
@@ -1047,7 +1049,11 @@ func (s *session) startTransfer(id string, c wire.TransferCommand) {
 // the agent's root context, not the session's: a dropped hub connection must
 // not interrupt a half-finished `compose up`.
 func (s *session) runStack(id string, c wire.StackCommand) {
-	out := &safeWriter{w: &chunkWriter{s: s, id: id}}
+	var out io.Writer = &safeWriter{w: &chunkWriter{s: s, id: id}}
+	if len(c.Auth) > 0 {
+		// compose output goes to the job log: keep registry logins out of it.
+		out = regcred.NewScrubWriter(out, c.Auth)
+	}
 	var err error
 	if s.a.cfg.Stacks == nil {
 		err = errors.New("this agent was started without compose stack support")
@@ -1060,9 +1066,12 @@ func (s *session) runStack(id string, c wire.StackCommand) {
 		err = s.a.cfg.Stacks.Run(ctx, c, out)
 		cancel()
 	}
+	if f, ok := out.(*regcred.ScrubWriter); ok {
+		_ = f.Flush() // before the final chunk
+	}
 	end := wire.LogChunk{CommandID: id, EOF: true}
 	if err != nil {
-		end.Error = err.Error()
+		end.Error = regcred.Scrub(err.Error(), c.Auth)
 	}
 	s.a.log.Info("stack operation", "action", c.Action, "stack", c.Name, "ok", err == nil, "err", end.Error)
 	s.send(wire.AgentMessage{Log: &end})

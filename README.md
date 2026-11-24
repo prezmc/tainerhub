@@ -170,7 +170,7 @@ To add more servers, go to **Hosts → Add host** and paste the command it gives
 
 TainerHub is early software. Each green build of `main` is published as `ghcr.io/prezmc/tainerhub:latest` and `ghcr.io/prezmc/tainerhub-agent:latest`, for `linux/amd64` and `linux/arm64`.
 
-Not there yet: private registry credentials, `build:` sections in stacks, metrics history and alerts.
+Not there yet: `build:` sections in stacks, metrics history and alerts.
 
 ## Development
 

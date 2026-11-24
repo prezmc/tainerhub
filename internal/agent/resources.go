@@ -28,7 +28,7 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 	case wire.OpImagesList:
 		return d.images(ctx)
 	case wire.OpImagePull:
-		return d.pull(ctx, op.Arg)
+		return d.pull(ctx, op.Arg, op.Auth)
 	case wire.OpImageRemove:
 		return nil, d.remove(ctx, "/images/"+url.PathEscape(op.Target))
 	case wire.OpImagesPrune:
@@ -57,17 +57,19 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		}
 		return d.removeWithVolumes(ctx, op.Target, names)
 	case wire.OpSelfUpdate:
-		return d.selfUpdate(ctx, op.Arg == wire.SelfUpdateAddCgroupMount)
+		return d.selfUpdate(ctx, op.Arg == wire.SelfUpdateAddCgroupMount, op.Auth)
 	case wire.OpDockerPlan:
 		return d.dockerPlan(ctx)
 	case wire.OpDockerUpgrade:
 		return d.dockerUpgrade(ctx)
 	case wire.OpImagesCheckUpdates:
-		r, err := d.checkUpdates(ctx)
+		r, err := d.checkUpdates(ctx, op.Auth)
 		if err == nil {
 			d.updates.set(r)
 		}
 		return r, err
+	case wire.OpRegistryLogin:
+		return d.registryLogin(ctx, op.Auth[0])
 	case wire.OpContainerRecreate:
 		// Recreating stops the old container first: for the agent itself
 		// that ends the operation half done, and for the hub it cuts
@@ -75,9 +77,9 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		if err := d.guardSelf(ctx, op.Target); err != nil {
 			return nil, err
 		}
-		r, err := d.recreate(ctx, op.Target)
+		r, err := d.recreate(ctx, op.Target, op.Auth)
 		if err == nil {
-			_ = d.refreshUpdates(ctx) // the badge should go away now
+			_ = d.refreshUpdates(ctx, op.Auth) // the badge should go away now
 		}
 		return r, err
 	case wire.OpNetworksPrune:
@@ -123,9 +125,10 @@ func (d *SocketDocker) prune(ctx context.Context, path string, filters map[strin
 }
 
 // pull streams the Engine's progress messages to the end and reports the
-// final status, or the first error.
-func (d *SocketDocker) pull(ctx context.Context, ref string) (wire.PullResult, error) {
-	resp, err := d.do(ctx, http.MethodPost, "/images/create", url.Values{"fromImage": {ref}})
+// final status, or the first error. A login in auths for ref's registry is
+// passed to Docker for this pull only.
+func (d *SocketDocker) pull(ctx context.Context, ref string, auths []wire.RegistryAuth) (wire.PullResult, error) {
+	resp, err := d.do(withRegistryAuth(ctx, auths, ref), http.MethodPost, "/images/create", url.Values{"fromImage": {ref}})
 	if err != nil {
 		return wire.PullResult{}, err
 	}
@@ -481,7 +484,7 @@ func isAnonymousVolume(name string) bool {
 // With addMount, it instead writes compose.override.yml (which docker
 // compose also reads by default) adding the read-only cgroup mount to this
 // agent's service, and recreates only what that changes: the agent.
-func (d *SocketDocker) selfUpdate(ctx context.Context, addMount bool) (wire.SelfUpdateResult, error) {
+func (d *SocketDocker) selfUpdate(ctx context.Context, addMount bool, auths []wire.RegistryAuth) (wire.SelfUpdateResult, error) {
 	var res wire.SelfUpdateResult
 	if addMount && d.cg != nil {
 		return res, errors.New("this agent already reads stats from the kernel")
@@ -544,11 +547,21 @@ func (d *SocketDocker) selfUpdate(ctx context.Context, addMount bool) (wire.Self
 
 	res.Project, res.Dir = project, dir
 	res.Helper = fmt.Sprintf("tainerhub-updater-%d", time.Now().Unix())
+	dockerConfig := "/tmp/docker"
+	if addMount {
+		auths = nil // nothing is pulled
+	}
+	if len(auths) > 0 {
+		// Logins go in a file copied into the helper before it starts (not
+		// in its environment, which `docker inspect` shows). It disappears
+		// with the helper, which removes itself when done.
+		dockerConfig = "/" + helperAuthDir
+	}
 	spec := map[string]any{
 		"Image":      insp.Config.Image,
 		"Entrypoint": entrypoint,
 		"Cmd":        cmd,
-		"Env":        []string{"DOCKER_HOST=unix:///var/run/docker.sock", "HOME=/tmp", "DOCKER_CONFIG=/tmp/docker", "COMPOSE_ANSI=never"},
+		"Env":        []string{"DOCKER_HOST=unix:///var/run/docker.sock", "HOME=/tmp", "DOCKER_CONFIG=" + dockerConfig, "COMPOSE_ANSI=never"},
 		"WorkingDir": dir,
 		"Labels":     map[string]string{"tainerhub.updater": project},
 		"HostConfig": map[string]any{
@@ -567,6 +580,12 @@ func (d *SocketDocker) selfUpdate(ctx context.Context, addMount bool) (wire.Self
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&created)
 	resp.Body.Close()
+	if len(auths) > 0 {
+		if err := d.putArchive(ctx, created.ID, "/", authArchive(auths)); err != nil {
+			_ = d.remove(context.WithoutCancel(ctx), "/containers/"+url.PathEscape(created.ID)+"?force=1")
+			return res, fmt.Errorf("give the updater its registry logins: %w", err)
+		}
+	}
 	resp, err = d.do(ctx, http.MethodPost, "/containers/"+url.PathEscape(created.ID)+"/start", nil)
 	if err != nil {
 		return res, fmt.Errorf("start the updater: %w", err)

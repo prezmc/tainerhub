@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -375,6 +377,9 @@ type StackCommand struct {
 	Env     string `json:"env,omitempty"`     // deploy only: contents of .env
 	Pull    bool   `json:"pull,omitempty"`    // deploy: pull newer images first
 	Volumes bool   `json:"volumes,omitempty"` // down / remove: also delete named volumes
+	// Auth are logins for the private registries the compose file's images
+	// come from (deploy only). Used for this one command, never stored.
+	Auth []RegistryAuth `json:"auth,omitempty"`
 }
 
 // ValidStackName accepts compose project names: lowercase letters, digits,
@@ -411,7 +416,91 @@ func ValidStackCommand(c StackCommand) error {
 	if len(c.Env) > MaxEnvBytes {
 		return errors.New(".env is too large (max 64 KB)")
 	}
+	if len(c.Auth) > 0 && c.Action != StackDeploy {
+		return errors.New("only a deploy pulls images: registry logins aren't allowed here")
+	}
+	return ValidRegistryAuth(c.Auth)
+}
+
+// ---------------- registry logins ----------------
+
+// RegistryAuth is a login for one private registry. The hub sends it only
+// inside the command that pulls from that registry; agents use it for that
+// command and keep nothing.
+type RegistryAuth struct {
+	Registry string `json:"registry"` // normalized host: ghcr.io, docker.io, myreg.lan:5000
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// String and LogValue leave the password out, so printing or logging a
+// command by mistake can't leak it.
+func (a RegistryAuth) String() string { return a.Registry + " (user " + a.Username + ")" }
+
+func (a RegistryAuth) GoString() string { return "wire.RegistryAuth{" + a.String() + "}" }
+
+func (a RegistryAuth) LogValue() slog.Value { return slog.StringValue(a.String()) }
+
+// Limits for registry logins in one command.
+const (
+	MaxRegistryAuths    = 16
+	MaxRegistryHost     = 255
+	MaxRegistryUser     = 255
+	MaxRegistryPassword = 8 << 10 // tokens (e.g. cloud registries' JWTs) can be long
+)
+
+// ValidRegistryHost accepts a normalized registry host with an optional
+// port: lowercase letters, digits, '.', '-' and one ':' before the port.
+func ValidRegistryHost(s string) bool {
+	if s == "" || len(s) > MaxRegistryHost {
+		return false
+	}
+	host, port, hasPort := strings.Cut(s, ":")
+	if host == "" || host[0] == '.' || host[0] == '-' || host[len(host)-1] == '.' || host[len(host)-1] == '-' || strings.Contains(host, "..") {
+		return false
+	}
+	for i := 0; i < len(host); i++ {
+		c := host[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '-') {
+			return false
+		}
+	}
+	if hasPort {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidRegistryAuth checks the logins attached to a command: well-formed
+// hosts, each at most once, with a username and a password.
+func ValidRegistryAuth(auths []RegistryAuth) error {
+	if len(auths) > MaxRegistryAuths {
+		return errors.New("too many registry logins")
+	}
+	seen := map[string]bool{}
+	for _, a := range auths {
+		if !ValidRegistryHost(a.Registry) || seen[a.Registry] {
+			return errors.New("invalid registry login")
+		}
+		seen[a.Registry] = true
+		if a.Username == "" || len(a.Username) > MaxRegistryUser || a.Password == "" || len(a.Password) > MaxRegistryPassword {
+			return errors.New("invalid registry login")
+		}
+	}
 	return nil
+}
+
+// PullsImages says whether an operation of this kind may pull images (or,
+// for OpRegistryLogin, log in), and so may carry registry logins.
+func PullsImages(kind string) bool {
+	switch kind {
+	case OpImagePull, OpContainerRecreate, OpImagesCheckUpdates, OpSelfUpdate, OpRegistryLogin:
+		return true
+	}
+	return false
 }
 
 // Valid container actions.
@@ -558,6 +647,9 @@ type Operation struct {
 	Create *ContainerCreate `json:"create,omitempty"`
 	// Files are a compose file and .env to check (OpStackPreview only).
 	Files *StackFiles `json:"files,omitempty"`
+	// Auth are logins for the registries this operation pulls from (only
+	// kinds where PullsImages is true). Used for this one operation.
+	Auth []RegistryAuth `json:"auth,omitempty"`
 }
 
 type StackFiles struct {
@@ -635,7 +727,16 @@ const (
 	// Refused for compose containers and TainerHub's own names. Result:
 	// ContainerCreateResult.
 	OpContainerCreate = "container.create"
+	// OpRegistryLogin checks the one login in Auth against its registry
+	// through the Docker Engine (POST /auth), without saving it on the host.
+	// Result: RegistryLoginResult.
+	OpRegistryLogin = "registry.login"
 )
+
+// RegistryLoginResult is what the registry said to a login check.
+type RegistryLoginResult struct {
+	Status string `json:"status"`
+}
 
 // StackSource is a running project's compose setup, read from its host.
 type StackSource struct {
@@ -884,6 +985,7 @@ var OpKinds = map[string]bool{
 	OpDockerPlan: false, OpDockerUpgrade: true,
 	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false, OpStackRead: true,
 	OpContainerExport: false, OpContainerCreate: true,
+	OpRegistryLogin: false,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -891,7 +993,17 @@ func ValidOperation(op Operation) error {
 	if _, ok := OpKinds[op.Kind]; !ok {
 		return errors.New("unknown operation")
 	}
+	if len(op.Auth) > 0 && !PullsImages(op.Kind) {
+		return errors.New("this operation doesn't pull images: registry logins aren't allowed")
+	}
+	if err := ValidRegistryAuth(op.Auth); err != nil {
+		return err
+	}
 	switch op.Kind {
+	case OpRegistryLogin:
+		if len(op.Auth) != 1 {
+			return errors.New("a login check needs exactly one registry login")
+		}
 	case OpContainerInspect, OpVolumeRemove, OpNetworkRemove, OpContainerRecreate, OpContainerExport:
 		if !ValidContainerRef(op.Target) {
 			return errors.New("invalid target")

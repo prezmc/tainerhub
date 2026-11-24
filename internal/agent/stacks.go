@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prezmc/tainerhub/internal/regcred"
 	"github.com/prezmc/tainerhub/internal/wire"
 )
 
@@ -100,12 +101,17 @@ func (r *StackRunner) Supported(ctx context.Context) wire.StackSupport {
 // the agent's own variables (e.g. TAINERHUB_JOIN_TOKEN) can never be
 // interpolated into a compose file.
 func (r *StackRunner) env() []string {
+	return r.envWith(filepath.Join(r.WorkDir, "docker"))
+}
+
+// envWith is env with DOCKER_CONFIG set to dockerConfig.
+func (r *StackRunner) envWith(dockerConfig string) []string {
 	return []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin",
 		"HOME=" + r.WorkDir,
 		"TMPDIR=" + filepath.Join(r.WorkDir, "tmp"),
 		"DOCKER_HOST=unix://" + r.Socket,
-		"DOCKER_CONFIG=" + filepath.Join(r.WorkDir, "docker"),
+		"DOCKER_CONFIG=" + dockerConfig,
 		"COMPOSE_ANSI=never",
 	}
 }
@@ -156,30 +162,42 @@ func (r *StackRunner) Run(ctx context.Context, c wire.StackCommand, out io.Write
 
 	dir := filepath.Join(r.Dir, c.Name)
 	deployed := fileExists(filepath.Join(dir, composeFile))
+	run := composeRunner{r: r, dockerConfig: filepath.Join(r.WorkDir, "docker")}
+	if len(c.Auth) > 0 {
+		// The registry logins go in a DOCKER_CONFIG of their own for this
+		// command only, removed as soon as it's done: the shared one never
+		// holds a password.
+		cfg, cleanup, err := regcred.TempDockerConfig(filepath.Join(r.WorkDir, "auth"), c.Auth)
+		if err != nil {
+			return fmt.Errorf("prepare registry logins: %w", err)
+		}
+		defer cleanup()
+		run.dockerConfig = cfg
+	}
 	switch c.Action {
 	case wire.StackDeploy:
-		if err := r.writeFiles(ctx, c, dir, out); err != nil {
+		if err := run.writeFiles(ctx, c, dir, out); err != nil {
 			return err
 		}
 		if c.Pull {
-			if err := r.compose(ctx, c.Name, dir, out, "pull"); err != nil {
+			if err := run.compose(ctx, c.Name, dir, out, "pull"); err != nil {
 				return err
 			}
 		}
-		return r.compose(ctx, c.Name, dir, out, "up", "--detach", "--remove-orphans")
+		return run.compose(ctx, c.Name, dir, out, "up", "--detach", "--remove-orphans")
 	case wire.StackStart, wire.StackStop, wire.StackRestart:
 		if !deployed {
 			return errors.New("this stack has not been deployed on this host yet")
 		}
-		return r.compose(ctx, c.Name, dir, out, c.Action)
+		return run.compose(ctx, c.Name, dir, out, c.Action)
 	case wire.StackDown:
 		if !deployed {
 			return errors.New("this stack has not been deployed on this host yet")
 		}
-		return r.compose(ctx, c.Name, dir, out, downArgs(c)...)
+		return run.compose(ctx, c.Name, dir, out, downArgs(c)...)
 	case wire.StackRemove:
 		if deployed {
-			if err := r.compose(ctx, c.Name, dir, out, downArgs(c)...); err != nil {
+			if err := run.compose(ctx, c.Name, dir, out, downArgs(c)...); err != nil {
 				return err
 			}
 		}
@@ -209,7 +227,7 @@ func downArgs(c wire.StackCommand) []string {
 // writeFiles validates the new compose file and .env with `compose config`
 // in a staging folder, then moves them into place. A file that fails
 // validation never replaces a working one.
-func (r *StackRunner) writeFiles(ctx context.Context, c wire.StackCommand, dir string, out io.Writer) error {
+func (cr composeRunner) writeFiles(ctx context.Context, c wire.StackCommand, dir string, out io.Writer) error {
 	staging := filepath.Join(dir, stagingDir)
 	if err := os.MkdirAll(staging, 0o700); err != nil {
 		return err
@@ -222,7 +240,7 @@ func (r *StackRunner) writeFiles(ctx context.Context, c wire.StackCommand, dir s
 		return err
 	}
 	fmt.Fprintln(out, "Checking the compose file…")
-	err := r.run(ctx, out, "--project-name", c.Name,
+	err := cr.run(ctx, out, "--project-name", c.Name,
 		"--file", filepath.Join(staging, composeFile),
 		"--project-directory", dir,
 		"--env-file", filepath.Join(staging, envFile),
@@ -236,15 +254,23 @@ func (r *StackRunner) writeFiles(ctx context.Context, c wire.StackCommand, dir s
 	return os.Rename(filepath.Join(staging, envFile), filepath.Join(dir, envFile))
 }
 
-func (r *StackRunner) compose(ctx context.Context, name, dir string, out io.Writer, args ...string) error {
-	base := []string{"--project-name", name, "--file", filepath.Join(dir, composeFile), "--project-directory", dir, "--progress", "plain"}
-	return r.run(ctx, out, append(base, args...)...)
+// composeRunner runs compose for one stack command, with that command's
+// DOCKER_CONFIG.
+type composeRunner struct {
+	r            *StackRunner
+	dockerConfig string
 }
 
-func (r *StackRunner) run(ctx context.Context, out io.Writer, args ...string) error {
+func (cr composeRunner) compose(ctx context.Context, name, dir string, out io.Writer, args ...string) error {
+	base := []string{"--project-name", name, "--file", filepath.Join(dir, composeFile), "--project-directory", dir, "--progress", "plain"}
+	return cr.run(ctx, out, append(base, args...)...)
+}
+
+func (cr composeRunner) run(ctx context.Context, out io.Writer, args ...string) error {
+	r := cr.r
 	fmt.Fprintf(out, "$ docker compose %s\n", strings.Join(redactArgs(args, r.Dir), " "))
 	cmd := exec.CommandContext(ctx, r.Bin, args...)
-	cmd.Env = r.env()
+	cmd.Env = r.envWith(cr.dockerConfig)
 	cmd.Dir = r.Dir
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }

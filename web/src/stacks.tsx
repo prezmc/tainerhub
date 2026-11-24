@@ -3,8 +3,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDownToLine, Boxes, CircleCheck, CircleX, Download, LoaderCircle, X } from 'lucide-react'
 import { useFleet, useLive } from './fleet'
-import { api, ApiError, errorText, type Container, type Host, type StackAction, type StackStatus, type StackSummary } from './api'
+import { api, ApiError, errorText, isRegistryAuthError, registryHint, type Container, type Host, type StackAction, type StackStatus, type StackSummary } from './api'
 import { Badge, IconButton, cx, download, useConfirm, useLayer, useToast, type Tone } from './ui'
+import { RegistryAuthHint } from './registries'
 
 // ---- live stack list (managed stacks + compose projects found on hosts) ----
 
@@ -184,7 +185,7 @@ export function JobPanel({ jobId, onClose }: { jobId: string; onClose: () => voi
       if (m) {
         qc.invalidateQueries({ queryKey: ['stack', m.stackId] })
         const what = `${jobTitle[m.action] ?? m.action} ${m.stack}`
-        toast(d.ok ? 'good' : 'bad', d.ok ? `${what}: done` : `${what} failed: ${d.error}`)
+        toast(d.ok ? 'good' : 'bad', d.ok ? `${what}: done` : `${what} failed: ${d.error}${isRegistryAuthError(d.error) ? `. ${registryHint}` : ''}`)
       }
     })
     es.onerror = () => {
@@ -237,6 +238,12 @@ export function JobPanel({ jobId, onClose }: { jobId: string; onClose: () => voi
         {state === 'failed' && error && <span className="mt-2 block font-semibold text-rose-300">✗ {error}</span>}
         {state === 'ok' && <span className="mt-2 block font-semibold text-emerald-300">✓ Done</span>}
       </pre>
+      {state === 'failed' && (
+        <div className="px-5 pb-3">
+          {/* compose's own output says why a pull failed; the final error is just its exit code */}
+          <RegistryAuthHint error={`${error}\n${text.slice(-4000)}`} />
+        </div>
+      )}
     </div>
   )
 }
