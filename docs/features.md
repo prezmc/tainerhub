@@ -201,6 +201,8 @@ Limits: the compose file can be up to 256 KB and `.env` up to 64 KB.
 
 ### Other files: Dockerfiles, scripts, config
 
+<img src="images/stack-files.png" width="900" alt="A stack with Dockerfile, entrypoint.sh and conf/keep.conf tabs; the Dockerfile builds on an image from a private registry">
+
 A stack can carry more files than `compose.yaml` and `.env`: a `Dockerfile`, an `entrypoint.sh`, an `nginx.conf`, a `requirements.txt`. Click **Add file** next to the editor's tabs, type a name (folders are fine: `conf/nginx.conf`) or start from a template (**Dockerfile**, **entrypoint.sh**, **Empty file**). Each file gets its own tab, with **Rename**, **Delete** and an **Executable** box for scripts.
 
 The files are stored in TainerHub's database with the stack and written next to `compose.yaml` on every deploy, so `build: .`, `COPY entrypoint.sh /` and `./nginx.conf:/etc/nginx/nginx.conf:ro` work as they would in a folder of your own. TainerHub keeps a list of the files it wrote (`.tainerhub-files`): a file you delete from the stack is removed from the host on the next deploy, while anything else in the folder, such as data, is never touched. TainerHub refuses to write through a symbolic link.
