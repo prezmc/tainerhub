@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, BadgeCheck, Download, Rocket, Search, Star } from 'lucide-react'
+import { ArrowLeft, BadgeCheck, ClipboardPaste, Download, Rocket, Search, Star } from 'lucide-react'
 import { api, errorText, stackProblem, type NetworkRes, type StackSaveResult } from '../api'
 import { Badge, Button, Card, ErrorNote, Input, PageHeader, cx, useConfirm, useToast } from '../ui'
 import { useFleet } from '../fleet'
@@ -9,6 +9,9 @@ import { useOpenJob, useStacks } from '../stacks'
 import { HostSelect, useDefaultHost } from '../placement'
 import { allProblems, blankAdvanced, composeFor, isUserNetwork, setCounts, type Advanced, type Env, type Port, type Section, type Vol } from '../compose'
 import { AdvancedOptions, ComposePreview, FieldError, Rows, field } from './ContainerOptions'
+import { ComposeImportDialog, ImportedNotice } from './ComposeImport'
+import type { Imported, Note } from '../composeimport'
+import { setStackDraft, type StackDraft } from '../stackdraft'
 
 type Repo = { name: string; description: string; stars: number; pulls: number; official: boolean }
 type Tag = { name: string; updated: string; size: number }
@@ -48,6 +51,8 @@ export function NewContainerPage() {
   const [openSections, setOpenSections] = useState<Set<Section>>(() => new Set())
   const [error, setError] = useState<string | null>(null)
   const [tried, setTried] = useState(false) // basic fields show their messages after the first Deploy
+  const [pasting, setPasting] = useState(false)
+  const [imported, setImported] = useState<{ service: string; notes: Note[] } | null>(null)
 
   useDefaultHost(hostId, setHostId)
 
@@ -72,6 +77,29 @@ export function NewContainerPage() {
     setName(defaultName(repo))
     setNameEdited(false)
     setError(null)
+  }
+
+  // "Paste compose": the form's own fields, filled from one service.
+  const applyImport = (r: Imported) => {
+    setImage(r.image)
+    setTag(r.tag)
+    setName(r.name)
+    setNameEdited(true)
+    setRestart(r.restart)
+    setPorts(r.ports.length ? r.ports : [{ host: '', container: '', proto: 'tcp' }])
+    setEnv(r.env)
+    setVols(r.vols)
+    setAdv(r.adv)
+    setOpenSections(new Set(r.open))
+    setImported({ service: r.service, notes: r.notes })
+    setTried(false)
+    setError(null)
+    setPasting(false)
+  }
+  const deployAsStack = (d: StackDraft) => {
+    setStackDraft(d)
+    setPasting(false)
+    navigate({ to: '/stacks/new', search: { host: hostId || undefined } })
   }
 
   const patchAdv = useCallback((patch: Partial<Advanced>) => setAdv((old) => ({ ...old, ...patch })), [])
@@ -165,7 +193,12 @@ export function NewContainerPage() {
         <ArrowLeft className="size-4" />
         Containers
       </Link>
-      <PageHeader title="New container" subtitle="Find an image on Docker Hub, set it up, and run it on one of your hosts." />
+      <PageHeader title="New container" subtitle="Find an image on Docker Hub, set it up, and run it on one of your hosts.">
+        <Button variant="secondary" icon={ClipboardPaste} onClick={() => setPasting(true)}>
+          Paste compose
+        </Button>
+      </PageHeader>
+      <ComposeImportDialog open={pasting} onClose={() => setPasting(false)} onApply={applyImport} onStack={deployAsStack} replacing={!!image} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         {/* ---- image ---- */}
@@ -221,6 +254,13 @@ export function NewContainerPage() {
           </ul>
           {search.data?.length === 0 && <p className="mt-3 text-sm text-ink-100/50">No images found for “{submitted}”.</p>}
           <p className="mt-4 text-xs text-ink-100/50">
+            Have a compose file from the project’s docs?{' '}
+            <button type="button" onClick={() => setPasting(true)} className="text-lime-300 underline-offset-2 hover:underline">
+              Paste it
+            </button>{' '}
+            to fill in everything below.
+          </p>
+          <p className="mt-2 text-xs text-ink-100/50">
             Not on Docker Hub? Type the full name instead, like <code className="mono text-lime-300">ghcr.io/home-assistant/home-assistant</code>:
           </p>
           <div className="mt-2">
@@ -240,6 +280,7 @@ export function NewContainerPage() {
         {/* ---- settings ---- */}
         <Card className={cx('space-y-5 p-5', !image && 'opacity-50')}>
           <h2 className="font-display text-lg font-bold text-white">2. Settings</h2>
+          {imported && <ImportedNotice service={imported.service} notes={imported.notes} onDismiss={() => setImported(null)} />}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Version (tag)</span>

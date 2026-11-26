@@ -11,6 +11,7 @@ import { HostSelect, useDefaultHost } from '../placement'
 import { MoveSection } from './MoveStack'
 import { AutoUpdateToggle } from '../autoupdatesui'
 import { RollbackButton, RolledBackBanner } from '../rollbackui'
+import { clearStackDraft, peekStackDraft } from '../stackdraft'
 import { SourceNote, TakeoverPanel, takeoverReady, useTakeoverCheck, useTakeoverSource } from '../takeover'
 import {
   composeBuilds,
@@ -82,10 +83,13 @@ export function NewStackPage() {
   const { hosts } = useFleet()
   const stacks = useStacks()
   const adopting = !!search.name
+  // A compose file pasted on New container, when it was sent here to run as a stack.
+  const [draft] = useState(() => (adopting ? null : peekStackDraft()))
+  useEffect(() => clearStackDraft(), [])
   const [hostId, setHostId] = useState(search.host ?? '')
-  const [name, setName] = useState(search.name ?? '')
-  const [compose, setCompose] = useState(adopting ? '' : STARTER)
-  const [env, setEnv] = useState('')
+  const [name, setName] = useState(search.name ?? draft?.name ?? '')
+  const [compose, setCompose] = useState(adopting ? '' : (draft?.compose ?? STARTER))
+  const [env, setEnv] = useState(draft?.env ?? '')
   const [files, setFiles] = useState<StackFile[]>([])
   const [error, setError] = useState<string | null>(null)
   useUnsavedWarning((compose !== STARTER && compose !== '') || files.length > 0)
@@ -141,6 +145,11 @@ export function NewStackPage() {
               <h2 className="font-display text-lg font-bold text-white">compose.yaml</h2>
               <span className="text-xs text-ink-100/40">{compose.length.toLocaleString()} bytes</span>
             </div>
+            {draft && (
+              <p className="text-xs text-ink-100/60">
+                The compose file you pasted on New container.{draft.env ? ' Variables you filled in are in .env below.' : ''} Check it, pick a host, then deploy.
+              </p>
+            )}
             {takingOver && (
               <SourceNote
                 source={source}

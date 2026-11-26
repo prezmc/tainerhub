@@ -1,0 +1,204 @@
+// "Paste compose" on the New container page: reads a compose file from a
+// project's docs and fills the form's own fields from one of its services.
+// The parser (and the yaml package) load only when the dialog first opens.
+import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, ClipboardPaste, Info, Layers, X } from 'lucide-react'
+import { Button, ErrorNote, IconButton, Modal, cx } from '../ui'
+import { CodeEditor } from '../stacks'
+import type { Imported, Note } from '../composeimport'
+import type { StackDraft } from '../stackdraft'
+import { field } from './ContainerOptions'
+
+type Lib = typeof import('../composeimport')
+
+const EXAMPLE = `services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "3001:3001"
+    restart: unless-stopped`
+
+export function ComposeImportDialog({
+  open,
+  onClose,
+  onApply,
+  onStack,
+  replacing,
+}: {
+  open: boolean
+  onClose: () => void
+  onApply: (r: Imported) => void
+  onStack: (d: StackDraft) => void
+  /** The form already has something in it, which applying replaces. */
+  replacing: boolean
+}) {
+  const [lib, setLib] = useState<Lib | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [text, setText] = useState('')
+  const [picked, setPicked] = useState('')
+  const [values, setValues] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (!open || lib) return
+    import('../composeimport').then(setLib, (e) => setLoadError(`Couldn't load the compose reader: ${e instanceof Error ? e.message : String(e)}`))
+  }, [open, lib])
+
+  const parsed = useMemo(() => (lib && text.trim() ? lib.parseCompose(text) : null), [lib, text])
+  const ok = parsed?.ok ? parsed : null
+  const service = ok ? (ok.services.includes(picked) ? picked : ok.services[0]) : ''
+  const vars = useMemo(() => (ok && lib ? lib.variablesOf(ok, service) : []), [ok, lib, service])
+  const result = useMemo(() => (ok && lib ? lib.importService(ok, service, values) : null), [ok, lib, service, values])
+
+  const apply = () => {
+    if (!result) return
+    onApply(result)
+    setText('')
+    setValues({})
+    setPicked('')
+  }
+  const asStack = () => {
+    if (!ok || !lib) return
+    onStack(lib.stackDraft(text, ok, values))
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Paste a compose file" wide>
+      <div className="space-y-4">
+        <p className="text-sm text-ink-100/70">
+          Many projects publish a <code className="mono text-lime-300">docker-compose.yml</code> in their README. Paste it here to fill in the form; you can check and change everything before
+          you deploy.
+        </p>
+        <ErrorNote error={loadError} />
+        <CodeEditor label="Compose file to import" value={text} onChange={setText} rows={10} placeholder={EXAMPLE} />
+        {parsed && !parsed.ok && <ErrorNote error={parsed.error} />}
+
+        {ok && ok.services.length > 1 && (
+          <fieldset className="space-y-2 rounded-[3px] bg-white/[0.03] p-3 ring-1 ring-line">
+            <legend className="sr-only">Service</legend>
+            <p className="text-sm text-ink-100/80">
+              This file has {ok.services.length} services. A container runs one of them: which one?
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {ok.services.map((s) => (
+                <label
+                  key={s}
+                  className={cx(
+                    'mono flex cursor-pointer items-center gap-2 rounded-[2px] px-2.5 py-1.5 text-sm ring-1 ring-inset',
+                    s === service ? 'bg-lime-400/10 text-white ring-lime-400/60' : 'text-ink-100/70 ring-white/12 hover:text-white',
+                  )}
+                >
+                  <input type="radio" name="compose-service" value={s} checked={s === service} onChange={() => setPicked(s)} className="accent-lime-400" />
+                  {s}
+                </label>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line pt-2">
+              <Button type="button" variant="secondary" icon={Layers} onClick={asStack}>
+                Deploy all {ok.services.length} as a stack
+              </Button>
+              <span className="text-xs text-ink-100/50">Opens the stack editor with this file, so the services run together.</span>
+            </div>
+          </fieldset>
+        )}
+
+        {vars.length > 0 && (
+          <fieldset className="space-y-2">
+            <legend className="mb-1 text-sm font-medium text-ink-100/80">Variables</legend>
+            <p className="-mt-1 text-xs text-ink-100/50">The file uses these. Leave one empty to use its default.</p>
+            {vars.map((v) => (
+              <label key={v.name} className="flex flex-wrap items-center gap-2">
+                <span className="mono w-full text-sm text-amber-200 sm:w-44 sm:shrink-0 sm:truncate">${'{'}{v.name}{'}'}</span>
+                <input
+                  aria-label={`Value for ${v.name}`}
+                  value={values[v.name] ?? ''}
+                  onChange={(e) => setValues((old) => ({ ...old, [v.name]: e.target.value }))}
+                  placeholder={v.def !== undefined ? (v.def === '' ? 'default: empty' : `default: ${v.def}`) : 'no default: enter a value'}
+                  className={cx(field, 'min-w-0 flex-1', v.def === undefined && !values[v.name] && 'ring-amber-400/40')}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                />
+              </label>
+            ))}
+          </fieldset>
+        )}
+
+        {result && <Summary r={result} />}
+        {result && <Notes notes={result.notes} />}
+
+        <div className="flex flex-wrap items-center gap-3 pt-1">
+          <Button type="button" variant="primary" icon={ClipboardPaste} onClick={apply} disabled={!result || !result.image}>
+            Fill the form{ok && ok.services.length > 1 ? ` with ${service}` : ''}
+          </Button>
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          {replacing && result && <span className="text-xs text-ink-100/50">Replaces what's in the form now.</span>}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** One line on what goes where. */
+function Summary({ r }: { r: Imported }) {
+  const n = (k: number, one: string, many = one + 's') => (k ? `${k} ${k === 1 ? one : many}` : null)
+  const parts = [
+    r.image && `${r.image}${r.image.includes('@') ? '' : `:${r.tag}`}`,
+    `named ${r.name}`,
+    n(r.ports.length, 'port'),
+    n(r.vols.length, 'volume'),
+    n(r.env.length, 'variable'),
+  ].filter(Boolean)
+  return (
+    <p className="text-sm text-ink-100/70">
+      <span className="text-ink-100/50">Fills in: </span>
+      <span className="mono text-white">{parts.join(' · ')}</span>
+      {r.open.length > 0 && <span className="text-ink-100/50"> · advanced: {r.open.map((s) => SECTION_NAMES[s]).join(', ')}</span>}
+    </p>
+  )
+}
+
+const SECTION_NAMES: Record<string, string> = {
+  network: 'networking',
+  labels: 'labels',
+  runtime: 'command & runtime',
+  resources: 'resources',
+  health: 'health check',
+  security: 'security',
+  logging: 'logging',
+  envfile: 'env file',
+}
+
+export function Notes({ notes, className }: { notes: Note[]; className?: string }) {
+  if (!notes.length) return null
+  const sorted = [...notes.filter((x) => x.level === 'warn'), ...notes.filter((x) => x.level === 'info')]
+  return (
+    <ul className={cx('space-y-1.5 rounded-[3px] bg-white/[0.03] p-3 text-xs ring-1 ring-line', className)} aria-label="Import notes">
+      {sorted.map((x, i) => (
+        <li key={i} className={cx('flex gap-2', x.level === 'warn' ? 'text-amber-200' : 'text-ink-100/60')}>
+          {x.level === 'warn' ? <AlertTriangle className="mt-px size-3.5 shrink-0" aria-label="Warning" /> : <Info className="mt-px size-3.5 shrink-0" aria-label="Note" />}
+          <span className="min-w-0 break-words">{x.msg}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** The notes from the last import, kept above the settings until dismissed. */
+export function ImportedNotice({ service, notes, onDismiss }: { service: string; notes: Note[]; onDismiss: () => void }) {
+  const warnings = notes.filter((n) => n.level === 'warn').length
+  return (
+    <div className="space-y-2 rounded-[3px] bg-lime-400/[0.05] p-3 ring-1 ring-lime-400/25">
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-sm text-ink-100/80">
+          Filled in from the compose file’s <span className="mono text-white">{service}</span> service.{' '}
+          {warnings ? `${warnings} thing${warnings === 1 ? '' : 's'} to check:` : 'Everything in it was mapped. Check the settings below, then deploy.'}
+        </p>
+        <IconButton icon={X} label="Dismiss import notes" onClick={onDismiss} />
+      </div>
+      <Notes notes={notes} className="bg-transparent p-0 ring-0" />
+    </div>
+  )
+}

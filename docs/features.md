@@ -213,6 +213,19 @@ Admins can click **New container** on the Containers page to run an image from D
 
 The container runs as a one-service stack with the name you chose. You can edit, redeploy or update it later from **Stacks**.
 
+#### Paste a compose file
+
+Many projects publish a `docker-compose.yml` snippet in their README (Uptime Kuma, Home Assistant, Jellyfin and so on). Instead of copying it field by field, click **Paste compose** at the top of the page (or **Paste it** under the search box) and paste the snippet:
+
+<img src="images/new-container-paste.png" width="900" alt="The Paste a compose file dialog with a Jellyfin compose file, a value for MEDIA_DIR, a summary of what it fills in and one warning">
+
+- **Variables.** Every `${VAR}` the file uses is listed. Leave one empty to use its default (`${TZ:-UTC}` becomes `UTC`), or type a value. One with no default and no value is left empty and flagged. `$$` is a literal `$`.
+- **Several services.** A container runs one service, so you pick which one. Or click **Deploy all as a stack**: the stack editor opens with the file exactly as you pasted it, a suggested name (the file's `name:`, else its first service) and a `.env` with the values you typed.
+- **What it fills in.** The image and tag, name (`container_name`, else the service name), restart policy, ports (including udp, ranges and the long syntax), volumes and binds (`:ro` is kept), environment, networks (`external: true` ones are joined, one other is created), labels, command and entrypoint, hostname, extra hosts, DNS, user, working directory, init, read-only, stop grace period, memory, CPU and shared-memory limits, devices, NVIDIA GPUs (`deploy.resources.reservations`, `gpus:` or `runtime: nvidia`), health check, `cap_add`/`cap_drop`, privileged, no-new-privileges and json-file log limits. Advanced sections that got values open by themselves.
+- **What it can't.** Anything the form has no field for is listed as a warning, never dropped silently: `depends_on`, `build:`, other services, `env_file` (paste its lines under **Env file**), external volumes, ports published on one address only (like `127.0.0.1:9000:9000`), capabilities outside the form's list, Swarm `deploy` settings and other keys. If those matter, deploy the whole file as a stack instead.
+
+**Fill the form** replaces what's in the form. The warnings stay above **Settings** until you dismiss them, and nothing is deployed until you click **Deploy**. The file is read in your browser; it isn't sent anywhere until you deploy, and every value goes through the same checks and quoting as values you type.
+
 ## Stacks
 
 <img src="images/stacks.png" width="900" alt="The Stacks page">
