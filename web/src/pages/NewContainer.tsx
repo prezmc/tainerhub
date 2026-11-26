@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, BadgeCheck, ClipboardPaste, Download, Rocket, Search, Star } from 'lucide-react'
+import { ArrowLeft, BadgeCheck, ClipboardPaste, Download, Rocket, Search, Star, Undo2 } from 'lucide-react'
 import { api, errorText, stackProblem, type NetworkRes, type StackSaveResult } from '../api'
 import { Badge, Button, Card, ErrorNote, Input, PageHeader, cx, useConfirm, useToast } from '../ui'
 import { useFleet } from '../fleet'
@@ -10,7 +10,7 @@ import { HostSelect, useDefaultHost } from '../placement'
 import { allProblems, blankAdvanced, composeFor, isUserNetwork, setCounts, type Advanced, type Env, type Port, type Section, type Vol } from '../compose'
 import { AdvancedOptions, ComposePreview, FieldError, Rows, field } from './ContainerOptions'
 import { ComposeImportDialog, ImportedNotice } from './ComposeImport'
-import type { Imported, Note } from '../composeimport'
+import type { Change, Imported, Note } from '../composeimport'
 import { setStackDraft, type StackDraft } from '../stackdraft'
 import { PreflightPanel, useFreshPreflight, usePreflight, type PreflightFix } from '../preflight'
 import { generateSecret } from '../placeholder'
@@ -54,7 +54,7 @@ export function NewContainerPage() {
   const [error, setError] = useState<string | null>(null)
   const [tried, setTried] = useState(false) // basic fields show their messages after the first Deploy
   const [pasting, setPasting] = useState(false)
-  const [imported, setImported] = useState<{ service: string; notes: Note[] } | null>(null)
+  const [imported, setImported] = useState<{ service: string; notes: Note[]; changes: Change[] } | null>(null)
 
   useDefaultHost(hostId, setHostId)
 
@@ -83,6 +83,7 @@ export function NewContainerPage() {
 
   // "Paste compose": the form's own fields, filled from one service.
   const applyImport = (r: Imported) => {
+    setLastFix(null)
     setImage(r.image)
     setTag(r.tag)
     setName(r.name)
@@ -93,7 +94,7 @@ export function NewContainerPage() {
     setVols(r.vols)
     setAdv(r.adv)
     setOpenSections(new Set(r.open))
-    setImported({ service: r.service, notes: r.notes })
+    setImported({ service: r.service, notes: r.notes, changes: r.changes.filter((c) => !c.id.startsWith('var:') || c.to !== '') })
     setTried(false)
     setError(null)
     setPasting(false)
@@ -157,7 +158,24 @@ export function NewContainerPage() {
   const freshPreflight = useFreshPreflight()
   const preflightWaiting = !host ? 'Pick a host to check the settings against it.' : !host.online ? `${host.name} is offline, so nothing can be checked.` : hostIssue ? hostIssue : !formOK ? `It checks the settings against ${host.name} once they're complete. First: ${issues[0].msg}` : null
 
+  // The last fix applied from the check, with the form as it was, so it can be undone.
+  const [lastFix, setLastFix] = useState<{ label: string; undo: () => void } | null>(null)
   const applyFix = (f: PreflightFix) => {
+    const before = { image, tag, name, nameEdited, ports, env, vols, adv }
+    setLastFix({
+      label: f.label,
+      undo: () => {
+        setImage(before.image)
+        setTag(before.tag)
+        setName(before.name)
+        setNameEdited(before.nameEdited)
+        setPorts(before.ports)
+        setEnv(before.env)
+        setVols(before.vols)
+        setAdv(before.adv)
+        setLastFix(null)
+      },
+    })
     switch (f.kind) {
       case 'port': {
         const [num, proto] = (f.target ?? '').split('/')
@@ -341,7 +359,7 @@ export function NewContainerPage() {
         {/* ---- settings ---- */}
         <Card className={cx('space-y-5 p-5', !image && 'opacity-50')}>
           <h2 className="font-display text-lg font-bold text-white">2. Settings</h2>
-          {imported && <ImportedNotice service={imported.service} notes={imported.notes} onDismiss={() => setImported(null)} />}
+          {imported && <ImportedNotice service={imported.service} notes={imported.notes} changes={imported.changes} onDismiss={() => setImported(null)} />}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Version (tag)</span>
@@ -469,6 +487,19 @@ export function NewContainerPage() {
           )}
           {image && <ComposePreview compose={compose} />}
           {image && <PreflightPanel check={preflight} hostName={host?.name ?? ''} onFix={applyFix} canFix={canFix} waiting={preflightWaiting} />}
+          {image && lastFix && (
+            <p className="-mt-3 flex flex-wrap items-center gap-2 text-xs text-ink-100/70" role="status">
+              <span>
+                Changed in the form: <strong className="font-medium text-white">{lastFix.label}</strong>.
+              </span>
+              <Button type="button" variant="ghost" icon={Undo2} className="!px-2 !py-1 text-[11px]" onClick={lastFix.undo}>
+                Undo
+              </Button>
+              <button type="button" className="text-ink-100/45 hover:text-white" onClick={() => setLastFix(null)}>
+                Keep it
+              </button>
+            </p>
+          )}
           <ErrorNote error={error} />
           {image && hostIssue && <p className="text-xs text-amber-200">{hostIssue}</p>}
           <div className="flex flex-wrap items-center gap-3">

@@ -45,7 +45,17 @@ export type Imported = {
   open: Section[]
   /** Values that look like examples from the docs, to ask the user about. */
   placeholders: Placeholder[]
+  /** Values TainerHub filled in or changed, to show and let the user adjust. */
+  changes: Change[]
 }
+
+/**
+ * A value TainerHub chose rather than took from the file: a default it
+ * filled in, or a value it had to change for the form. from is what the
+ * file had ("" when nothing). input says how the user can adjust it (none:
+ * only in the form afterwards); edits[id] holds their value.
+ */
+export type Change = { id: string; label: string; from: string; to: string; why: string; input?: 'text' | 'restart' | 'variable' }
 
 /**
  * A value that looks like an example from the docs ("/path/to/data",
@@ -395,16 +405,31 @@ const STACK_HINT = 'Deploy the whole file as a stack to keep it.'
  * Maps one service onto the form. values are the variables the user filled
  * in (an empty string means "no value": defaults apply, else it's empty).
  */
-export function importService(p: Extract<Parsed, { ok: true }>, service: string, values: Record<string, string> = {}, replacements: Record<string, string> = {}): Imported {
+export function importService(p: Extract<Parsed, { ok: true }>, service: string, values: Record<string, string> = {}, edits: Record<string, string> = {}): Imported {
   const notes: Note[] = [...p.notes]
   const warn = (msg: string) => notes.push({ level: 'warn', msg })
   const info = (msg: string) => notes.push({ level: 'info', msg })
+  const changes: Change[] = []
+  /** Records a change and returns the value to use: the user's edit, if any. to is then that value. */
+  const change = (c: Change) => {
+    const e = c.input && c.input !== 'variable' ? edits[`change:${c.id}`]?.trim() : undefined
+    const to = e || c.to
+    changes.push({ ...c, to })
+    return to
+  }
   const refs = new Map<string, VarRef>()
   const missing = new Set<string>()
   const svcRaw = (p.doc.services as Obj)[service]
   const s = expand(svcRaw, values, refs, missing) as Obj
   const topNets = (isObj(p.doc.networks) ? expand(p.doc.networks, values, refs, missing) : {}) as Obj
   const topVols = (isObj(p.doc.volumes) ? expand(p.doc.volumes, values, refs, missing) : {}) as Obj
+  for (const v of refs.values()) {
+    // Listed even once the user has typed a value, so the row stays put while they edit it.
+    if (v.def !== undefined) {
+      const own = values[v.name]
+      changes.push({ id: `var:${v.name}`, label: '${' + v.name + '}', from: '', to: own || v.def, why: own ? `Your value (the file’s default is ${v.def === '' ? 'empty' : v.def}).` : 'Not set, so the file’s own default is used.', input: 'variable' })
+    }
+  }
   for (const name of missing) warn(`\${${name}} has no value, so it was left empty where the file uses it. Enter a value for it before filling the form, or fix that field afterwards.`)
 
   const adv = blankAdvanced()
@@ -413,29 +438,40 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
 
   // image
   const ref = str(s.image).trim()
-  const { image, tag } = ref ? splitImage(ref) : { image: '', tag: 'latest' }
+  const split = ref ? splitImage(ref) : { image: '', tag: 'latest' }
+  const image = split.image
+  let tag = split.tag
+  if (ref && !ref.includes('@') && !(ref.split('/').pop() ?? '').includes(':'))
+    tag = change({ id: 'tag', label: 'Version (tag)', from: '', to: 'latest', why: 'The file names no version, so Docker would use latest. Pinning a version makes updates deliberate.', input: 'text' })
   if (!ref) warn(has(s, 'build') ? `${service} is built from source (build:), and the form can only run a ready-made image. ${STACK_HINT}` : `${service} has no image:.`)
   else if (has(s, 'build')) warn(`build: was left out: the form runs the image ${code(ref)} instead of building it. ${STACK_HINT}`)
 
   // name
   const wanted = str(s.container_name) || service
-  const name = cleanName(wanted) || cleanName(imageBase(ref)) || 'app'
-  if (name !== wanted) info(`The name ${code(wanted)} became ${code(name)}: names use lowercase letters, digits, - and _.`)
+  let name = cleanName(wanted) || cleanName(imageBase(ref)) || 'app'
+  if (name !== wanted)
+    name = change({ id: 'name', label: 'Name', from: wanted, to: name, why: 'Names use lowercase letters, digits, - and _.', input: 'text' })
 
   // restart
   let restart = 'unless-stopped'
   const r = s.restart === false ? 'no' : str(s.restart)
-  if (!has(s, 'restart')) info('The file sets no restart policy (Docker’s default is never), so “unless stopped” was picked.')
+  if (!has(s, 'restart'))
+    restart = change({ id: 'restart', label: 'Restart', from: '', to: 'unless-stopped', why: 'The file sets none (Docker’s default is never), so the app would stay down after a reboot.', input: 'restart' })
   else if (['no', 'always', 'unless-stopped', 'on-failure'].includes(r)) restart = r
-  else if (/^on-failure:\d+$/.test(r)) {
-    restart = 'on-failure'
-    warn(`restart: ${r}: the form can’t limit the retries, so it’s on-failure without a limit.`)
-  } else warn(`restart: ${code(r)} isn’t a restart policy; “unless stopped” was picked.`)
+  else if (/^on-failure:\d+$/.test(r))
+    restart = change({ id: 'restart', label: 'Restart', from: r, to: 'on-failure', why: 'The form can’t limit the number of retries.', input: 'restart' })
+  else restart = change({ id: 'restart', label: 'Restart', from: r, to: 'unless-stopped', why: 'That isn’t a restart policy.', input: 'restart' })
+  if (!['no', 'always', 'unless-stopped', 'on-failure'].includes(restart)) {
+    restart = 'unless-stopped'
+    const c = changes.find((x) => x.id === 'restart')
+    if (c) c.to = restart
+  }
 
   // networking
   const nm = str(s.network_mode)
   if (nm === 'host' || nm === 'none') adv.networkMode = nm
-  else if (nm === 'bridge') info('network_mode: bridge was replaced by the stack’s own network, which works the same for most apps.')
+  else if (nm === 'bridge')
+    change({ id: 'network-mode', label: 'Network mode', from: 'bridge', to: 'the stack’s own network', why: 'Works the same for most apps, and lets it join other networks. Change it under Advanced → Networking.' })
   else if (nm) warn(`network_mode: ${code(nm)} can’t be set from the form; it was left out. ${STACK_HINT}`)
 
   const ports: Port[] = []
@@ -531,8 +567,10 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
   const mem = has(s, 'mem_limit') ? s.mem_limit : limits.memory
   if (mem !== undefined) {
     const m = parseSize(mem)
-    if (m) [adv.memory, adv.memoryUnit] = [m.value, m.unit]
-    else warn(`Memory limit ${code(str(mem))} couldn’t be read; it was left out.`)
+    if (m) {
+      ;[adv.memory, adv.memoryUnit] = [m.value, m.unit]
+      if (!/^\s*[\d.]+\s*[mg]b?\s*$/i.test(str(mem))) change({ id: 'memory', label: 'Memory limit', from: str(mem), to: `${m.value} ${m.unit === 'g' ? 'GB' : 'MB'}`, why: 'The form sets limits in MB or GB.' })
+    } else warn(`Memory limit ${code(str(mem))} couldn’t be read; it was left out.`)
   }
   adv.cpus = str(has(s, 'cpus') ? s.cpus : limits.cpus)
   if (has(s, 'shm_size')) {
@@ -561,7 +599,7 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
   if (has(s, 'runtime')) {
     if (str(s.runtime) === 'nvidia') {
       adv.gpu = true
-      info('runtime: nvidia was replaced by a GPU reservation (Advanced → Resources → GPU), which does the same with current Docker.')
+      change({ id: 'gpu', label: 'GPU', from: 'runtime: nvidia', to: 'all NVIDIA GPUs (a GPU reservation)', why: 'Does the same with current Docker. Change it under Advanced → Resources.' })
     } else warn(`runtime: ${code(str(s.runtime))} can’t be set from the form; it was left out.`)
   }
   for (const k of Object.keys(deploy)) if (k !== 'resources') warn(`deploy.${k} is for Docker Swarm or can’t be set from the form; it was left out.`)
@@ -579,10 +617,9 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
       if (Array.isArray(test)) {
         const [kind, ...rest] = test.map(str)
         if (kind === 'CMD-SHELL') adv.hcTest = rest.join(' ')
-        else if (kind === 'CMD') {
-          adv.hcTest = joinArgs(rest)
-          info('The health check’s CMD form now runs through the shell (CMD-SHELL). Images without /bin/sh need it as a stack instead.')
-        } else adv.hcTest = joinArgs([kind, ...rest])
+        else if (kind === 'CMD')
+          adv.hcTest = change({ id: 'health', label: 'Health check', from: JSON.stringify(test), to: joinArgs(rest), why: 'The form runs health checks through the shell (CMD-SHELL). Images without /bin/sh need the file as a stack instead.', input: 'text' })
+        else adv.hcTest = joinArgs([kind, ...rest])
       } else adv.hcTest = str(test)
       adv.hcInterval = str(h.interval)
       adv.hcTimeout = str(h.timeout)
@@ -620,7 +657,9 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
       if (has(opts, 'max-size') || has(opts, 'max-file')) {
         adv.logLimit = true
         if (has(opts, 'max-size')) adv.logMaxSize = str(opts['max-size']).toLowerCase()
+        else adv.logMaxSize = change({ id: 'log-size', label: 'Log max size', from: '', to: adv.logMaxSize, why: 'The file only sets the number of files; the form needs both.', input: 'text' })
         if (has(opts, 'max-file')) adv.logMaxFile = str(opts['max-file'])
+        else adv.logMaxFile = change({ id: 'log-files', label: 'Log files to keep', from: '', to: adv.logMaxFile, why: 'The file only sets the size; the form needs both.', input: 'text' })
       }
       const extra = Object.keys(opts).filter((k) => k !== 'max-size' && k !== 'max-file')
       if (extra.length) warn(`Logging options ${extra.join(', ')} can’t be set from the form; they were left out.`)
@@ -652,7 +691,7 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
   const placeholders: Placeholder[] = []
   const check = (ph: Placeholder, set: (v: string) => void) => {
     placeholders.push(ph)
-    const r = replacements[ph.id]?.trim()
+    const r = edits[ph.id]?.trim()
     if (r) set(r)
     else warn(`${ph.label}: ${code(ph.value)} looks like an example from the docs. Replace it with your own ${ph.kind === 'volume' ? 'folder' : 'value'}.`)
   }
@@ -664,7 +703,7 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
     if (looksLikePlaceholder(e.value)) check({ id: `env:${e.key}`, kind: 'env', label: e.key, value: e.value, secret: isSecretKey(e.key) }, (r) => (e.value = r))
   for (const l of adv.labels) if (looksLikePlaceholder(l.value)) check({ id: `label:${l.key}`, kind: 'label', label: `Label ${l.key}`, value: l.value }, (r) => (l.value = r))
 
-  return { service, image, tag, name, restart, ports, env, vols, adv, notes, open: [...open], placeholders }
+  return { service, image, tag, name, restart, ports, env, vols, adv, notes, open: [...open], placeholders, changes }
 }
 
 // ---------------- whole file as a stack ----------------

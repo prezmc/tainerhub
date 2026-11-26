@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ClipboardPaste, Dices, Info, Layers, Wand2, X } from 'lucide-react'
 import { Button, ErrorNote, IconButton, Modal, cx } from '../ui'
 import { CodeEditor } from '../stacks'
-import type { Imported, Note } from '../composeimport'
+import type { Change, Imported, Note } from '../composeimport'
 import type { StackDraft } from '../stackdraft'
 import { field } from './ContainerOptions'
 import { generateSecret } from '../placeholder'
@@ -52,6 +52,8 @@ export function ComposeImportDialog({
   const ok = parsed?.ok ? parsed : null
   const service = ok ? (ok.services.includes(picked) ? picked : ok.services[0]) : ''
   const vars = useMemo(() => (ok && lib ? lib.variablesOf(ok, service) : []), [ok, lib, service])
+  // Variables with a default are listed under "Changed for you" instead.
+  const needed = vars.filter((v) => v.def === undefined)
   const result = useMemo(() => (ok && lib ? lib.importService(ok, service, values, replacements) : null), [ok, lib, service, values, replacements])
 
   const apply = () => {
@@ -107,19 +109,19 @@ export function ComposeImportDialog({
           </fieldset>
         )}
 
-        {vars.length > 0 && (
+        {needed.length > 0 && (
           <fieldset className="space-y-2">
-            <legend className="mb-1 text-sm font-medium text-ink-100/80">Variables</legend>
-            <p className="-mt-1 text-xs text-ink-100/50">The file uses these. Leave one empty to use its default.</p>
-            {vars.map((v) => (
+            <legend className="mb-1 text-sm font-medium text-ink-100/80">Variables to fill in</legend>
+            <p className="-mt-1 text-xs text-ink-100/50">The file uses these and gives no default.</p>
+            {needed.map((v) => (
               <label key={v.name} className="flex flex-wrap items-center gap-2">
                 <span className="mono w-full text-sm text-amber-200 sm:w-44 sm:shrink-0 sm:truncate">${'{'}{v.name}{'}'}</span>
                 <input
                   aria-label={`Value for ${v.name}`}
                   value={values[v.name] ?? ''}
                   onChange={(e) => setValues((old) => ({ ...old, [v.name]: e.target.value }))}
-                  placeholder={v.def !== undefined ? (v.def === '' ? 'default: empty' : `default: ${v.def}`) : 'no default: enter a value'}
-                  className={cx(field, 'min-w-0 flex-1', v.def === undefined && !values[v.name] && 'ring-amber-400/40')}
+                  placeholder="no default: enter a value"
+                  className={cx(field, 'min-w-0 flex-1', !values[v.name] && 'ring-amber-400/40')}
                   spellCheck={false}
                   autoCapitalize="off"
                 />
@@ -171,6 +173,26 @@ export function ComposeImportDialog({
           </fieldset>
         )}
 
+        {result && result.changes.length > 0 && (
+          <fieldset className="space-y-2">
+            <legend className="mb-1 text-sm font-medium text-ink-100/80">Changed for you</legend>
+            <p className="-mt-1 text-xs text-ink-100/50">
+              TainerHub filled these in or changed them to fit the form. <strong className="font-medium text-ink-100/70">Fill the form</strong> uses them as shown; change any you'd rather
+              set differently.
+            </p>
+            <ul className="divide-y divide-line rounded-[3px] ring-1 ring-line">
+              {result.changes.map((c) => (
+                <ChangeRow
+                  key={c.id}
+                  c={c}
+                  value={c.input === 'variable' ? (values[c.id.slice(4)] ?? '') : replacements[`change:${c.id}`]}
+                  onChange={(v) => (c.input === 'variable' ? setValues((old) => ({ ...old, [c.id.slice(4)]: v })) : replace(`change:${c.id}`, v))}
+                />
+              ))}
+            </ul>
+          </fieldset>
+        )}
+
         {result && <Summary r={result} />}
         {result && <Notes notes={result.notes} />}
 
@@ -185,6 +207,55 @@ export function ComposeImportDialog({
         </div>
       </div>
     </Modal>
+  )
+}
+
+const RESTARTS = [
+  ['unless-stopped', 'unless stopped (recommended)'],
+  ['always', 'always'],
+  ['on-failure', 'on failure'],
+  ['no', 'never'],
+] as const
+
+/** One value TainerHub chose: what the file had, what it'll be, why, and a way to change it. */
+function ChangeRow({ c, value, onChange }: { c: Change; value: string | undefined; onChange: (v: string) => void }) {
+  const control =
+    c.input === 'restart' ? (
+      <select aria-label={c.label} value={value || c.to} onChange={(e) => onChange(e.target.value)} className={cx(field, 'min-w-0 flex-1 basis-40')}>
+        {RESTARTS.map(([v, label]) => (
+          <option key={v} value={v} className="bg-panel">
+            {label}
+          </option>
+        ))}
+      </select>
+    ) : c.input === 'variable' ? (
+      <input
+        aria-label={`Value for ${c.label}`}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={c.to === '' ? 'default: empty' : `default: ${c.to}`}
+        className={cx(field, 'min-w-0 flex-1 basis-40')}
+        spellCheck={false}
+        autoCapitalize="off"
+      />
+    ) : c.input === 'text' ? (
+      <input aria-label={c.label} value={value ?? c.to} onChange={(e) => onChange(e.target.value)} className={cx(field, 'min-w-0 flex-1 basis-40')} spellCheck={false} autoCapitalize="off" />
+    ) : (
+      <span className="mono min-w-0 flex-1 basis-40 break-words text-sm text-white">{c.to}</span>
+    )
+  return (
+    <li className="space-y-1 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <span className="mono w-full shrink-0 text-sm text-lime-200 sm:w-40 sm:truncate" title={c.label}>
+          {c.label}
+        </span>
+        <span className="mono max-w-full shrink-0 truncate text-xs text-ink-100/45" title={c.from || undefined}>
+          {c.from ? <s>{c.from}</s> : 'not set'} →
+        </span>
+        {control}
+      </div>
+      <p className="text-[11px] leading-snug text-ink-100/50">{c.why}</p>
+    </li>
   )
 }
 
@@ -234,7 +305,7 @@ export function Notes({ notes, className }: { notes: Note[]; className?: string 
 }
 
 /** The notes from the last import, kept above the settings until dismissed. */
-export function ImportedNotice({ service, notes, onDismiss }: { service: string; notes: Note[]; onDismiss: () => void }) {
+export function ImportedNotice({ service, notes, changes, onDismiss }: { service: string; notes: Note[]; changes: Change[]; onDismiss: () => void }) {
   const warnings = notes.filter((n) => n.level === 'warn').length
   return (
     <div className="space-y-2 rounded-[3px] bg-lime-400/[0.05] p-3 ring-1 ring-lime-400/25">
@@ -246,6 +317,20 @@ export function ImportedNotice({ service, notes, onDismiss }: { service: string;
         <IconButton icon={X} label="Dismiss import notes" onClick={onDismiss} />
       </div>
       <Notes notes={notes} className="bg-transparent p-0 ring-0" />
+      {changes.length > 0 && (
+        <div className="space-y-1 border-t border-lime-400/15 pt-2 text-xs">
+          <p className="text-ink-100/60">Changed for you (adjust them in the form below):</p>
+          <ul className="space-y-0.5">
+            {changes.map((c) => (
+              <li key={c.id} className="flex flex-wrap gap-x-1.5 text-ink-100/70">
+                <span className="mono text-lime-200">{c.label}</span>
+                <span className="text-ink-100/45">{c.from ? <s className="mono">{c.from}</s> : 'not set'} →</span>
+                <span className="mono break-all text-white">{c.to}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

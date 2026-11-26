@@ -302,9 +302,49 @@ networks:
   assert.deepEqual([a.logLimit, a.logMaxSize, a.logMaxFile], [true, '10m', '3'])
   assert.deepEqual(r.open.sort(), ['envfile', 'health', 'labels', 'logging', 'network', 'resources', 'runtime', 'security'])
   const w = warns(r).join('\n')
-  for (const s of ['retries', 'particular GPUs', 'deploy.replicas', 'start_interval', 'SYS_MODULE', 'apparmor', 'env_file', 'tty:'])
+  for (const s of ['particular GPUs', 'deploy.replicas', 'start_interval', 'SYS_MODULE', 'apparmor', 'env_file', 'tty:'])
     assert.ok(w.includes(s), `warns about ${s}`)
   assert.deepEqual(allProblems(spec(r)), [])
+  const ch = Object.fromEntries(r.changes.map((c) => [c.id, c]))
+  assert.deepEqual([ch.restart.from, ch.restart.to], ['on-failure:5', 'on-failure'])
+  assert.deepEqual([ch.name.from, ch.name.to], ['My_App', 'my_app'])
+  assert.equal(ch.health.to, 'curl -f http://localhost/')
+  assert.equal(ch['log-files'].to, '3')
+  assert.equal(ch.memory, undefined) // 512M needs no conversion
+})
+
+test('changes TainerHub makes are listed and can be adjusted', () => {
+  const p = parseCompose(`
+services:
+  app:
+    image: example/app
+    environment:
+      TZ: \${TZ:-UTC}
+    mem_limit: 524288k
+    network_mode: bridge
+    runtime: nvidia
+`)
+  const r = importService(p, 'app')
+  assert.deepEqual(
+    r.changes.map((c) => [c.id, c.from, c.to, c.input]),
+    [
+      ['var:TZ', '', 'UTC', 'variable'],
+      ['tag', '', 'latest', 'text'],
+      ['restart', '', 'unless-stopped', 'restart'],
+      ['network-mode', 'bridge', 'the stack’s own network', undefined],
+      ['memory', '524288k', '512 MB', undefined],
+      ['gpu', 'runtime: nvidia', 'all NVIDIA GPUs (a GPU reservation)', undefined],
+    ],
+  )
+  // Edits win; an unknown restart policy falls back; a set variable isn't a change.
+  const e = importService(p, 'app', { TZ: 'Europe/London' }, { 'change:tag': ' 1.4 ', 'change:restart': 'bogus' })
+  assert.equal(e.tag, '1.4')
+  assert.equal(e.changes.find((c) => c.id === 'tag').to, '1.4') // what the form gets, for the notice
+  assert.equal(e.restart, 'unless-stopped')
+  assert.equal(e.changes.find((c) => c.id === 'restart').to, 'unless-stopped')
+  assert.equal(e.env[0].value, 'Europe/London')
+  assert.equal(e.changes.find((c) => c.id === 'var:TZ').to, 'Europe/London')
+  assert.equal(importService(p, 'app', {}, { 'change:restart': 'always' }).restart, 'always')
 })
 
 test('build-only services and other things the form can’t do are reported', () => {
