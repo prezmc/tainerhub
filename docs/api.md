@@ -308,10 +308,12 @@ Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. 
 | POST | `/api/hosts/{id}/update` | admin | yes | Update the host's agent (on the hub's server, the hub too). `202 {"result": {"project", "dir", "helper"}, "hubHost"}` |
 | POST | `/api/hosts/{id}/docker/plan` | admin | yes | What a Docker Engine upgrade would do (below). |
 | POST | `/api/hosts/{id}/docker/upgrade` | admin | yes | Upgrade Docker Engine. Restarts every container on the host. |
+| POST | `/api/hosts/{id}/os/check` | admin | yes | Refresh the host's package lists and list pending OS package updates (below). Installs nothing. |
 
-- **Updates** returns `{"hubVersion", "hubCurrent", "latest": {"version", "commit", "title", "at"}, "checkedAt", "error"?, "dockerLatest", "hubManaged", "hosts": [{"id", "name", "online", "version", "docker", "dockerBehind", "dockerStatus", "dockerCandidate", "dockerManager", "current", "hubHost", "canUpdate", "cgroupStats", "statsFromDocker", "note"}]}`.
+- **Updates** returns `{"hubVersion", "hubCurrent", "latest": {"version", "commit", "title", "at"}, "checkedAt", "error"?, "dockerLatest", "hubManaged", "hosts": [{"id", "name", "online", "version", "docker", "dockerBehind", "dockerStatus", "dockerCandidate", "dockerManager", "os", "current", "hubHost", "canUpdate", "cgroupStats", "statsFromDocker", "note"}]}`.
   `dockerBehind` compares with Docker's newest release; `dockerStatus` says what an upgrade can install: `available` (the host's repository has `dockerCandidate`), `not-in-repo` (newer release, not in the `dockerManager` repository yet), `released` (newer release, repository not asked, or not visible to TainerHub), or `current`. It comes from the host's last **Docker plan**, kept for 12 hours.
-- **Docker plan** returns `{"manager", "installed", "candidate", "systemd", "supported", "available", "reason", "command"}`.
+- **Docker plan** returns `{"manager", "installed", "candidate", "systemd", "supported", "available", "reason", "command", "refresh_failed", "refresh_error"}`. `refresh_failed` means the host couldn't refresh its package lists, so `candidate` may be out of date.
+- **OS check** returns `{"os", "kernel", "manager", "packages": [{"name", "from", "to", "origin", "security"}], "security", "reboot_required", "reboot_packages", "refresh_failed", "refresh_error", "checkedAt"}`. `manager` is `apt`, `dnf`, `yum` or `unknown`; `from` is empty for a package that isn't installed yet (a new kernel). **Updates** includes the host's last answer as `os` (absent until checked; kept until the next check or a hub restart). Agents from before this check answer `502`.
 - **Docker upgrade** body: `{"confirm": "<the host's exact name>"}`. Returns `202` with the plan.
 
 ### Automatic updates

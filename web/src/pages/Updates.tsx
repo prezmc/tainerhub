@@ -22,6 +22,21 @@ type HostUpdate = {
   cgroupStats?: boolean
   statsFromDocker: boolean
   note?: string
+  /** Pending OS package updates, as of the host's last check (none until checked). */
+  os?: OSStatus
+}
+type OSPackage = { name: string; from?: string; to: string; origin?: string; security?: boolean }
+type OSStatus = {
+  os?: string
+  kernel?: string
+  manager: string
+  packages: OSPackage[]
+  security: number
+  reboot_required: boolean
+  reboot_packages?: string[]
+  refresh_failed?: boolean
+  refresh_error?: string
+  checkedAt: string
 }
 type Updates = {
   hubVersion: string
@@ -44,6 +59,8 @@ type DockerPlan = {
   available: boolean
   reason?: string
   command: string
+  refresh_failed?: boolean
+  refresh_error?: string
 }
 
 /** "5:29.10.0-1~debian.12~bookworm" -> "29.10.0" */
@@ -279,6 +296,7 @@ export function UpdatesCard() {
             ))}
         </ul>
       </div>
+      <OSUpdates hosts={d.hosts.filter((h) => h.online)} />
       {statHosts.length > 0 && (
         <div className="mt-5 border-t border-line pt-4">
           <div className="mb-2 flex flex-wrap items-baseline gap-2">
@@ -332,6 +350,124 @@ export function UpdatesCard() {
         />
       )}
     </Card>
+  )
+}
+
+/**
+ * Pending OS package updates per host. Checking refreshes the host's package
+ * lists and simulates an upgrade; nothing is installed.
+ */
+function OSUpdates({ hosts }: { hosts: HostUpdate[] }) {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const [checking, setChecking] = useState<Set<string>>(new Set())
+  if (hosts.length === 0) return null
+
+  const check = async (list: HostUpdate[]) => {
+    setChecking((c) => new Set([...c, ...list.map((h) => h.id)]))
+    await Promise.all(
+      list.map(async (h) => {
+        try {
+          await api(`/api/hosts/${h.id}/os/check`, { method: 'POST' })
+        } catch (e) {
+          toast('bad', `${h.name}: ${errorText(e)}`)
+        } finally {
+          setChecking((c) => {
+            const n = new Set(c)
+            n.delete(h.id)
+            return n
+          })
+        }
+      }),
+    )
+    qc.invalidateQueries({ queryKey: ['updates'] })
+  }
+
+  return (
+    <div className="mt-5 border-t border-line pt-4">
+      <div className="mb-2 flex flex-wrap items-baseline gap-2">
+        <h3 className="font-semibold text-white">Operating system</h3>
+        <span className="text-xs text-ink-100/50">package updates each server's package manager would install; checking doesn't install anything</span>
+        <span className="ml-auto" />
+        <Button variant="ghost" icon={RefreshCw} loading={checking.size > 0} disabled={checking.size > 0} onClick={() => check(hosts)}>
+          Check all
+        </Button>
+      </div>
+      <ul className="divide-y divide-line rounded-[3px] ring-1 ring-line">
+        {hosts.map((h) => {
+          const os = h.os
+          const n = os?.packages.length ?? 0
+          return (
+            <li key={h.id} className="px-4 py-2.5 text-sm">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="font-semibold text-white">{h.name}</span>
+                {os?.os && <span className="text-xs text-ink-100/60">{os.os}</span>}
+                {!os ? (
+                  <span className="text-xs text-ink-100/50">not checked</span>
+                ) : (
+                  <>
+                    {os.refresh_failed && (
+                      <span title={os.refresh_error}>
+                        <Badge tone="bad">couldn't refresh</Badge>
+                      </span>
+                    )}
+                    {os.manager === 'unknown' ? (
+                      <Badge tone="idle">unknown package manager</Badge>
+                    ) : n === 0 ? (
+                      <Badge tone="good">up to date</Badge>
+                    ) : (
+                      <Badge tone="warn">
+                        {n} update{n === 1 ? '' : 's'}
+                      </Badge>
+                    )}
+                    {os.security > 0 && <Badge tone="bad">{os.security} security</Badge>}
+                    {os.reboot_required && (
+                      <span title={os.reboot_packages?.length ? `Asked for by ${os.reboot_packages.join(', ')}` : undefined}>
+                        <Badge tone="warn">reboot needed</Badge>
+                      </span>
+                    )}
+                    <span className="text-xs text-ink-100/40">checked {timeAgo(os.checkedAt)}</span>
+                  </>
+                )}
+                <span className="ml-auto" />
+                <Button variant="ghost" icon={RefreshCw} loading={checking.has(h.id)} disabled={checking.has(h.id)} onClick={() => check([h])}>
+                  Check
+                </Button>
+              </div>
+              {os?.refresh_failed && (
+                <p className="mt-1.5 text-xs text-rose-200/80">
+                  {os.manager === 'apt' ? 'apt-get update' : `${os.manager} check-update`} failed, so this list may be out of date{os.refresh_error ? `: ${os.refresh_error}` : '.'}
+                </p>
+              )}
+              {n > 0 && (
+                <details className="mt-1.5 text-xs">
+                  <summary className="cursor-pointer text-ink-100/60 hover:text-white">Packages</summary>
+                  <table className="mt-2 w-full">
+                    <tbody>
+                      {[...os!.packages]
+                        .sort((a, b) => Number(!!b.security) - Number(!!a.security) || a.name.localeCompare(b.name))
+                        .map((p) => (
+                          <tr key={p.name} className="align-top">
+                            <td className="mono py-0.5 pr-3 text-white">
+                              {p.name}
+                              {p.security && <span className="ml-1.5 text-rose-300">security</span>}
+                            </td>
+                            <td className="mono py-0.5 pr-3 text-ink-100/60">
+                              {p.from ? `${p.from} → ` : 'new: '}
+                              <span className="text-lime-200">{p.to}</span>
+                            </td>
+                            <td className="py-0.5 text-ink-100/40">{p.origin}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
   )
 }
 
@@ -435,7 +571,13 @@ function DockerUpgradeDialog({ host, onClose, onDone }: { host: HostUpdate; onCl
             )}
           </>
         )}
-        {plan && plan.supported && !plan.available && (
+        {plan && plan.supported && plan.refresh_failed && (
+          <p className="rounded-[3px] bg-rose-500/[0.08] p-3 text-rose-200 ring-1 ring-inset ring-rose-400/25">
+            {host.name} couldn't refresh its package lists, so the versions below may be out of date.
+            {plan.refresh_error && <span className="mono mt-1 block text-xs text-rose-200/80">{plan.refresh_error}</span>}
+          </p>
+        )}
+        {plan && plan.supported && !plan.available && !plan.refresh_failed && (
           <p>
             Docker {host.docker} is the newest version {host.name}'s package repository offers ({plan.manager}). Docker may have released something newer that the repository doesn't have
             yet; check again later.

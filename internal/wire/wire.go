@@ -732,6 +732,10 @@ const (
 	// restarts, and with it every container. Arg must be "restart-all" (the
 	// admin's explicit OK). Result: DockerPlan of what was started.
 	OpDockerUpgrade = "docker.upgrade"
+	// OpHostOSStatus refreshes the host's package lists and lists the OS
+	// packages its package manager would upgrade, without installing
+	// anything. Result: HostOSStatus.
+	OpHostOSStatus = "host.os_status"
 	// OpStackInspect describes stack Target on this host for moving it: its
 	// volumes (with sizes), bind mounts, published ports and images, read from
 	// `compose config`. Works for a stack not deployed here too (Deployed is
@@ -1051,6 +1055,31 @@ type DockerPlan struct {
 	Available bool   `json:"available"`        // the repository has a newer version
 	Reason    string `json:"reason,omitempty"` // why not supported, in plain words
 	Command   string `json:"command"`          // what runs (or what to run by hand)
+	// RefreshFailed: the package lists couldn't be refreshed, so Candidate
+	// may be out of date. RefreshError says why (apt's own words).
+	RefreshFailed bool   `json:"refresh_failed,omitempty"`
+	RefreshError  string `json:"refresh_error,omitempty"`
+}
+
+// HostOSStatus is what the host's package manager would upgrade.
+type HostOSStatus struct {
+	OS             string      `json:"os,omitempty"` // e.g. Debian GNU/Linux 12 (bookworm)
+	Kernel         string      `json:"kernel,omitempty"`
+	Manager        string      `json:"manager"` // apt, dnf, yum, unknown
+	Packages       []OSPackage `json:"packages"`
+	Security       int         `json:"security"` // how many of Packages are security updates
+	RebootRequired bool        `json:"reboot_required"`
+	RebootPackages []string    `json:"reboot_packages,omitempty"` // what asked for the reboot (apt)
+	RefreshFailed  bool        `json:"refresh_failed,omitempty"`
+	RefreshError   string      `json:"refresh_error,omitempty"`
+}
+
+type OSPackage struct {
+	Name     string `json:"name"`
+	From     string `json:"from,omitempty"` // installed version; empty for a new package
+	To       string `json:"to"`
+	Origin   string `json:"origin,omitempty"` // e.g. Debian-Security:12/stable-security
+	Security bool   `json:"security,omitempty"`
 }
 
 // ImageUpdates maps image references (as containers use them) to whether a
@@ -1092,7 +1121,7 @@ var OpKinds = map[string]bool{
 	OpVolumeRemove: true, OpVolumesPrune: true, OpNetworkRemove: true, OpNetworksPrune: true,
 	OpContainerRemoveVolumes: true, OpSelfUpdate: true,
 	OpImagesCheckUpdates: false, OpContainerRecreate: true,
-	OpDockerPlan: false, OpDockerUpgrade: true,
+	OpDockerPlan: false, OpDockerUpgrade: true, OpHostOSStatus: false,
 	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false, OpStackRead: true,
 	OpContainerExport: false, OpContainerCreate: true,
 	OpRegistryLogin:  false,

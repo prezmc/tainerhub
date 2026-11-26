@@ -113,6 +113,10 @@ func TestParsePlan(t *testing.T) {
 	if p.Available {
 		t.Fatalf("dnf with no upgrades listed must be up to date: %+v", p)
 	}
+	p = parsePlan("systemd=yes\nmanager=apt\ninstalled=5:29.10.0-1\ncandidate=5:29.10.0-1\nrefresh_failed=yes\nrefresh_error=W: Failed to fetch x\n")
+	if !p.Supported || !p.RefreshFailed || p.RefreshError != "W: Failed to fetch x" || p.Reason == "" {
+		t.Fatalf("apt refresh failed: %+v", p)
+	}
 	p = parsePlan("systemd=no\nmanager=apt\ninstalled=1\ncandidate=2\n")
 	if p.Supported || p.Reason == "" {
 		t.Fatalf("no systemd must not be supported: %+v", p)

@@ -520,7 +520,7 @@ func (a *Agent) Operate(ctx context.Context, op wire.Operation) (_ json.RawMessa
 	}
 	timeout := 70 * time.Second
 	switch op.Kind {
-	case wire.OpImagePull, wire.OpImagesPrune, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade, wire.OpStackDirRemove:
+	case wire.OpImagePull, wire.OpImagesPrune, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade, wire.OpHostOSStatus, wire.OpStackDirRemove:
 		timeout = 16 * time.Minute // the agent gives up after 15
 	}
 	cmd := wire.Command{Op: &op}

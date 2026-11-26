@@ -472,7 +472,7 @@ Admins have **Add host** (see [Getting started](getting-started.md#4-add-your-ot
 
 ### Update card (admins)
 
-At the top of the page, admins see a card with three parts.
+At the top of the page, admins see a card with four parts.
 
 **TainerHub updates.** The running version, the latest published version and its description, and when the hub last asked GitHub. It asks every 15 minutes; **Check now** asks right away (at most every 30 seconds) and also refreshes the latest Docker Engine release. When servers are behind, each one is listed with an **Update** button, and **Update everything** updates them all (the hub's server last). See [Keep TainerHub up to date](getting-started.md#6-keep-tainerhub-up-to-date).
 
@@ -493,6 +493,16 @@ TainerHub asks a host's repository only when you open the dialog, and remembers 
 4. Proceeds only after you tick the "I understand…" box and click **Update Docker on &lt;host&gt;**.
 
 The upgrade runs through the server's systemd, outside Docker, and logs to `/var/log/tainerhub-docker-upgrade.log` on the server. If the repository doesn't have Docker's newest release yet, the dialog says the host already has the newest version its repository offers, and the host's status changes to match.
+
+**Operating system.** The OS package updates each online host's package manager (`apt`, `dnf` or `yum`) would install. Click **Check** on a host, or **Check all**: the host refreshes its package lists and simulates an upgrade. Nothing is installed. Each host then shows:
+
+- **N updates**, with how many are **security** updates. **Packages** lists each one, from and to which version, and where it comes from.
+- **reboot needed** when the server asks for a reboot (on Debian and Ubuntu, `/var/run/reboot-required`; on Fedora and RHEL, `needs-restarting -r` when installed). Hover to see which packages asked for it.
+- **couldn't refresh** when `apt-get update` (or `dnf check-update`) failed, with apt's own message: for example, a repository the server can't reach. The list may then be out of date.
+
+TainerHub keeps each host's answer until the next check or a hub restart, and doesn't check on its own. To install the updates, run your package manager on the server, or let `unattended-upgrades` do it.
+
+The Docker update dialog also says when the host couldn't refresh its package lists, since the versions it shows may then be out of date.
 
 **Container stats.** Where each host's CPU and memory numbers come from:
 

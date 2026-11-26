@@ -50,6 +50,7 @@ type Server struct {
 	latest       latestCache       // newest published version
 	dockerLatest dockerLatestCache // newest Docker Engine release
 	dockerPlans  dockerPlanCache   // what each host's package repository offers
+	osStatus     osStatusCache     // each host's pending OS package updates
 	execs        execList          // open terminals
 	https        httpsState        // HTTPS setup tests
 	statsMu      sync.Mutex        // serializes stats source changes (one settings row)
@@ -206,6 +207,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/hosts/{id}/stats-source", s.need("admin", s.statsSource))
 	// Docker Engine upgrades restart every container: admins, with explicit confirmation
 	mux.Handle("POST /api/hosts/{id}/docker/plan", s.need("admin", s.dockerPlan))
+	mux.Handle("POST /api/hosts/{id}/os/check", s.need("admin", s.checkOS))
 	mux.Handle("POST /api/hosts/{id}/docker/upgrade", s.need("admin", s.dockerUpgrade))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { jsonErr(w, http.StatusNotFound, "not found") })

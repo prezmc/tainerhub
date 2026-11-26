@@ -214,9 +214,11 @@ type hostUpdate struct {
 	DockerStatus    string `json:"dockerStatus,omitempty"`
 	DockerCandidate string `json:"dockerCandidate,omitempty"` // what the repository offers, e.g. 29.10.1
 	DockerManager   string `json:"dockerManager,omitempty"`   // apt, dnf, snap…, once checked
-	Current         bool   `json:"current"`
-	HubHost         bool   `json:"hubHost"` // this server also runs the hub: updating it updates the hub
-	CanTry          bool   `json:"canUpdate"`
+	// OS: the host's pending OS package updates, as of its last check.
+	OS      *osStatusEntry `json:"os,omitempty"`
+	Current bool           `json:"current"`
+	HubHost bool           `json:"hubHost"` // this server also runs the hub: updating it updates the hub
+	CanTry  bool           `json:"canUpdate"`
 	// CgroupStats: the agent reads stats from cgroup files. False offers
 	// "Lighter stats"; nil means an agent too old to say.
 	CgroupStats *bool `json:"cgroupStats,omitempty"`
@@ -277,6 +279,7 @@ func (s *Server) writeUpdates(w http.ResponseWriter, r *http.Request, latest *la
 				u.DockerStatus, u.DockerCandidate = dockerUpdateStatus(u.Docker, dockerLatest, pp)
 			}
 		}
+		u.OS = s.osStatus.get(h.ID)
 		u.Current = isCurrent(u.Version, latest) && (!u.HubHost || isCurrent(version.Version, latest))
 		u.CanTry = u.Online
 		if !u.Online {
@@ -510,6 +513,12 @@ func dockerUpdateStatus(installed, latest string, plan *wire.DockerPlan) (status
 		}
 		return dockerCurrent, ""
 	}
+	if plan.RefreshFailed { // the repository's answer may be stale
+		if behind {
+			return dockerUnverified, ""
+		}
+		return dockerCurrent, ""
+	}
 	cand := pkgVersion(plan.Candidate)
 	if plan.Available && cand != "" && versionLess(installed, cand) {
 		return dockerAvailable, cand
@@ -623,4 +632,64 @@ func (s *Server) dockerUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, p)
+}
+
+// ---------------- OS packages ----------------
+
+// osStatusCache keeps each host's last OS update check until the next one
+// (or a hub restart). Checking refreshes the host's package lists, so it
+// only happens when an admin asks.
+type osStatusCache struct {
+	mu sync.Mutex
+	m  map[string]*osStatusEntry
+}
+
+type osStatusEntry struct {
+	wire.HostOSStatus
+	CheckedAt time.Time `json:"checkedAt"`
+}
+
+func (c *osStatusCache) put(hostID string, st wire.HostOSStatus, now time.Time) *osStatusEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = map[string]*osStatusEntry{}
+	}
+	e := &osStatusEntry{HostOSStatus: st, CheckedAt: now}
+	c.m[hostID] = e
+	return e
+}
+
+func (c *osStatusCache) get(hostID string) *osStatusEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.m[hostID]
+}
+
+// checkOS answers POST /api/hosts/{id}/os/check: the host refreshes its
+// package lists and says what it would upgrade. Nothing is installed.
+func (s *Server) checkOS(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	a := s.Reg.Get(id)
+	if a == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host is offline")
+		return
+	}
+	data, err := a.Operate(r.Context(), wire.Operation{Kind: wire.OpHostOSStatus})
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown operation") {
+			err = errors.New("this host's agent is too old to check OS updates; update it first")
+		}
+		jsonErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	var st wire.HostOSStatus
+	if err := json.Unmarshal(data, &st); err != nil {
+		jsonErr(w, http.StatusBadGateway, "the agent's answer didn't make sense: "+err.Error())
+		return
+	}
+	if st.Packages == nil {
+		st.Packages = []wire.OSPackage{}
+	}
+	writeJSON(w, http.StatusOK, s.osStatus.put(id, st, time.Now()))
 }

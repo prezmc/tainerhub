@@ -44,7 +44,9 @@ if command -v dpkg-query >/dev/null 2>&1; then
     echo manager=unknown; exit 0
   fi
   echo manager=apt; echo installed=$inst
-  apt-get update -qq >/dev/null 2>&1 || echo refresh_failed=yes
+  err=$(apt-get update -q 2>&1 >/dev/null); rc=$?
+  msg=$(printf '%s\n' "$err" | grep -E '^(E:|W: (Failed|Some index))' | head -3 | tr '\n' ' ')
+  if [ $rc -ne 0 ] || [ -n "$msg" ]; then echo refresh_failed=yes; echo "refresh_error=$msg"; fi
   echo candidate=$(apt-cache policy docker-ce 2>/dev/null | awk '/Candidate:/{print $2}')
   exit 0
 fi
@@ -100,7 +102,8 @@ func parsePlan(out string) wire.DockerPlan {
 			p.Supported = true
 		}
 		if kv["refresh_failed"] == "yes" {
-			p.Reason = "couldn't refresh the package lists (apt-get update failed); the available version may be out of date"
+			p.RefreshFailed, p.RefreshError = true, kv["refresh_error"]
+			p.Reason = "couldn't refresh the package lists (apt-get update failed), so the newest version it knows of may be out of date"
 		}
 	case "snap":
 		p.Reason = "Docker was installed with Snap, which updates it on its own schedule"
