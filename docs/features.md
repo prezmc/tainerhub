@@ -456,14 +456,23 @@ At the top of the page, admins see a card with three parts.
 
 **TainerHub updates.** The running version, the latest published version and its description, and when the hub last asked GitHub. It asks every 15 minutes; **Check now** asks right away (at most every 30 seconds) and also refreshes the latest Docker Engine release. When servers are behind, each one is listed with an **Update** button, and **Update everything** updates them all (the hub's server last). See [Keep TainerHub up to date](getting-started.md#6-keep-tainerhub-up-to-date).
 
-**Docker Engine.** Each online host's Docker version, marked **newer available** or **up to date** against the latest Docker Engine release. Click **Update Docker…** (or **Check…**) to open a dialog that:
+**Docker Engine.** Each online host's Docker version, next to the latest Docker Engine release. What a host can install comes from its package repository, which often gets a release a while after Docker publishes it, so each host is marked by what its repository offered when TainerHub last asked:
+
+| Status | Meaning | Button |
+| --- | --- | --- |
+| **29.10.1 available** | The repository has a newer version. | **Update Docker…** |
+| **up to date** · "29.10.1 released, not in apt yet" | Docker released a newer version, but the repository doesn't have it yet. | **Check…** |
+| "29.10.1 released; check what this server's repository offers" | Docker released a newer version and TainerHub hasn't asked this host's repository yet (or can't, for snap and distribution packages). | **Check…** |
+| **up to date** | Nothing newer. | **Check…** |
+
+TainerHub asks a host's repository only when you open the dialog, and remembers the answer for 12 hours, until the host's Docker version or the latest release changes, or until the hub restarts. Click **Update Docker…** (or **Check…**) to open a dialog that:
 
 1. Asks the server how Docker is installed and what its package repository offers. This can take a minute.
 2. Shows the version now and after, and how it will upgrade. TainerHub can upgrade Docker installed from Docker's own `apt` or `dnf` repositories, on servers with systemd. For other setups (snap, distribution packages, Docker Desktop, static binaries) it tells you why and shows a command to run yourself, when it has one.
 3. Explains what happens: **Docker restarts, so every container on that server stops and starts again**, usually within a minute. Containers without a restart policy stay stopped. If the server runs TainerHub itself, TainerHub is unavailable for a minute or two.
 4. Proceeds only after you tick the "I understand…" box and click **Update Docker on &lt;host&gt;**.
 
-The upgrade runs through the server's systemd, outside Docker, and logs to `/var/log/tainerhub-docker-upgrade.log` on the server. The repository may lag behind Docker's newest release; in that case the dialog says the host already has the newest version its repository offers.
+The upgrade runs through the server's systemd, outside Docker, and logs to `/var/log/tainerhub-docker-upgrade.log` on the server. If the repository doesn't have Docker's newest release yet, the dialog says the host already has the newest version its repository offers, and the host's status changes to match.
 
 **Container stats.** Where each host's CPU and memory numbers come from:
 

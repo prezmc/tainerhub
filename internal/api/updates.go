@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -207,11 +208,15 @@ type hostUpdate struct {
 	Version string `json:"version"` // agent version
 	Docker  string `json:"docker"`  // Docker Engine version
 	// DockerBehind: Docker has released a newer engine. Whether this host's
-	// package repository offers it yet is checked when upgrading.
+	// package repository offers it is DockerStatus.
 	DockerBehind bool `json:"dockerBehind"`
-	Current      bool `json:"current"`
-	HubHost      bool `json:"hubHost"` // this server also runs the hub: updating it updates the hub
-	CanTry       bool `json:"canUpdate"`
+	// DockerStatus: what an upgrade can install now (see dockerUpdateStatus).
+	DockerStatus    string `json:"dockerStatus,omitempty"`
+	DockerCandidate string `json:"dockerCandidate,omitempty"` // what the repository offers, e.g. 29.10.1
+	DockerManager   string `json:"dockerManager,omitempty"`   // apt, dnf, snap…, once checked
+	Current         bool   `json:"current"`
+	HubHost         bool   `json:"hubHost"` // this server also runs the hub: updating it updates the hub
+	CanTry          bool   `json:"canUpdate"`
 	// CgroupStats: the agent reads stats from cgroup files. False offers
 	// "Lighter stats"; nil means an agent too old to say.
 	CgroupStats *bool `json:"cgroupStats,omitempty"`
@@ -263,6 +268,13 @@ func (s *Server) writeUpdates(w http.ResponseWriter, r *http.Request, latest *la
 				u.CgroupStats = hello.CgroupStats
 				u.StatsFromDocker = s.Reg.StatsFromDocker(h.ID)
 				u.DockerBehind = dockerLatest != "" && u.Docker != "" && versionLess(u.Docker, dockerLatest)
+				plan, checked := s.dockerPlans.lookup(h.ID, u.Docker, dockerLatest, time.Now())
+				var pp *wire.DockerPlan
+				if checked {
+					pp = &plan
+					u.DockerManager = plan.Manager
+				}
+				u.DockerStatus, u.DockerCandidate = dockerUpdateStatus(u.Docker, dockerLatest, pp)
 			}
 		}
 		u.Current = isCurrent(u.Version, latest) && (!u.HubHost || isCurrent(version.Version, latest))
@@ -468,8 +480,112 @@ func versionLess(a, b string) bool {
 	return false
 }
 
+// Docker Engine update states for a host, from dockerUpdateStatus.
+const (
+	dockerCurrent    = "current"     // nothing newer, upstream or in the repository
+	dockerAvailable  = "available"   // the host's repository offers a newer version
+	dockerNotInRepo  = "not-in-repo" // Docker released a newer one; the repository doesn't have it yet
+	dockerUnverified = "released"    // Docker released a newer one; the repository wasn't asked (or can't tell)
+)
+
+var pkgVersionRe = regexp.MustCompile(`\d+\.\d+\.\d+`)
+
+// pkgVersion turns a package version like 5:29.10.0-1~debian.12~bookworm
+// into 29.10.0 ("" if there's none).
+func pkgVersion(v string) string { return pkgVersionRe.FindString(v) }
+
+// dockerUpdateStatus says whether a host running Docker installed can
+// update, and to what. latest is Docker's newest release; plan is what the
+// host's package manager said when last asked (nil if not asked, or the
+// answer is stale). Only the repository decides "available": Docker's own
+// release often reaches apt and dnf a while later.
+func dockerUpdateStatus(installed, latest string, plan *wire.DockerPlan) (status, candidate string) {
+	if installed == "" {
+		return "", ""
+	}
+	behind := latest != "" && versionLess(installed, latest)
+	if plan == nil {
+		if behind {
+			return dockerUnverified, ""
+		}
+		return dockerCurrent, ""
+	}
+	cand := pkgVersion(plan.Candidate)
+	if plan.Available && cand != "" && versionLess(installed, cand) {
+		return dockerAvailable, cand
+	}
+	switch {
+	case !behind:
+		return dockerCurrent, cand
+	case plan.Manager == "apt" || plan.Manager == "dnf":
+		return dockerNotInRepo, cand
+	default: // snap, distribution packages…: the hub can't see their repository
+		return dockerUnverified, ""
+	}
+}
+
+// dockerPlanCache remembers each host's last Docker plan, so the Updates
+// page can say what the host's repository offers without asking it (asking
+// runs a privileged helper and refreshes the package lists). An answer
+// counts only while the host's Docker version and Docker's newest release
+// are what they were then, and for dockerPlanTTL.
+type dockerPlanCache struct {
+	mu sync.Mutex
+	m  map[string]cachedDockerPlan
+}
+
+type cachedDockerPlan struct {
+	plan           wire.DockerPlan
+	docker, latest string
+	at             time.Time
+}
+
+const dockerPlanTTL = 12 * time.Hour
+
+func (c *dockerPlanCache) put(hostID, docker, latest string, p wire.DockerPlan, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = map[string]cachedDockerPlan{}
+	}
+	c.m[hostID] = cachedDockerPlan{plan: p, docker: docker, latest: latest, at: now}
+}
+
+func (c *dockerPlanCache) lookup(hostID, docker, latest string, now time.Time) (wire.DockerPlan, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.m[hostID]
+	if !ok || e.docker != docker || e.latest != latest || now.Sub(e.at) > dockerPlanTTL {
+		return wire.DockerPlan{}, false
+	}
+	return e.plan, true
+}
+
+// dockerPlan asks the host how Docker is installed and what its repository
+// offers, and remembers the answer for the Updates page.
 func (s *Server) dockerPlan(w http.ResponseWriter, r *http.Request) {
-	s.runOp(w, r, wire.Operation{Kind: wire.OpDockerPlan}, "docker")
+	id := r.PathValue("id")
+	a := s.Reg.Get(id)
+	if a == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host is offline")
+		return
+	}
+	var docker string
+	if h := a.Status().Hello; h != nil {
+		docker = h.DockerVersion
+	}
+	data, err := a.Operate(r.Context(), wire.Operation{Kind: wire.OpDockerPlan})
+	if err != nil {
+		jsonErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	var p wire.DockerPlan
+	if json.Unmarshal(data, &p) == nil && docker != "" {
+		s.dockerPlans.put(id, docker, s.dockerLatest.get(r.Context()), p, time.Now())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(data)
 }
 
 // dockerUpgrade upgrades Docker Engine on a host. It restarts every

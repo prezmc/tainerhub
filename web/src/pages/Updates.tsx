@@ -12,6 +12,10 @@ type HostUpdate = {
   version: string
   docker: string
   dockerBehind: boolean
+  /** What an upgrade can install now: the host's package repository decides, not Docker's release. */
+  dockerStatus?: 'current' | 'available' | 'not-in-repo' | 'released'
+  dockerCandidate?: string
+  dockerManager?: string
   current: boolean
   hubHost: boolean
   canUpdate: boolean
@@ -261,10 +265,15 @@ export function UpdatesCard() {
               <li key={h.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
                 <span className="font-semibold text-white">{h.name}</span>
                 <span className="mono text-xs text-ink-100/60">Docker {h.docker}</span>
-                {h.dockerBehind ? <Badge tone="warn">newer available</Badge> : <Badge tone="good">up to date</Badge>}
+                <DockerStatus h={h} latest={d.dockerLatest} />
                 <span className="ml-auto" />
-                <Button icon={ArrowUpCircle} variant={h.dockerBehind ? 'secondary' : 'ghost'} onClick={() => setDockerFor(h)}>
-                  {h.dockerBehind ? 'Update Docker…' : 'Check…'}
+                <Button
+                  icon={ArrowUpCircle}
+                  variant={h.dockerStatus === 'available' ? 'secondary' : 'ghost'}
+                  title={h.dockerStatus === 'available' ? undefined : `Ask ${h.name}'s package repository what it offers now`}
+                  onClick={() => setDockerFor(h)}
+                >
+                  {h.dockerStatus === 'available' ? 'Update Docker…' : 'Check…'}
                 </Button>
               </li>
             ))}
@@ -312,9 +321,44 @@ export function UpdatesCard() {
           </ul>
         </div>
       )}
-      {dockerFor && <DockerUpgradeDialog host={dockerFor} onClose={() => setDockerFor(null)} onDone={() => qc.invalidateQueries({ queryKey: ['updates'] })} />}
+      {dockerFor && (
+        <DockerUpgradeDialog
+          host={dockerFor}
+          onClose={() => {
+            setDockerFor(null)
+            qc.invalidateQueries({ queryKey: ['updates'] }) // the dialog's check updates the host's status
+          }}
+          onDone={() => qc.invalidateQueries({ queryKey: ['updates'] })}
+        />
+      )}
     </Card>
   )
+}
+
+/**
+ * A host's Docker status. "Update available" only when its package
+ * repository offers a newer version; a newer Docker release that the
+ * repository doesn't have yet (or that the hub hasn't asked about) is a
+ * quiet note, not a call to action.
+ */
+function DockerStatus({ h, latest }: { h: Pick<HostUpdate, 'dockerStatus' | 'dockerCandidate' | 'dockerManager'>; latest?: string }) {
+  switch (h.dockerStatus) {
+    case 'available':
+      return <Badge tone="warn">{h.dockerCandidate ? `${h.dockerCandidate} available` : 'update available'}</Badge>
+    case 'not-in-repo':
+      return (
+        <>
+          <Badge tone="good">up to date</Badge>
+          <span className="text-xs text-ink-100/50">
+            {latest} released, not in {h.dockerManager} yet
+          </span>
+        </>
+      )
+    case 'released':
+      return <span className="text-xs text-ink-100/50">{latest} released; check what this server's repository offers</span>
+    default:
+      return <Badge tone="good">up to date</Badge>
+  }
 }
 
 /**

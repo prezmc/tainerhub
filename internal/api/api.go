@@ -49,6 +49,7 @@ type Server struct {
 	hub          hubCache          // Docker Hub search and tag results
 	latest       latestCache       // newest published version
 	dockerLatest dockerLatestCache // newest Docker Engine release
+	dockerPlans  dockerPlanCache   // what each host's package repository offers
 	execs        execList          // open terminals
 	https        httpsState        // HTTPS setup tests
 	statsMu      sync.Mutex        // serializes stats source changes (one settings row)

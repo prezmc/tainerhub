@@ -309,7 +309,8 @@ Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. 
 | POST | `/api/hosts/{id}/docker/plan` | admin | yes | What a Docker Engine upgrade would do (below). |
 | POST | `/api/hosts/{id}/docker/upgrade` | admin | yes | Upgrade Docker Engine. Restarts every container on the host. |
 
-- **Updates** returns `{"hubVersion", "hubCurrent", "latest": {"version", "commit", "title", "at"}, "checkedAt", "error"?, "dockerLatest", "hubManaged", "hosts": [{"id", "name", "online", "version", "docker", "dockerBehind", "current", "hubHost", "canUpdate", "cgroupStats", "statsFromDocker", "note"}]}`.
+- **Updates** returns `{"hubVersion", "hubCurrent", "latest": {"version", "commit", "title", "at"}, "checkedAt", "error"?, "dockerLatest", "hubManaged", "hosts": [{"id", "name", "online", "version", "docker", "dockerBehind", "dockerStatus", "dockerCandidate", "dockerManager", "current", "hubHost", "canUpdate", "cgroupStats", "statsFromDocker", "note"}]}`.
+  `dockerBehind` compares with Docker's newest release; `dockerStatus` says what an upgrade can install: `available` (the host's repository has `dockerCandidate`), `not-in-repo` (newer release, not in the `dockerManager` repository yet), `released` (newer release, repository not asked, or not visible to TainerHub), or `current`. It comes from the host's last **Docker plan**, kept for 12 hours.
 - **Docker plan** returns `{"manager", "installed", "candidate", "systemd", "supported", "available", "reason", "command"}`.
 - **Docker upgrade** body: `{"confirm": "<the host's exact name>"}`. Returns `202` with the plan.
 
