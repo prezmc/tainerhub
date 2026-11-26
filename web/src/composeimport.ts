@@ -10,6 +10,7 @@
 import { parseDocument } from 'yaml'
 import { CAPS, DROP_CAPS, blankAdvanced, type Advanced, type Env, type KV, type Port, type Section, type Vol } from './compose.ts'
 import { isSecretKey, looksLikePlaceholder, suggestSource } from './placeholder.ts'
+import { isUtcLike, portConflicts } from './recommend.ts'
 
 export const MAX_COMPOSE_BYTES = 256 << 10
 
@@ -55,7 +56,14 @@ export type Imported = {
  * file had ("" when nothing). input says how the user can adjust it (none:
  * only in the form afterwards); edits[id] holds their value.
  */
-export type Change = { id: string; label: string; from: string; to: string; why: string; input?: 'text' | 'restart' | 'variable' }
+export type Change = { id: string; label: string; from: string; to: string; why: string; input?: 'text' | 'restart' | 'variable'; keepable?: boolean }
+
+/**
+ * What the importer knows about where the container will run, for its
+ * recommendations: this computer's time zone, and the host ports already
+ * in use on the chosen host ("8080/tcp" -> container).
+ */
+export type ImportContext = { timeZone?: string; usedPorts?: Map<string, string>; hostName?: string }
 
 /**
  * A value that looks like an example from the docs ("/path/to/data",
@@ -405,7 +413,15 @@ const STACK_HINT = 'Deploy the whole file as a stack to keep it.'
  * Maps one service onto the form. values are the variables the user filled
  * in (an empty string means "no value": defaults apply, else it's empty).
  */
-export function importService(p: Extract<Parsed, { ok: true }>, service: string, values: Record<string, string> = {}, edits: Record<string, string> = {}): Imported {
+export function importService(
+  p: Extract<Parsed, { ok: true }>,
+  service: string,
+  values: Record<string, string> = {},
+  edits: Record<string, string> = {},
+  ctx: ImportContext = {},
+): Imported {
+  // The TZ environment variable gets this computer's zone instead of UTC (see below).
+  const myZone = ctx.timeZone && !isUtcLike(ctx.timeZone) ? ctx.timeZone : ''
   const notes: Note[] = [...p.notes]
   const warn = (msg: string) => notes.push({ level: 'warn', msg })
   const info = (msg: string) => notes.push({ level: 'info', msg })
@@ -427,6 +443,7 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
     // Listed even once the user has typed a value, so the row stays put while they edit it.
     if (v.def !== undefined) {
       const own = values[v.name]
+      if (v.name === 'TZ' && !own && myZone && isUtcLike(v.def)) continue // listed as the TZ change instead
       changes.push({ id: `var:${v.name}`, label: '${' + v.name + '}', from: '', to: own || v.def, why: own ? `Your value (the file’s default is ${v.def === '' ? 'empty' : v.def}).` : 'Not set, so the file’s own default is used.', input: 'variable' })
     }
   }
@@ -480,6 +497,22 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
     ports.push(...rows)
     if (note) notes.push(note)
   }
+  const on = ctx.hostName ? ` on ${ctx.hostName}` : ''
+  if (ctx.usedPorts && !adv.networkMode) {
+    for (const c of portConflicts(ports, ctx.usedPorts)) {
+      if (!c.suggestion) continue
+      const row = ports[c.index]
+      row.host = change({
+        id: `port:${c.index}`,
+        label: `Host port ${c.key}`,
+        from: row.host,
+        to: c.suggestion,
+        why: `${c.key} is already used by ${c.by}${on}, so the container wouldn't start. The app still listens on ${row.container} inside it; only the port you open it on changes.`,
+        input: 'text',
+        keepable: true,
+      })
+    }
+  }
   if (adv.networkMode && ports.length) info(`ports: are ignored with network_mode: ${adv.networkMode}: the app uses the host’s ports directly.`)
   if (has(s, 'expose')) info('expose: was left out: containers on the same network reach each other’s ports without it.')
 
@@ -520,6 +553,9 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
     if (e.value === null) warn(`${e.key} takes its value from the shell that runs compose, which TainerHub doesn’t have. Enter a value under Environment variables.`)
     env.push({ key: e.key, value: e.value ?? '' })
   }
+  const tz = env.find((e) => e.key === 'TZ')
+  if (tz && myZone && isUtcLike(tz.value))
+    tz.value = change({ id: 'tz', label: 'TZ', from: tz.value, to: myZone, why: `This computer’s time zone, so the app’s times match yours. ${tz.value} is the usual example in READMEs.`, input: 'text', keepable: true })
   if (has(s, 'env_file')) {
     const files = list(s.env_file).map((f) => (isObj(f) ? str(f.path) : str(f)))
     warn(`env_file: ${files.join(', ')} can’t be read from here. Paste its KEY=value lines under Advanced → Env file.`)

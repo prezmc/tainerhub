@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { recommendPaths, type BindMount, type PathRecommendation } from '../hostpaths'
+import { localTimeZone } from '../recommend'
 import { AlertTriangle, ClipboardPaste, Dices, Info, Layers, LoaderCircle, Server, Wand2, X } from 'lucide-react'
 import { Button, ErrorNote, IconButton, Modal, cx } from '../ui'
 import { CodeEditor } from '../stacks'
@@ -33,6 +34,7 @@ export function ComposeImportDialog({
   hostId,
   hostName,
   hostOnline,
+  usedPorts,
 }: {
   open: boolean
   onClose: () => void
@@ -44,6 +46,8 @@ export function ComposeImportDialog({
   hostId: string
   hostName: string
   hostOnline: boolean
+  /** Host ports already published on that host ("8080/tcp" -> container). */
+  usedPorts: Map<string, string>
 }) {
   const [lib, setLib] = useState<Lib | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -64,7 +68,9 @@ export function ComposeImportDialog({
   const vars = useMemo(() => (ok && lib ? lib.variablesOf(ok, service) : []), [ok, lib, service])
   // Variables with a default are listed under "Changed for you" instead.
   const needed = vars.filter((v) => v.def === undefined)
-  const first = useMemo(() => (ok && lib ? lib.importService(ok, service, values, replacements) : null), [ok, lib, service, values, replacements])
+  // What the importer recommends from: this computer's time zone and the host's ports in use.
+  const ctx = useMemo(() => ({ timeZone: localTimeZone(), usedPorts, hostName }), [usedPorts, hostName])
+  const first = useMemo(() => (ok && lib ? lib.importService(ok, service, values, replacements, ctx) : null), [ok, lib, service, values, replacements, ctx])
 
   // Where volumes that only have an example folder should go: the host's
   // own layout if it has one, else the stack's folder. The first
@@ -89,7 +95,7 @@ export function ComposeImportDialog({
     for (const [id, rs] of Object.entries(recs)) if (replacements[id] === undefined && rs[0] && !folderLookup) d[id] = rs[0].value
     return { ...d, ...replacements }
   }, [recs, replacements, folderLookup])
-  const result = useMemo(() => (ok && lib ? lib.importService(ok, service, values, edits) : null), [ok, lib, service, values, edits])
+  const result = useMemo(() => (ok && lib ? lib.importService(ok, service, values, edits, ctx) : null), [ok, lib, service, values, edits, ctx])
 
   const apply = () => {
     if (!result) return
@@ -325,6 +331,13 @@ function ChangeRow({ c, value, onChange }: { c: Change; value: string | undefine
           {c.from ? <s>{c.from}</s> : 'not set'} →
         </span>
         {control}
+        {c.keepable && c.from && (c.to === c.from ? (
+          <span className="text-[11px] text-ink-100/50">the file's value</span>
+        ) : (
+          <button type="button" onClick={() => onChange(c.from)} className="text-[11px] text-ink-100/60 underline-offset-2 hover:text-white hover:underline">
+            Keep {c.from}
+          </button>
+        ))}
       </div>
       <p className="text-[11px] leading-snug text-ink-100/50">{c.why}</p>
     </li>

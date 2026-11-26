@@ -400,3 +400,40 @@ test('helpers', () => {
   assert.equal(parseSize('lots'), null)
   for (const args of [['a b', "it's", '$x', 'plain', ''], ['--flag=1', 'a"b', 'back\\slash']]) assert.deepEqual(splitArgs(joinArgs(args)).args, args)
 })
+
+test('recommends this computer’s time zone and free host ports', () => {
+  const p = parseCompose(`
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:10.11
+    environment:
+      - TZ=Etc/UTC
+    ports:
+      - 8096:8096
+      - 8920:8920
+      - 7359:7359/udp
+`)
+  const ctx = { timeZone: 'Europe/London', usedPorts: new Map([['8096/tcp', 'old-media'], ['7359/udp', 'other']]), hostName: 'nas' }
+  const r = importService(p, 'jellyfin', {}, {}, ctx)
+  assert.equal(r.env[0].value, 'Europe/London')
+  assert.deepEqual(r.ports.map((x) => x.host), ['8097', '8920', '7360'])
+  assert.deepEqual(r.ports.map((x) => x.container), ['8096', '8920', '7359'])
+  const ch = Object.fromEntries(r.changes.map((c) => [c.id, c]))
+  assert.deepEqual([ch.tz.from, ch.tz.to, ch.tz.keepable], ['Etc/UTC', 'Europe/London', true])
+  assert.match(ch['port:0'].why, /already used by old-media on nas/)
+  // Keeping the file's values
+  const kept = importService(p, 'jellyfin', {}, { 'change:tz': 'Etc/UTC', 'change:port:0': '8096' }, ctx)
+  assert.equal(kept.env[0].value, 'Etc/UTC')
+  assert.equal(kept.ports[0].host, '8096')
+  // A UTC computer, or no context: nothing changes
+  const utc = importService(p, 'jellyfin', {}, {}, { timeZone: 'Etc/UTC' })
+  assert.equal(utc.env[0].value, 'Etc/UTC')
+  assert.ok(!utc.changes.some((c) => c.id === 'tz' || c.id.startsWith('port:')))
+  // A real zone in the file is left alone
+  const set = importService(parseCompose('services:\n  a:\n    image: x:1\n    environment: {TZ: America/Chicago}\n'), 'a', {}, {}, ctx)
+  assert.equal(set.env[0].value, 'America/Chicago')
+  // \${TZ:-UTC} becomes one TZ change, not a variable default too
+  const v = importService(parseCompose('services:\n  a:\n    image: x:1\n    environment: ["TZ=\${TZ:-UTC}"]\n'), 'a', {}, {}, ctx)
+  assert.deepEqual(v.changes.map((c) => c.id).filter((id) => id.includes('TZ') || id === 'tz'), ['tz'])
+  assert.equal(v.env[0].value, 'Europe/London')
+})

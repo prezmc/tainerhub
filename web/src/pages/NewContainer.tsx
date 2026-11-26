@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, BadgeCheck, ClipboardPaste, Download, Rocket, Search, Server, Star, Undo2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BadgeCheck, ClipboardPaste, Download, Rocket, Search, Server, Star, Undo2 } from 'lucide-react'
 import { api, errorText, stackProblem, type NetworkRes, type StackSaveResult } from '../api'
 import { Badge, Button, Card, ErrorNote, Input, PageHeader, cx, useConfirm, useToast } from '../ui'
 import { useFleet } from '../fleet'
@@ -14,6 +14,7 @@ import type { Change, Imported, Note } from '../composeimport'
 import { setStackDraft, type StackDraft } from '../stackdraft'
 import { PreflightPanel, useFreshPreflight, usePreflight, type PreflightFix } from '../preflight'
 import { generateSecret } from '../placeholder'
+import { isUtcLike, localTimeZone, portConflicts, usedHostPorts } from '../recommend'
 
 type Repo = { name: string; description: string; stars: number; pulls: number; official: boolean }
 type Tag = { name: string; updated: string; size: number }
@@ -149,6 +150,12 @@ export function NewContainerPage() {
     containers.find((c) => c.hostId === hostId && c.name === name) || stacks.data?.find((s) => s.hostId === hostId && s.name === name && s.managed)
       ? `${host?.name ?? 'This host'} already has a container or stack called ${name}.`
       : null
+
+  // Host ports in use on the chosen host, and clashes with the form's, shown as you type.
+  const usedPorts = useMemo(() => usedHostPorts(containers, hostId), [containers, hostId])
+  const clashes = adv.networkMode ? [] : portConflicts(ports, usedPorts)
+  const myZone = localTimeZone()
+  const utcTZ = env.find((e) => e.key === 'TZ' && isUtcLike(e.value))
 
   // The check against the chosen host: it runs once the form itself is valid.
   const preflightInput = { hostId, name, compose, env: adv.envFile }
@@ -286,6 +293,7 @@ export function NewContainerPage() {
         hostId={hostId}
         hostName={hosts.find((h) => h.id === hostId)?.name ?? ''}
         hostOnline={!!hosts.find((h) => h.id === hostId)?.online}
+        usedPorts={usedPorts}
       />
 
       {/* ---- host: first, since the checks and folder suggestions depend on it ---- */}
@@ -459,6 +467,28 @@ export function NewContainerPage() {
               </>
             )}
           />
+          {image && clashes.length > 0 && (
+            <ul className="-mt-3 space-y-1 text-xs" aria-label="Port conflicts">
+              {clashes.map((c) => (
+                <li key={c.index} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-amber-200">
+                  <AlertTriangle className="size-3.5 shrink-0" />
+                  <span>
+                    Port {c.key} is already used by {c.by}
+                    {c.by !== 'another port in this form' && host ? ` on ${host.name}` : ''}.
+                  </span>
+                  {c.suggestion && (
+                    <button
+                      type="button"
+                      className="text-lime-300 underline-offset-2 hover:underline"
+                      onClick={() => setPorts((old) => old.map((p, i) => (i === c.index ? { ...p, host: c.suggestion } : p)))}
+                    >
+                      Use {c.suggestion}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
           <Rows
             title="Environment variables"
             items={env}
@@ -474,6 +504,16 @@ export function NewContainerPage() {
               </>
             )}
           />
+          {image && utcTZ && myZone && !isUtcLike(myZone) && (
+            <p className="-mt-3 flex flex-wrap items-center gap-x-2 text-xs text-ink-100/60">
+              <span>
+                TZ is {utcTZ.value}, the usual example value. This computer's time zone is {myZone}.
+              </span>
+              <button type="button" className="text-lime-300 underline-offset-2 hover:underline" onClick={() => setEnv((old) => old.map((e) => (e.key === 'TZ' ? { ...e, value: myZone } : e)))}>
+                Use {myZone}
+              </button>
+            </p>
+          )}
           <Rows
             title="Volumes"
             hint="Keep data across updates. Source: a volume name (e.g. data), or a folder: /srv/app on the host, or ./config inside the stack's folder."
