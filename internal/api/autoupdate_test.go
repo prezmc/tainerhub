@@ -474,8 +474,13 @@ func (h *fakeHost) reply(id string, data any, errText string) {
 	h.a.Handle(wire.AgentMessage{Result: &wire.CommandResult{CommandID: id, OK: errText == "", Error: errText, Data: b}}, nil)
 }
 
-// busy tracks how many updates run at once, on this host and overall.
-func (h *fakeHost) busy(name string) func() {
+// busy runs one update's work and tracks how many updates run at once, on
+// this host and overall. The update stops counting as running before busy
+// returns, so callers must tell the hub it finished only after busy returns:
+// once the hub hears that, it may start the next update, and if that one
+// were counted before this one stopped, the counts would show two at once
+// (a gap a slow CI machine opens up).
+func (h *fakeHost) busy(name string, work func()) {
 	r := h.rig
 	r.mu.Lock()
 	r.active[h.a.HostID]++
@@ -487,12 +492,11 @@ func (h *fakeHost) busy(name string) func() {
 	h.ops = append(h.ops, name)
 	h.mu.Unlock()
 	time.Sleep(h.hold)
-	return func() {
-		r.mu.Lock()
-		r.active[h.a.HostID]--
-		r.total--
-		r.mu.Unlock()
-	}
+	work()
+	r.mu.Lock()
+	r.active[h.a.HostID]--
+	r.total--
+	r.mu.Unlock()
 }
 
 func (h *fakeHost) replace(match func(wire.Container) bool) {
@@ -533,33 +537,37 @@ func (h *fakeHost) serve() {
 				go h.reply(cmd.ID, h.stackImages(cmd.Op.Target), "")
 			case cmd.Stack != nil && cmd.Stack.Action == wire.StackRollback:
 				go func(cmd wire.Command) {
-					done := h.busy("rollback " + cmd.Stack.Name)
-					defer done()
-					h.mu.Lock()
-					h.rollbacks = append(h.rollbacks, *cmd.Stack)
-					fail := h.failRollback
-					if fail == "" {
-						// The old images come back up fine.
-						for i, c := range h.containers {
-							if c.Project == cmd.Stack.Name {
-								h.containers[i].ID = "back-" + c.Name
-								h.containers[i].State, h.containers[i].Status = "running", "Up 1 second"
+					var fail string
+					h.busy("rollback "+cmd.Stack.Name, func() {
+						h.mu.Lock()
+						h.rollbacks = append(h.rollbacks, *cmd.Stack)
+						fail = h.failRollback
+						if fail == "" {
+							// The old images come back up fine.
+							for i, c := range h.containers {
+								if c.Project == cmd.Stack.Name {
+									h.containers[i].ID = "back-" + c.Name
+									h.containers[i].State, h.containers[i].Status = "running", "Up 1 second"
+								}
 							}
 						}
-					}
-					h.mu.Unlock()
-					h.snapshot()
+						h.mu.Unlock()
+						h.snapshot()
+					})
 					h.a.Handle(wire.AgentMessage{Log: &wire.LogChunk{CommandID: cmd.ID, EOF: true, Error: fail}}, nil)
 				}(*cmd)
 			case cmd.Op != nil && cmd.Op.Kind == wire.OpContainerRecreate:
 				go func(cmd wire.Command) {
-					done := h.busy("recreate " + cmd.Op.Target)
-					defer done()
-					if h.failWith != "" {
-						h.reply(cmd.ID, nil, h.failWith)
+					fail := h.failWith
+					h.busy("recreate "+cmd.Op.Target, func() {
+						if fail == "" {
+							h.replace(func(c wire.Container) bool { return c.ID == cmd.Op.Target })
+						}
+					})
+					if fail != "" {
+						h.reply(cmd.ID, nil, fail)
 						return
 					}
-					h.replace(func(c wire.Container) bool { return c.ID == cmd.Op.Target })
 					h.reply(cmd.ID, wire.RecreateResult{Status: "updated", OldImage: "sha256:old", NewImage: "sha256:new"}, "")
 				}(*cmd)
 			case cmd.Op != nil: // anything else: noted and answered OK
@@ -569,15 +577,16 @@ func (h *fakeHost) serve() {
 				go h.reply(cmd.ID, nil, "")
 			case cmd.Stack != nil:
 				go func(cmd wire.Command) {
-					done := h.busy("stack " + cmd.Stack.Name)
-					defer done()
 					if !cmd.Stack.Pull || cmd.Stack.Action != wire.StackDeploy {
 						h.rig.t.Errorf("stack command %+v, want a deploy with pull", cmd.Stack)
 					}
-					if h.failWith == "" {
-						h.replace(func(c wire.Container) bool { return c.Project == cmd.Stack.Name })
-					}
-					h.a.Handle(wire.AgentMessage{Log: &wire.LogChunk{CommandID: cmd.ID, EOF: true, Error: h.failWith}}, nil)
+					fail := h.failWith
+					h.busy("stack "+cmd.Stack.Name, func() {
+						if fail == "" {
+							h.replace(func(c wire.Container) bool { return c.Project == cmd.Stack.Name })
+						}
+					})
+					h.a.Handle(wire.AgentMessage{Log: &wire.LogChunk{CommandID: cmd.ID, EOF: true, Error: fail}}, nil)
 				}(*cmd)
 			}
 		}
