@@ -1,10 +1,11 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowRightLeft, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
-import { can, errorText, mem, timeAgo, type Container } from '../api'
+import { ArrowRightLeft, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, Plug, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
+import { can, errorText, mem, timeAgo, type Container, type ContainerDetail, type Host } from '../api'
+import { addressText, loopback, portMappings } from '../ports'
+import { PublishedLink } from './HostPorts'
 import { useContainerAction, useContainerDetail, useOpenLogs, useOpenTerminal } from '../fleet'
 import { StackLink } from '../stacks'
-import { PortLink } from './Containers'
 import { useFleet } from '../fleet'
 import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf, useLayer } from '../ui'
 import { useMe } from './AppLayout'
@@ -173,27 +174,13 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                 </Section>
               )}
 
+              <PortsSection d={d} host={host} running={running} />
+
               <Section icon={Network} title="Networking" right={<span className="text-xs text-ink-100/50">{d.networkMode}</span>}>
-                {d.ports.length > 0 && (
-                  <div className="mb-3 flex flex-wrap gap-1.5">
-                    {d.ports.map((p, i) => (
-                      <span key={i} className="mono rounded-[3px] bg-lime-400/10 px-2 py-1 text-xs text-lime-200 ring-1 ring-lime-400/25">
-                        {p.host ? (
-                          <>
-                            <PortLink port={p.host} host={host} /> →{' '}
-                          </>
-                        ) : (
-                          ''
-                        )}
-                        {p.container}
-                      </span>
-                    ))}
-                  </div>
-                )}
                 {d.networks.map((n) => (
                   <KV key={n.name} k={n.name} v={<span className="mono text-xs">{n.ip || '–'}</span>} />
                 ))}
-                {d.networks.length === 0 && d.ports.length === 0 && <p className="text-sm text-ink-100/50">No networks or published ports.</p>}
+                {d.networks.length === 0 && <p className="text-sm text-ink-100/50">No networks.</p>}
               </Section>
 
               <Section icon={HardDrive} title="Mounts">
@@ -277,6 +264,39 @@ function Section({ icon: Icon, title, right, children, collapsible }: { icon: Lu
       </div>
       {open && <div className="mt-3">{children}</div>}
     </section>
+  )
+}
+
+/** The container's published ports (host address and port → its port) and the ones it only exposes. */
+function PortsSection({ d, host, running }: { d: ContainerDetail; host?: Host; running: boolean }) {
+  const all = portMappings(d.ports)
+  const published = all.filter((m) => m.hostPort)
+  const exposed = all.filter((m) => !m.hostPort)
+  return (
+    <Section icon={Plug} title="Ports" right={published.length > 0 && <span className="text-xs text-ink-100/50">{published.length} published</span>}>
+      {d.networkMode === 'host' && <p className="mb-2 text-sm text-ink-100/60">It uses the host's network, so it listens on the host's ports directly, without publishing them.</p>}
+      {published.length > 0 && (
+        <ul className="divide-y divide-white/[0.05]">
+          {published.map((m) => (
+            <li key={m.container + m.hostPort} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-sm">
+              <span className="mono text-lime-200">
+                {m.addresses.length === 1 && <span className="text-ink-100/70">{m.addresses[0].includes(':') ? `[${m.addresses[0]}]` : m.addresses[0]}:</span>}
+                <PublishedLink hostPort={m.hostPort!} addresses={m.addresses} host={host} /> <span className="text-ink-100/50">→</span> {m.container}
+              </span>
+              <span className="text-xs text-ink-100/55">{m.addresses.length === 1 ? (loopback(m.addresses[0]) ? 'this host only' : 'this address only') : addressText(m.addresses)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {published.length > 0 && !running && <p className="mt-2 text-xs text-ink-100/50">Stopped: it takes these host ports when it starts.</p>}
+      {exposed.length > 0 && (
+        <p className={cx('text-xs text-ink-100/55', published.length > 0 && 'mt-2')}>
+          {published.length > 0 ? 'Also exposed, not published: ' : 'Exposed, not published: '}
+          <span className="mono">{exposed.map((m) => m.container).join(', ')}</span>
+        </p>
+      )}
+      {all.length === 0 && d.networkMode !== 'host' && <p className="text-sm text-ink-100/50">No published ports.</p>}
+    </Section>
   )
 }
 

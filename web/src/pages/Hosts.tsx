@@ -7,6 +7,7 @@ import { Badge, Button, Card, CopyButton, EmptyState, ErrorNote, IconButton, Inp
 import { useMe } from './AppLayout'
 import { hubAdmin } from '../hostscope'
 import { useHostsQuery } from '../fleet'
+import { HostPortsButton } from './HostPorts'
 
 // Admins only: load the updates card when it's shown.
 const UpdatesCard = lazy(() => import('./Updates').then((m) => ({ default: m.UpdatesCard })))
@@ -272,6 +273,9 @@ function HostCard({ h, admin, onToken, onRemove, onRename }: { h: Host; admin: b
                     {h.unhealthy} unhealthy
                   </Badge>
                 )}
+              </div>
+              <div className="text-ink-100/50">
+                <HostPortsButton h={h} />
               </div>
             </div>
           </div>

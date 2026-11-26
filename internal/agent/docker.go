@@ -227,6 +227,9 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			PublicPort  int
 			Type        string
 		}
+		HostConfig struct {
+			NetworkMode string
+		}
 	}
 	if err := d.getJSON(ctx, "/containers/json", url.Values{"all": {"1"}}, &raw); err != nil {
 		return nil, err
@@ -256,10 +259,12 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 		}
 		seen := map[string]bool{}
 		var ports []string
+		var published []wire.PortBinding
 		for _, p := range r.Ports {
 			s := fmt.Sprintf("%d/%s", p.PrivatePort, p.Type)
 			if p.PublicPort > 0 {
 				s = fmt.Sprintf("%d->%s", p.PublicPort, s)
+				published = append(published, wire.PortBinding{IP: p.IP, HostPort: p.PublicPort, Port: p.PrivatePort, Proto: p.Type})
 			}
 			if !seen[s] {
 				seen[s] = true
@@ -267,6 +272,16 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			}
 		}
 		sort.Strings(ports)
+		sort.Slice(published, func(i, j int) bool {
+			a, b := published[i], published[j]
+			if a.HostPort != b.HostPort {
+				return a.HostPort < b.HostPort
+			}
+			if a.Proto != b.Proto {
+				return a.Proto < b.Proto
+			}
+			return a.IP < b.IP
+		})
 		out = append(out, wire.Container{
 			ID:      r.ID,
 			Name:    name,
@@ -280,6 +295,8 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			// against the image this container runs
 			UpdateAvailable: d.updateFor(ctx, r.Image, r.ImageID),
 			Ports:           ports,
+			Published:       published,
+			HostNetwork:     r.HostConfig.NetworkMode == "host",
 			Labels:          r.Labels,
 		})
 	}

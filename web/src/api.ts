@@ -1,5 +1,6 @@
 import type { PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
 import type { StackFile } from './stackfiles'
+import type { DetailPort, PortBinding } from './ports'
 
 // The WebAuthn helpers are only needed during a passkey ceremony: load them then.
 const webauthn = () => import('@simplewebauthn/browser')
@@ -163,7 +164,12 @@ export interface Container {
   status: string
   created: number
   project?: string
+  /** "8080->80/tcp", or "80/tcp" when not published. */
   ports?: string[]
+  /** Each published port with its host address (from current agents). */
+  published?: PortBinding[]
+  /** Uses the host's network: it can listen on any host port without publishing it. */
+  hostNetwork?: boolean
   hostId: string
   hostName: string
   /** A newer image is available for this container's tag. */
@@ -306,7 +312,7 @@ export interface ContainerDetail {
   nanoCpus?: number
   mounts: { type: string; name?: string; source: string; destination: string; rw: boolean }[]
   networks: { name: string; ip?: string; gateway?: string }[]
-  ports: { container: string; host?: string }[]
+  ports: DetailPort[]
 }
 
 export interface DetailResponse {

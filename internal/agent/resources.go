@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -334,6 +335,12 @@ func (d *SocketDocker) inspect(ctx context.Context, id string) (wire.ContainerDe
 			NetworkMode string
 			Memory      int64
 			NanoCpus    int64
+			// What it publishes when it runs: NetworkSettings.Ports is
+			// empty while it's stopped.
+			PortBindings map[string][]struct {
+				HostIP   string `json:"HostIp"`
+				HostPort string
+			}
 		}
 		Mounts []struct {
 			Type        string
@@ -385,23 +392,33 @@ func (d *SocketDocker) inspect(ctx context.Context, id string) (wire.ContainerDe
 		out.Networks = append(out.Networks, wire.DetailNetwork{Name: name, IP: n.IPAddress, Gateway: n.Gateway})
 	}
 	sort.Slice(out.Networks, func(i, j int) bool { return out.Networks[i].Name < out.Networks[j].Name })
-	for port, binds := range r.NetworkSettings.Ports {
+	ports := r.NetworkSettings.Ports
+	if len(ports) == 0 {
+		ports = r.HostConfig.PortBindings
+	}
+	for port, binds := range ports {
 		if len(binds) == 0 {
 			out.Ports = append(out.Ports, wire.DetailPort{Container: port})
 		}
 		seen := map[string]bool{}
 		for _, b := range binds {
-			h := b.HostPort
-			if b.HostIP != "" && b.HostIP != "0.0.0.0" && b.HostIP != "::" {
-				h = b.HostIP + ":" + h
+			h := b.HostPort // "" for a random port, picked when it starts
+			if h != "" && b.HostIP != "" && b.HostIP != "0.0.0.0" && b.HostIP != "::" {
+				h = net.JoinHostPort(b.HostIP, h)
 			}
 			if !seen[h] {
 				seen[h] = true
-				out.Ports = append(out.Ports, wire.DetailPort{Container: port, Host: h})
+				out.Ports = append(out.Ports, wire.DetailPort{Container: port, Host: h, IP: b.HostIP})
 			}
 		}
 	}
-	sort.Slice(out.Ports, func(i, j int) bool { return out.Ports[i].Container < out.Ports[j].Container })
+	sort.Slice(out.Ports, func(i, j int) bool {
+		a, b := out.Ports[i], out.Ports[j]
+		if a.Container != b.Container {
+			return a.Container < b.Container
+		}
+		return a.Host < b.Host
+	})
 	return out, nil
 }
 

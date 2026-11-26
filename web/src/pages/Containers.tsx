@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from 'react'
 import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowRightLeft, Boxes, X, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
+import { HostPortsButton } from './HostPorts'
 import { api, can, hostAddress, isUnhealthy, mem, publishedPort, timeAgo, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, useOpenTerminal, type Action, type SortKey } from '../fleet'
 import { Button, ErrorNote, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
@@ -157,6 +158,7 @@ export function ContainersPage() {
             <X className="size-3.5" />
           </button>
         )}
+        {onlyHost && <HostPortsButton h={onlyHost} className="text-xs text-ink-100/70" />}
         <div className="ml-auto flex flex-wrap items-center gap-2.5">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-100/50" />

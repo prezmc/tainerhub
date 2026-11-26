@@ -148,7 +148,8 @@ Click a container's name, or **More actions → Details**, to open the details p
 - **Live CPU and memory**.
 - **Overview**: image and image ID, created and started (or exited) times, restart policy (a warning badge if it's `no`), the command, and resource limits or the privileged flag when set.
 - **Health check**: current status and recent results, if the container has a health check.
-- **Networking**: network mode, networks with their IP addresses, and published ports.
+- **Ports**: each published port as host address and port → container port and protocol, for example `8080 → 80/tcp` (all addresses) or `127.0.0.1:9000 → 9000/udp` (this host only), with a link to open it. A port published on both IPv4 and IPv6 (`0.0.0.0` and `::`) shows once, as **all addresses**. Ports the image exposes but that aren't published are listed after them. For a stopped container it shows the ports it will take when it starts; a container on the host's network says so, since it listens on the host's ports without publishing them.
+- **Networking**: network mode and networks with their IP addresses.
 - **Mounts**: volumes and bind mounts, with read-only ones marked.
 - **Labels**.
 - **Environment**.
@@ -466,9 +467,12 @@ One card per server. A card shows:
 - the host's name and whether it's connected,
 - its address, operating system and CPU architecture,
 - a ring with the share of running containers, plus running, stopped and unhealthy counts (click them to jump to the Containers list),
+- how many host ports are in use: click it for **Ports on <host>** (see below),
 - CPU cores, memory and Docker version,
 - bars for CPU and memory use (averaged over the last 15 minutes) and free disk where stacks are kept,
 - a **Stacks unavailable** note if the agent can't run stacks, with the reason.
+
+**Ports on <host>** lists every host port the host's running containers publish, by port number: the protocol, which container holds it and its port there, and the address it's bound to (**all addresses**, or one address such as `127.0.0.1`, marked **this host only**). Type a number in **Is a port free?** to check one: it says which container uses it and the next free port. Stopped containers' ports aren't counted (they're free until the container starts again), and containers on the host's network are named at the bottom, since they can listen on any port without publishing it. The same list opens from **N ports in use** on the Containers page when it's filtered to one host.
 
 An offline host says **Agent offline. Check docker logs tainerhub-agent on this host.**
 

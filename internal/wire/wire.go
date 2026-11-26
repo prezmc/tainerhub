@@ -147,8 +147,15 @@ type Container struct {
 	Status  string            `json:"status"`            // human text, e.g. "Up 3 hours (healthy)"
 	Created int64             `json:"created"`
 	Project string            `json:"project,omitempty"` // compose project label
-	Ports   []string          `json:"ports,omitempty"`
+	Ports   []string          `json:"ports,omitempty"`   // "8080->80/tcp", or "80/tcp" when not published
 	Labels  map[string]string `json:"labels,omitempty"`
+	// Published lists each host port binding with its host address, one per
+	// address as Docker reports them (0.0.0.0 and :: separately). Ports keeps
+	// the compact form. Empty from older agents.
+	Published []PortBinding `json:"published,omitempty"`
+	// HostNetwork: it uses the host's network, so it can listen on any host
+	// port without publishing it.
+	HostNetwork bool `json:"hostNetwork,omitempty"`
 
 	// Live resource use, refreshed about every 10 s for running containers.
 	// CPU is a percentage of one core (like `docker stats`), so it can exceed 100.
@@ -160,6 +167,15 @@ type Container struct {
 	// the last check, every few hours; see OpImagesCheckUpdates) isn't the
 	// image this container runs.
 	UpdateAvailable bool `json:"update,omitempty"`
+}
+
+// PortBinding is one published port: host address and port to the
+// container's port.
+type PortBinding struct {
+	IP       string `json:"ip,omitempty"` // host address; 0.0.0.0, :: or empty for every address
+	HostPort int    `json:"hostPort"`
+	Port     int    `json:"port"`  // the container's port
+	Proto    string `json:"proto"` // tcp, udp or sctp
 }
 
 type Snapshot struct {
@@ -1375,8 +1391,9 @@ type DetailNetwork struct {
 }
 
 type DetailPort struct {
-	Container string `json:"container"` // e.g. "80/tcp"
-	Host      string `json:"host,omitempty"`
+	Container string `json:"container"`      // e.g. "80/tcp"
+	Host      string `json:"host,omitempty"` // host port, prefixed with the address when it's one address: "8080", "127.0.0.1:8080"
+	IP        string `json:"ip,omitempty"`   // the host address as Docker reports it (0.0.0.0 or :: for every address)
 }
 
 type Image struct {
