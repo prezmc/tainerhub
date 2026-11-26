@@ -162,6 +162,10 @@ func (s *Server) jobStream(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, "this operation has finished and its output has expired")
 		return
 	}
+	if !userFrom(r).CanSeeHost(j.HostID) { // as if it didn't exist
+		jsonErr(w, http.StatusNotFound, "this operation has finished and its output has expired")
+		return
+	}
 	rc := http.NewResponseController(w)
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")

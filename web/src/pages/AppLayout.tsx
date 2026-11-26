@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { Fingerprint, LogOut, Search, TriangleAlert } from 'lucide-react'
 import { api, ApiError, can, errorText, type Activity, type Container, type Host, type Me } from '../api'
+import { hubAdmin } from '../hostscope'
 import { DetailsContext, LiveContext, LogsContext, PaletteContext, TerminalContext } from '../fleet'
 import { Kbd, Menu, cx, useToast } from '../ui'
 import { ReauthPrompt } from '../reauth'
@@ -165,9 +166,9 @@ export function AppLayout() {
                   <NavPill to="/stacks" label="Stacks" />
                   <NavPill to="/resources" label="Resources" />
                   <NavPill to="/hosts" label="Hosts" />
-                  {can(me.data.user, 'admin') && <NavPill to="/users" label="Users" />}
+                  {hubAdmin(me.data.user) && <NavPill to="/users" label="Users" />}
                   {can(me.data.user, 'admin') && <NavPill to="/audit" label="Audit" />}
-                  {can(me.data.user, 'admin') && <NavPill to="/settings" label="Settings" />}
+                  {hubAdmin(me.data.user) && <NavPill to="/settings" label="Settings" />}
                 </nav>
                 <button
                   onClick={openPalette}

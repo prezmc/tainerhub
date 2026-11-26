@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -140,14 +141,48 @@ type User struct {
 	CreatedAt   time.Time `json:"createdAt"`
 	// PasswordHash is an encoded argon2id hash, or "" for no password.
 	PasswordHash string `json:"-"`
+	// Scoped: the user may only see and act on Hosts (their role applies
+	// there only). Unscoped users (the default) reach every host.
+	Scoped bool     `json:"scoped"`
+	Hosts  []string `json:"hosts,omitempty"`
 }
 
-const userCols = `id::text, username, display_name, role, webauthn_id, created_at, password_hash`
+// CanSeeHost reports whether the user may see and act on the host.
+func (u User) CanSeeHost(id string) bool {
+	return !u.Scoped || slices.Contains(u.Hosts, id)
+}
+
+// userColsAs lists the user columns, each prefixed (e.g. "u.") for joins.
+func userColsAs(p string) string {
+	return p + `id::text, ` + p + `username, ` + p + `display_name, ` + p + `role, ` + p + `webauthn_id, ` + p + `created_at, ` + p + `password_hash, ` +
+		p + `host_scope IS NOT NULL, coalesce(` + p + `host_scope::text[], '{}')`
+}
+
+var userCols = userColsAs("")
+
+// userDest is where a row of userColsAs scans to.
+func userDest(u *User) []any {
+	return []any{&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.WebAuthnID, &u.CreatedAt, &u.PasswordHash, &u.Scoped, &u.Hosts}
+}
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.WebAuthnID, &u.CreatedAt, &u.PasswordHash)
+	err := row.Scan(userDest(&u)...)
+	if !u.Scoped {
+		u.Hosts = nil
+	}
 	return u, notFound(err)
+}
+
+// hostScope is the value stored for a scope: NULL for all hosts.
+func hostScope(scoped bool, hosts []string) any {
+	if !scoped {
+		return nil
+	}
+	if hosts == nil {
+		hosts = []string{}
+	}
+	return hosts
 }
 
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
@@ -337,11 +372,12 @@ func (s *Store) GetSession(ctx context.Context, tokenHash []byte) (Session, erro
 func (s *Store) SessionUser(ctx context.Context, tokenHash []byte) (Session, User, error) {
 	var ss Session
 	var u User
-	err := s.db.QueryRow(ctx, `SELECT s.user_id::text, s.created_at, s.last_seen_at, s.expires_at,
-		u.id::text, u.username, u.display_name, u.role, u.webauthn_id, u.created_at, u.password_hash
+	err := s.db.QueryRow(ctx, `SELECT s.user_id::text, s.created_at, s.last_seen_at, s.expires_at, `+userColsAs("u.")+`
 		FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = $1`, tokenHash).
-		Scan(&ss.UserID, &ss.CreatedAt, &ss.LastSeenAt, &ss.ExpiresAt,
-			&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.WebAuthnID, &u.CreatedAt, &u.PasswordHash)
+		Scan(append([]any{&ss.UserID, &ss.CreatedAt, &ss.LastSeenAt, &ss.ExpiresAt}, userDest(&u)...)...)
+	if !u.Scoped {
+		u.Hosts = nil
+	}
 	return ss, u, notFound(err)
 }
 
@@ -597,6 +633,8 @@ type AuditEntry struct {
 	Target string          `json:"target"`
 	Detail json.RawMessage `json:"detail,omitempty"`
 	IP     string          `json:"ip"`
+	// HostIDs are the hosts the entry is about (see migration 0015).
+	HostIDs []string `json:"-"`
 }
 
 func (s *Store) Audit(ctx context.Context, e AuditEntry) error {
@@ -604,8 +642,12 @@ func (s *Store) Audit(ctx context.Context, e AuditEntry) error {
 	if len(e.Detail) > 0 {
 		detail = e.Detail
 	}
-	_, err := s.db.Exec(ctx, `INSERT INTO audit_log (user_id, actor, action, target, detail, ip) VALUES ($1::uuid, $2, $3, $4, $5, $6)`,
-		e.UserID, e.Actor, e.Action, e.Target, detail, e.IP)
+	var hosts any
+	if len(e.HostIDs) > 0 {
+		hosts = e.HostIDs
+	}
+	_, err := s.db.Exec(ctx, `INSERT INTO audit_log (user_id, actor, action, target, detail, ip, host_ids) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::uuid[])`,
+		e.UserID, e.Actor, e.Action, e.Target, detail, e.IP, hosts)
 	return err
 }
 
@@ -627,8 +669,20 @@ func (s *Store) PurgeAudit(ctx context.Context, before time.Time) (int64, error)
 	}
 }
 
-func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, at, user_id::text, actor, action, target, detail, ip FROM audit_log ORDER BY at DESC LIMIT $1`, limit)
+// ListAudit returns the newest entries. For a user limited to some hosts
+// (viewer.Scoped) it returns only their own actions and the entries about
+// those hosts alone: one that also names another host (a move to it) stays
+// hidden, as that host does everywhere else.
+func (s *Store) ListAudit(ctx context.Context, limit int, viewer User) ([]AuditEntry, error) {
+	q := `SELECT id, at, user_id::text, actor, action, target, detail, ip FROM audit_log ORDER BY at DESC LIMIT $1`
+	args := []any{limit}
+	if viewer.Scoped {
+		q = `SELECT id, at, user_id::text, actor, action, target, detail, ip FROM audit_log
+			WHERE user_id = $2::uuid OR (host_ids IS NOT NULL AND cardinality(host_ids) > 0 AND host_ids <@ $3::uuid[])
+			ORDER BY at DESC LIMIT $1`
+		args = append(args, viewer.ID, hostScope(true, viewer.Hosts))
+	}
+	rows, err := s.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -795,18 +849,19 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 }
 
 // SetUserRole changes a user's role, but only if it is still expectRole (the
-// role the caller checked permission against), so two admins acting at once
+// role the caller checked permission against) and expectScoped (whether
+// they're limited to some hosts, which also counts), so two admins acting at once
 // can't slip a change past the rank check. Pending invites the user created
 // for a role above their new one are revoked in the same transaction: a
 // demoted admin's links must not still hand out admin. ErrNotFound if the
 // user is gone, ErrChanged if their role moved on. The owner can't change.
-func (s *Store) SetUserRole(ctx context.Context, id, expectRole, role string, revokeInviteRoles []string) error {
+func (s *Store) SetUserRole(ctx context.Context, id, expectRole string, expectScoped bool, role string, revokeInviteRoles []string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	tag, err := tx.Exec(ctx, `UPDATE users SET role = $3 WHERE id = $1::uuid AND role = $2 AND role <> 'owner'`, id, expectRole, role)
+	tag, err := tx.Exec(ctx, `UPDATE users SET role = $3 WHERE id = $1::uuid AND role = $2 AND (host_scope IS NOT NULL) = $4 AND role <> 'owner'`, id, expectRole, role, expectScoped)
 	if err != nil {
 		return err
 	}
@@ -821,11 +876,38 @@ func (s *Store) SetUserRole(ctx context.Context, id, expectRole, role string, re
 	return tx.Commit(ctx)
 }
 
+// SetUserHosts limits a user to hosts (scoped) or gives them every host
+// (!scoped), but only if their role and scope are still as the caller
+// checked them, like SetUserRole.
+// A user who becomes scoped loses the invites they created: only admins
+// with access to every host may invite. The owner always has every host.
+func (s *Store) SetUserHosts(ctx context.Context, id, expectRole string, expectScoped, scoped bool, hosts []string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	tag, err := tx.Exec(ctx, `UPDATE users SET host_scope = $3::uuid[] WHERE id = $1::uuid AND role = $2 AND (host_scope IS NOT NULL) = $4 AND role <> 'owner'`, id, expectRole, hostScope(scoped, hosts), expectScoped)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return s.missingOrChanged(ctx, tx, id)
+	}
+	if scoped {
+		if _, err := tx.Exec(ctx, `DELETE FROM invites WHERE created_by = $1::uuid AND used_at IS NULL`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // DeleteUser removes a user with their sessions, passkeys and recovery codes
 // (signing them out everywhere) and their unused invites, but only if their
-// role is still expectRole. ErrNotFound if the user is gone, ErrChanged if
+// role is still expectRole and whether they're limited to some hosts is
+// still expectScoped. ErrNotFound if the user is gone, ErrChanged if
 // their role moved on. The owner can't be removed.
-func (s *Store) DeleteUser(ctx context.Context, id, expectRole string) error {
+func (s *Store) DeleteUser(ctx context.Context, id, expectRole string, expectScoped bool) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -837,7 +919,7 @@ func (s *Store) DeleteUser(ctx context.Context, id, expectRole string) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM invites WHERE created_by = $1::uuid AND used_at IS NULL`, id); err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid AND role = $2 AND role <> 'owner'`, id, expectRole)
+	tag, err := tx.Exec(ctx, `DELETE FROM users WHERE id = $1::uuid AND role = $2 AND (host_scope IS NOT NULL) = $3 AND role <> 'owner'`, id, expectRole, expectScoped)
 	if err != nil {
 		return err
 	}
@@ -862,6 +944,8 @@ func (s *Store) missingOrChanged(ctx context.Context, tx pgx.Tx, id string) erro
 type Invite struct {
 	ID        string     `json:"id"`
 	Role      string     `json:"role"`
+	Scoped    bool       `json:"scoped"`          // the user it creates is limited to Hosts
+	Hosts     []string   `json:"hosts,omitempty"` // host IDs
 	Note      string     `json:"note"`
 	CreatedBy string     `json:"createdBy"` // username
 	CreatedAt time.Time  `json:"createdAt"`
@@ -869,17 +953,23 @@ type Invite struct {
 	UsedAt    *time.Time `json:"usedAt"`
 }
 
-func (s *Store) CreateInvite(ctx context.Context, tokenHash []byte, role, note, createdBy string, expires time.Time) (Invite, error) {
+// CreateInvite saves an invite. scoped limits the user it creates to hosts.
+func (s *Store) CreateInvite(ctx context.Context, tokenHash []byte, role, note, createdBy string, expires time.Time, scoped bool, hosts []string) (Invite, error) {
 	var inv Invite
-	err := s.db.QueryRow(ctx, `INSERT INTO invites (token_hash, role, note, created_by, expires_at) VALUES ($1, $2, $3, $4::uuid, $5)
-		RETURNING id::text, role, note, created_at, expires_at`, tokenHash, role, note, createdBy, expires).
-		Scan(&inv.ID, &inv.Role, &inv.Note, &inv.CreatedAt, &inv.ExpiresAt)
+	err := s.db.QueryRow(ctx, `INSERT INTO invites (token_hash, role, note, created_by, expires_at, host_scope) VALUES ($1, $2, $3, $4::uuid, $5, $6::uuid[])
+		RETURNING id::text, role, note, created_at, expires_at, host_scope IS NOT NULL, coalesce(host_scope::text[], '{}')`,
+		tokenHash, role, note, createdBy, expires, hostScope(scoped, hosts)).
+		Scan(&inv.ID, &inv.Role, &inv.Note, &inv.CreatedAt, &inv.ExpiresAt, &inv.Scoped, &inv.Hosts)
+	if !inv.Scoped {
+		inv.Hosts = nil
+	}
 	return inv, err
 }
 
 // PendingInvites lists unused, unexpired invites, newest first.
 func (s *Store) PendingInvites(ctx context.Context) ([]Invite, error) {
-	rows, err := s.db.Query(ctx, `SELECT i.id::text, i.role, i.note, coalesce(u.username, ''), i.created_at, i.expires_at, i.used_at
+	rows, err := s.db.Query(ctx, `SELECT i.id::text, i.role, i.note, coalesce(u.username, ''), i.created_at, i.expires_at, i.used_at,
+		i.host_scope IS NOT NULL, coalesce(i.host_scope::text[], '{}')
 		FROM invites i LEFT JOIN users u ON u.id = i.created_by
 		WHERE i.used_at IS NULL AND i.expires_at > now() ORDER BY i.created_at DESC`)
 	if err != nil {
@@ -889,8 +979,11 @@ func (s *Store) PendingInvites(ctx context.Context) ([]Invite, error) {
 	var out []Invite
 	for rows.Next() {
 		var inv Invite
-		if err := rows.Scan(&inv.ID, &inv.Role, &inv.Note, &inv.CreatedBy, &inv.CreatedAt, &inv.ExpiresAt, &inv.UsedAt); err != nil {
+		if err := rows.Scan(&inv.ID, &inv.Role, &inv.Note, &inv.CreatedBy, &inv.CreatedAt, &inv.ExpiresAt, &inv.UsedAt, &inv.Scoped, &inv.Hosts); err != nil {
 			return nil, err
+		}
+		if !inv.Scoped {
+			inv.Hosts = nil
 		}
 		out = append(out, inv)
 	}
@@ -922,7 +1015,8 @@ func (s *Store) AcceptInvite(ctx context.Context, tokenHash []byte, u User, reco
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 	var inviteID, role string
-	err = tx.QueryRow(ctx, `SELECT id::text, role FROM invites WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, tokenHash).Scan(&inviteID, &role)
+	var scope []string // nil: every host
+	err = tx.QueryRow(ctx, `SELECT id::text, role, host_scope::text[] FROM invites WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() FOR UPDATE`, tokenHash).Scan(&inviteID, &role, &scope)
 	if err != nil {
 		return User{}, notFound(err)
 	}
@@ -941,8 +1035,8 @@ func (s *Store) AcceptInvite(ctx context.Context, tokenHash []byte, u User, reco
 		return User{}, ErrConflict
 	}
 	created, err := scanUser(tx.QueryRow(ctx,
-		`INSERT INTO users (username, display_name, role, webauthn_id, password_hash) VALUES ($1, $2, $3, $4, $5) RETURNING `+userCols,
-		u.Username, u.DisplayName, role, u.WebAuthnID, u.PasswordHash))
+		`INSERT INTO users (username, display_name, role, webauthn_id, password_hash, host_scope) VALUES ($1, $2, $3, $4, $5, $6::uuid[]) RETURNING `+userCols,
+		u.Username, u.DisplayName, role, u.WebAuthnID, u.PasswordHash, hostScope(scope != nil, scope)))
 	if isUniqueViolation(err) {
 		return User{}, ErrConflict
 	}

@@ -74,7 +74,7 @@ func summarize(sum *stackSummary, cs []wire.Container) {
 // stackSummaries lists managed stacks plus compose projects found running on
 // hosts that TainerHub doesn't manage (started with `docker compose` by hand).
 func (s *Server) stackSummaries(ctx context.Context) ([]stackSummary, error) {
-	hosts, err := s.Store.ListHosts(ctx)
+	hosts, err := s.aus().ListHosts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func (s *Server) stackSummaries(ctx context.Context) ([]stackSummary, error) {
 	for _, h := range hosts {
 		hostName[h.ID] = h.Name
 	}
-	stacks, err := s.Store.ListStacks(ctx)
+	stacks, err := s.aus().ListStacks(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +151,7 @@ func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, visible(userFrom(r), out, func(x stackSummary) string { return x.HostID }))
 }
 
 // loadStack fetches the stack named in the path and writes 404 if it's missing.
@@ -200,9 +200,9 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if moves == nil {
-		moves = []store.StackMove{}
-	}
+	// A move from or to a host the caller can't see stays hidden, like that host.
+	moves = visible(userFrom(r), nonNil(moves), func(m store.StackMove) string { return m.FromHost })
+	moves = visible(userFrom(r), moves, func(m store.StackMove) string { return m.ToHost })
 	// The newest rollback point, so the page knows whether Roll back can run.
 	var point any
 	if p, err := s.aus().LatestRollbackPoint(r.Context(), st.ID); err == nil {
@@ -266,6 +266,9 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validUUID(in.HostID) {
 		jsonErr(w, http.StatusBadRequest, "choose a host")
+		return
+	}
+	if !s.allowHosts(w, r, in.HostID) {
 		return
 	}
 	h, err := s.Store.GetHost(r.Context(), in.HostID)
@@ -626,7 +629,7 @@ func (s *Server) launchStackJob(st store.Stack, action string, opts stackJobOpts
 		if final != "" {
 			detail["error"] = final
 		}
-		e := store.AuditEntry{Actor: actor.Audit, UserID: actor.UserID, Action: auditStackAction(j.Action), Target: a.Name + "/" + st.Name, IP: actor.IP}
+		e := store.AuditEntry{Actor: actor.Audit, UserID: actor.UserID, Action: auditStackAction(j.Action), Target: a.Name + "/" + st.Name, IP: actor.IP, HostIDs: []string{st.HostID}}
 		e.Detail, _ = json.Marshal(detail)
 		s.writeAudit(ctx, e)
 		j.finish(final)

@@ -214,6 +214,8 @@ type fakeAutoStore struct {
 	deployed map[string]string
 	points   map[string][]store.RollbackPoint // newest last
 	n        int
+	moves    []store.StackMove // see scope_test.go
+	auditFor *store.User       // the viewer ListAudit was last asked for
 }
 
 func newFakeAutoStore() *fakeAutoStore {
@@ -1075,6 +1077,9 @@ func TestAutoTickRunsAtWindowStart(t *testing.T) {
 func TestAutoUpdateAPIRolesAndFreshSignIn(t *testing.T) {
 	x := newAutoRig(t)
 	x.host(autoHostA, "alpha", wire.Container{ID: "c1", Name: "web", Image: "nginx:1", State: "running"})
+	app := deployedStack("app", "services: {}\n")
+	app.ID = stackX
+	x.db.stacks[app.ID] = app
 	put := `{"enabled":true}`
 	x.user.Role = "operator"
 	for _, c := range [][2]string{{"GET", "/api/auto-updates"}, {"PUT", "/api/hosts/" + autoHostA + "/containers/web/auto-update"}, {"POST", "/api/auto-updates/run"}, {"GET", "/api/auto-updates/runs/latest"}} {

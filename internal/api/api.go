@@ -97,125 +97,151 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/invite/accept", s.acceptInvite)
 	mux.HandleFunc("POST /api/logout", s.logout)
 
-	// any signed-in user
-	mux.Handle("GET /api/me", s.need("viewer", s.me))
-	mux.Handle("POST /api/me/passkeys/begin", s.need("viewer", s.addPasskeyBegin))
-	mux.Handle("POST /api/me/passkeys/finish", s.need("viewer", s.addPasskeyFinish))
-	mux.Handle("DELETE /api/me/passkeys/{id}", s.need("viewer", s.deletePasskey))
-	mux.Handle("POST /api/me/recovery-codes", s.need("viewer", s.regenRecovery))
-	mux.Handle("POST /api/me/password", s.need("viewer", s.changePassword))
-	mux.Handle("POST /api/me/sessions/sign-out-others", s.need("viewer", s.signOutOthers))
-	mux.Handle("GET /api/me/tokens", s.need("viewer", s.listMyTokens))
-	mux.Handle("POST /api/me/tokens", s.need("viewer", s.createToken))
-	mux.Handle("DELETE /api/me/tokens/{tid}", s.need("viewer", s.revokeMyToken))
-	mux.Handle("GET /api/containers", s.need("viewer", s.containers))
-	mux.Handle("GET /api/events", s.need("viewer", s.events))
-	mux.Handle("GET /api/hosts", s.need("viewer", s.hosts))
-	mux.Handle("GET /api/hosts/agent-addr", s.need("admin", s.agentAddrDefault))
-	mux.Handle("GET /api/placement", s.need("viewer", s.placement))
-	mux.Handle("GET /api/hosts/{id}/containers/{cid}/logs", s.stream("viewer", s.logs))
-
-	mux.Handle("GET /api/hosts/{id}/containers/{cid}", s.need("viewer", s.inspect))
-	for _, kind := range []string{"images", "volumes", "networks"} {
-		mux.Handle("GET /api/hosts/{id}/"+kind, s.need("viewer", s.listResources(kind)))
+	for _, rt := range s.routes() {
+		h := s.need(rt.role, rt.scope, rt.fn)
+		if rt.stream {
+			h = s.stream(rt.role, rt.scope, rt.fn)
+		}
+		mux.Handle(rt.pattern, h)
 	}
-	mux.Handle("GET /api/stacks", s.need("viewer", s.listStacks))
-	mux.Handle("GET /api/stacks/{sid}", s.need("viewer", s.getStack))
-	mux.Handle("GET /api/jobs/{jid}", s.stream("viewer", s.jobStream))
-
-	// operators
-	mux.Handle("POST /api/hosts/{id}/containers/{cid}/{action}", s.need("operator", s.containerAction))
-	mux.Handle("POST /api/hosts/{id}/images/pull", s.need("operator", s.pullImage))
-	// image updates: check now, and pull & recreate a standalone container
-	mux.Handle("POST /api/hosts/{id}/check-updates", s.need("operator", func(w http.ResponseWriter, r *http.Request) {
-		s.runOp(w, r, wire.Operation{Kind: wire.OpImagesCheckUpdates}, "images")
-	}))
-	mux.Handle("POST /api/hosts/{id}/containers/{cid}/recreate", s.need("operator", func(w http.ResponseWriter, r *http.Request) {
-		cid := r.PathValue("cid")
-		s.runOp(w, r, wire.Operation{Kind: wire.OpContainerRecreate, Target: cid}, s.containerName(r.PathValue("id"), cid))
-	}))
-	mux.Handle("DELETE /api/hosts/{id}/images/{rid}", s.need("operator", s.removeResource(wire.OpImageRemove)))
-	mux.Handle("DELETE /api/hosts/{id}/networks/{rid}", s.need("operator", s.removeResource(wire.OpNetworkRemove)))
-	mux.Handle("POST /api/hosts/{id}/images/prune", s.need("operator", s.prune(wire.OpImagesPrune)))
-	mux.Handle("POST /api/hosts/{id}/networks/prune", s.need("operator", s.prune(wire.OpNetworksPrune)))
-	// volumes hold data: removing them is admin-only
-	mux.Handle("DELETE /api/hosts/{id}/volumes/{rid}", s.need("admin", s.removeResource(wire.OpVolumeRemove)))
-	mux.Handle("POST /api/hosts/{id}/volumes/prune", s.need("admin", s.prune(wire.OpVolumesPrune)))
-	mux.Handle("POST /api/hosts/{id}/containers/{cid}/remove-with-volumes", s.need("admin", s.removeWithVolumes))
-	// stack lifecycle on definitions an admin has saved
-	mux.Handle("POST /api/stacks/{sid}/{action}", s.need("operator", s.stackAction))
-	mux.Handle("GET /api/stacks/{sid}/rollback", s.need("viewer", s.getRollback))
-	mux.Handle("POST /api/stacks/{sid}/rollback", s.need("operator", s.rollbackStack))
-	mux.Handle("POST /api/stacks/takeover-check", s.need("admin", s.checkTakeover))
-	mux.Handle("POST /api/stacks/preflight", s.need("admin", s.checkPreflight))
-	mux.Handle("GET /api/hosts/{id}/folders", s.need("admin", s.hostFolders))
-	mux.Handle("GET /api/stacks/takeover-source", s.need("admin", s.takeoverSource))
-	mux.Handle("GET /api/stacks/{sid}/move", s.need("admin", s.moveCheck))
-	mux.Handle("POST /api/stacks/{sid}/move", s.need("admin", s.startMove))
-	mux.Handle("DELETE /api/moves/{mid}/leftovers", s.need("admin", s.removeLeftovers))
-	mux.Handle("GET /api/hosts/{id}/containers/{cid}/move", s.need("admin", s.containerMoveCheck))
-	mux.Handle("POST /api/hosts/{id}/containers/{cid}/move", s.need("admin", s.startContainerMove))
-	mux.Handle("GET /api/container-moves", s.need("admin", s.containerMoves))
-	// writing a compose file is root on the host: admins only (see stacks.go)
-	mux.Handle("POST /api/stacks", s.need("admin", s.createStack))
-	// Docker Hub lookups for the "New container" page (which creates a stack)
-	mux.Handle("GET /api/dockerhub/search", s.need("admin", s.hubSearch))
-	mux.Handle("GET /api/dockerhub/tags", s.need("admin", s.hubTags))
-	mux.Handle("PUT /api/stacks/{sid}", s.need("admin", s.updateStack))
-	mux.Handle("DELETE /api/stacks/{sid}", s.need("admin", s.deleteStack))
-
-	// admins
-	mux.Handle("POST /api/hosts", s.need("admin", s.createHost))
-	mux.Handle("POST /api/hosts/{id}/token", s.need("admin", s.newHostToken))
-	mux.Handle("DELETE /api/hosts/{id}", s.need("admin", s.deleteHost))
-	mux.Handle("PUT /api/hosts/{id}", s.need("admin", s.renameHost))
-	mux.Handle("GET /api/audit", s.need("admin", s.audit))
-	mux.Handle("GET /api/users", s.need("admin", s.listUsers))
-	mux.Handle("POST /api/invites", s.need("admin", s.createInvite))
-	mux.Handle("DELETE /api/invites/{iid}", s.need("admin", s.deleteInvite))
-	mux.Handle("PUT /api/users/{uid}/role", s.need("admin", s.setRole))
-	mux.Handle("DELETE /api/users/{uid}", s.need("admin", s.deleteUser))
-	mux.Handle("GET /api/tokens", s.need("admin", s.listAllTokens))
-	mux.Handle("DELETE /api/tokens/{tid}", s.need("admin", s.revokeAnyToken))
-	mux.Handle("GET /api/updates", s.need("admin", s.updates))
-	mux.Handle("POST /api/updates/check", s.need("admin", s.checkUpdates))
-	mux.Handle("GET /api/settings/https", s.need("admin", s.httpsSettings))
-	mux.Handle("POST /api/settings/https/test", s.need("admin", s.httpsTest))
-	mux.Handle("PUT /api/settings/https", s.need("admin", s.httpsEnable))
-	mux.Handle("DELETE /api/settings/https", s.need("admin", s.httpsDisable))
-	// private registry logins (see registries.go); changes need a fresh sign-in
-	mux.Handle("GET /api/registries", s.need("admin", s.listRegistries))
-	mux.Handle("POST /api/registries", s.need("admin", s.addRegistry))
-	mux.Handle("PUT /api/registries/{rid}", s.need("admin", s.updateRegistry))
-	mux.Handle("DELETE /api/registries/{rid}", s.need("admin", s.deleteRegistry))
-	mux.Handle("POST /api/registries/{rid}/test", s.need("admin", s.testRegistry))
-	// terminals: admin-only (a shell sees everything in the container)
-	mux.Handle("POST /api/hosts/{id}/containers/{cid}/exec", s.need("admin", s.execOpen))
-	mux.Handle("GET /api/exec/{sid}", s.stream("admin", s.execStream)) // ends if no longer admin
-	mux.Handle("POST /api/exec/{sid}/input", s.need("admin", s.execInput))
-	mux.Handle("POST /api/exec/{sid}/resize", s.need("admin", s.execResize))
-	mux.Handle("DELETE /api/exec/{sid}", s.need("admin", s.execClose))
-	// automatic updates (see autoupdate.go); changes need a fresh sign-in
-	mux.Handle("GET /api/auto-updates", s.need("admin", s.listAutoUpdates))
-	mux.Handle("GET /api/auto-updates/settings", s.need("admin", s.getAutoSettings))
-	mux.Handle("PUT /api/auto-updates/settings", s.need("admin", s.putAutoSettings))
-	mux.Handle("POST /api/auto-updates/run", s.need("admin", s.runAutoUpdatesNow))
-	mux.Handle("GET /api/auto-updates/runs/latest", s.need("admin", s.latestAutoRunHandler))
-	mux.Handle("PUT /api/stacks/{sid}/auto-update", s.need("admin", s.stackAutoUpdate))
-	mux.Handle("PUT /api/hosts/{id}/containers/{name}/auto-update", s.need("admin", s.containerAutoUpdate))
-	mux.Handle("POST /api/hosts/{id}/update", s.need("admin", s.updateHost))
-	mux.Handle("POST /api/hosts/{id}/lighter-stats", s.need("admin", s.lighterStats))
-	mux.Handle("PUT /api/hosts/{id}/stats-source", s.need("admin", s.statsSource))
-	// Docker Engine upgrades restart every container: admins, with explicit confirmation
-	mux.Handle("POST /api/hosts/{id}/docker/plan", s.need("admin", s.dockerPlan))
-	mux.Handle("POST /api/hosts/{id}/os/check", s.need("admin", s.checkOS))
-	mux.Handle("POST /api/hosts/{id}/os/upgrade", s.need("admin", s.upgradeOS))
-	mux.Handle("POST /api/hosts/{id}/docker/upgrade", s.need("admin", s.dockerUpgrade))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { jsonErr(w, http.StatusNotFound, "not found") })
 	mux.Handle("/", s.spa())
 
 	return s.secure(mux)
+}
+
+// routes is the signed-in API: each route's minimum role and which hosts it
+// concerns (see scope.go). Users limited to some hosts are kept to them by
+// need(); TestRouteScopes checks every route has a fitting scope.
+func (s *Server) routes() []route {
+	rt := func(pattern, role string, sc scope, fn http.HandlerFunc) route {
+		return route{pattern: pattern, role: role, scope: sc, fn: fn}
+	}
+	stream := func(pattern, role string, sc scope, fn http.HandlerFunc) route {
+		return route{pattern: pattern, role: role, scope: sc, fn: fn, stream: true}
+	}
+	out := []route{
+		// any signed-in user: their own account
+		rt("GET /api/me", "viewer", scopeAny, s.me),
+		rt("POST /api/me/passkeys/begin", "viewer", scopeAny, s.addPasskeyBegin),
+		rt("POST /api/me/passkeys/finish", "viewer", scopeAny, s.addPasskeyFinish),
+		rt("DELETE /api/me/passkeys/{id}", "viewer", scopeAny, s.deletePasskey),
+		rt("POST /api/me/recovery-codes", "viewer", scopeAny, s.regenRecovery),
+		rt("POST /api/me/password", "viewer", scopeAny, s.changePassword),
+		rt("POST /api/me/sessions/sign-out-others", "viewer", scopeAny, s.signOutOthers),
+		rt("GET /api/me/tokens", "viewer", scopeAny, s.listMyTokens),
+		rt("POST /api/me/tokens", "viewer", scopeAny, s.createToken), // tokens carry the user's hosts
+		rt("DELETE /api/me/tokens/{tid}", "viewer", scopeAny, s.revokeMyToken),
+
+		// viewers
+		rt("GET /api/containers", "viewer", scopeFiltered, s.containers),
+		rt("GET /api/events", "viewer", scopeFiltered, s.events),
+		rt("GET /api/hosts", "viewer", scopeFiltered, s.hosts),
+		rt("GET /api/hosts/agent-addr", "admin", scopeHub, s.agentAddrDefault),
+		rt("GET /api/placement", "viewer", scopeFiltered, s.placement),
+		stream("GET /api/hosts/{id}/containers/{cid}/logs", "viewer", scopeHost, s.logs),
+		rt("GET /api/hosts/{id}/containers/{cid}", "viewer", scopeHost, s.inspect),
+		rt("GET /api/hosts/{id}/images", "viewer", scopeHost, s.listResources("images")),
+		rt("GET /api/hosts/{id}/volumes", "viewer", scopeHost, s.listResources("volumes")),
+		rt("GET /api/hosts/{id}/networks", "viewer", scopeHost, s.listResources("networks")),
+		rt("GET /api/stacks", "viewer", scopeFiltered, s.listStacks),
+		rt("GET /api/stacks/{sid}", "viewer", scopeStack, s.getStack),
+		stream("GET /api/jobs/{jid}", "viewer", scopeFiltered, s.jobStream),
+
+		// operators
+		rt("POST /api/hosts/{id}/containers/{cid}/{action}", "operator", scopeHost, s.containerAction),
+		rt("POST /api/hosts/{id}/images/pull", "operator", scopeHost, s.pullImage),
+		// image updates: check now, and pull & recreate a standalone container
+		rt("POST /api/hosts/{id}/check-updates", "operator", scopeHost, func(w http.ResponseWriter, r *http.Request) {
+			s.runOp(w, r, wire.Operation{Kind: wire.OpImagesCheckUpdates}, "images")
+		}),
+		rt("POST /api/hosts/{id}/containers/{cid}/recreate", "operator", scopeHost, func(w http.ResponseWriter, r *http.Request) {
+			cid := r.PathValue("cid")
+			s.runOp(w, r, wire.Operation{Kind: wire.OpContainerRecreate, Target: cid}, s.containerName(r.PathValue("id"), cid))
+		}),
+		rt("DELETE /api/hosts/{id}/images/{rid}", "operator", scopeHost, s.removeResource(wire.OpImageRemove)),
+		rt("DELETE /api/hosts/{id}/networks/{rid}", "operator", scopeHost, s.removeResource(wire.OpNetworkRemove)),
+		rt("POST /api/hosts/{id}/images/prune", "operator", scopeHost, s.prune(wire.OpImagesPrune)),
+		rt("POST /api/hosts/{id}/networks/prune", "operator", scopeHost, s.prune(wire.OpNetworksPrune)),
+		// volumes hold data: removing them is admin-only
+		rt("DELETE /api/hosts/{id}/volumes/{rid}", "admin", scopeHost, s.removeResource(wire.OpVolumeRemove)),
+		rt("POST /api/hosts/{id}/volumes/prune", "admin", scopeHost, s.prune(wire.OpVolumesPrune)),
+		rt("POST /api/hosts/{id}/containers/{cid}/remove-with-volumes", "admin", scopeHost, s.removeWithVolumes),
+		// stack lifecycle on definitions an admin has saved
+		rt("POST /api/stacks/{sid}/{action}", "operator", scopeStack, s.stackAction),
+		rt("GET /api/stacks/{sid}/rollback", "viewer", scopeStack, s.getRollback),
+		rt("POST /api/stacks/{sid}/rollback", "operator", scopeStack, s.rollbackStack),
+		rt("POST /api/stacks/takeover-check", "admin", scopeFiltered, s.checkTakeover),
+		rt("POST /api/stacks/preflight", "admin", scopeFiltered, s.checkPreflight),
+		rt("GET /api/hosts/{id}/folders", "admin", scopeHost, s.hostFolders),
+		rt("GET /api/stacks/takeover-source", "admin", scopeFiltered, s.takeoverSource),
+		// moves need both hosts: the path names the source, the handler checks the target
+		rt("GET /api/stacks/{sid}/move", "admin", scopeStack, s.moveCheck),
+		rt("POST /api/stacks/{sid}/move", "admin", scopeStack, s.startMove),
+		rt("DELETE /api/moves/{mid}/leftovers", "admin", scopeFiltered, s.removeLeftovers),
+		rt("GET /api/hosts/{id}/containers/{cid}/move", "admin", scopeHost, s.containerMoveCheck),
+		rt("POST /api/hosts/{id}/containers/{cid}/move", "admin", scopeHost, s.startContainerMove),
+		rt("GET /api/container-moves", "admin", scopeFiltered, s.containerMoves),
+		// writing a compose file is root on the host: admins only (see stacks.go)
+		rt("POST /api/stacks", "admin", scopeFiltered, s.createStack),
+		// Docker Hub lookups for the "New container" page (which creates a stack)
+		rt("GET /api/dockerhub/search", "admin", scopeAny, s.hubSearch),
+		rt("GET /api/dockerhub/tags", "admin", scopeAny, s.hubTags),
+		rt("PUT /api/stacks/{sid}", "admin", scopeStack, s.updateStack),
+		rt("DELETE /api/stacks/{sid}", "admin", scopeStack, s.deleteStack),
+
+		// admins
+		rt("POST /api/hosts", "admin", scopeHub, s.createHost),
+		rt("POST /api/hosts/{id}/token", "admin", scopeHub, s.newHostToken),
+		rt("DELETE /api/hosts/{id}", "admin", scopeHub, s.deleteHost),
+		rt("PUT /api/hosts/{id}", "admin", scopeHub, s.renameHost),
+		rt("GET /api/audit", "admin", scopeFiltered, s.audit),
+		rt("GET /api/users", "admin", scopeHub, s.listUsers),
+		rt("POST /api/invites", "admin", scopeHub, s.createInvite),
+		rt("DELETE /api/invites/{iid}", "admin", scopeHub, s.deleteInvite),
+		rt("PUT /api/users/{uid}/role", "admin", scopeHub, s.setRole),
+		rt("PUT /api/users/{uid}/hosts", "admin", scopeHub, s.setHosts),
+		rt("DELETE /api/users/{uid}", "admin", scopeHub, s.deleteUser),
+		rt("GET /api/tokens", "admin", scopeHub, s.listAllTokens),
+		rt("DELETE /api/tokens/{tid}", "admin", scopeHub, s.revokeAnyToken),
+		rt("GET /api/updates", "admin", scopeFiltered, s.updates),
+		rt("POST /api/updates/check", "admin", scopeFiltered, s.checkUpdates),
+		rt("GET /api/settings/https", "admin", scopeHub, s.httpsSettings),
+		rt("POST /api/settings/https/test", "admin", scopeHub, s.httpsTest),
+		rt("PUT /api/settings/https", "admin", scopeHub, s.httpsEnable),
+		rt("DELETE /api/settings/https", "admin", scopeHub, s.httpsDisable),
+		// private registry logins (see registries.go); changes need a fresh sign-in
+		rt("GET /api/registries", "admin", scopeHub, s.listRegistries),
+		rt("POST /api/registries", "admin", scopeHub, s.addRegistry),
+		rt("PUT /api/registries/{rid}", "admin", scopeHub, s.updateRegistry),
+		rt("DELETE /api/registries/{rid}", "admin", scopeHub, s.deleteRegistry),
+		rt("POST /api/registries/{rid}/test", "admin", scopeHub, s.testRegistry),
+		// terminals: admin-only (a shell sees everything in the container).
+		// A terminal belongs to the user who opened it (on a host they reach).
+		rt("POST /api/hosts/{id}/containers/{cid}/exec", "admin", scopeHost, s.execOpen),
+		stream("GET /api/exec/{eid}", "admin", scopeAny, s.execStream), // ends if no longer admin, or the host goes out of reach
+		rt("POST /api/exec/{eid}/input", "admin", scopeAny, s.execInput),
+		rt("POST /api/exec/{eid}/resize", "admin", scopeAny, s.execResize),
+		rt("DELETE /api/exec/{eid}", "admin", scopeAny, s.execClose),
+		// automatic updates (see autoupdate.go); changes need a fresh sign-in
+		rt("GET /api/auto-updates", "admin", scopeFiltered, s.listAutoUpdates),
+		rt("GET /api/auto-updates/settings", "admin", scopeHub, s.getAutoSettings),
+		rt("PUT /api/auto-updates/settings", "admin", scopeHub, s.putAutoSettings),
+		rt("POST /api/auto-updates/run", "admin", scopeHub, s.runAutoUpdatesNow),
+		rt("GET /api/auto-updates/runs/latest", "admin", scopeHub, s.latestAutoRunHandler),
+		rt("PUT /api/stacks/{sid}/auto-update", "admin", scopeStack, s.stackAutoUpdate),
+		rt("PUT /api/hosts/{id}/containers/{name}/auto-update", "admin", scopeHost, s.containerAutoUpdate),
+		rt("POST /api/hosts/{id}/update", "admin", scopeHost, s.updateHost),
+		rt("POST /api/hosts/{id}/lighter-stats", "admin", scopeHost, s.lighterStats),
+		rt("PUT /api/hosts/{id}/stats-source", "admin", scopeHost, s.statsSource),
+		// Docker Engine upgrades restart every container: admins, with explicit confirmation
+		rt("POST /api/hosts/{id}/docker/plan", "admin", scopeHost, s.dockerPlan),
+		rt("POST /api/hosts/{id}/os/check", "admin", scopeHost, s.checkOS),
+		rt("POST /api/hosts/{id}/os/upgrade", "admin", scopeHost, s.upgradeOS),
+		rt("POST /api/hosts/{id}/docker/upgrade", "admin", scopeHost, s.dockerUpgrade),
+	}
+	return out
 }
 
 // secure adds security headers and CSRF protection for state-changing calls.
@@ -324,7 +350,9 @@ func localOnlyHost(host string) bool {
 	return false
 }
 
-func (s *Server) need(role string, fn http.HandlerFunc) http.Handler {
+// need authenticates the caller, checks their role, then the route's host
+// scope (see scope.go), before running fn.
+func (s *Server) need(role string, sc scope, fn http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authn := s.authn
 		if authn == nil {
@@ -347,10 +375,15 @@ func (s *Server) need(role string, fn http.HandlerFunc) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), ctxKey{}, u)
+		ctx = context.WithValue(ctx, accessKey{}, &access{role: role})
 		if tok != nil {
 			ctx = auth.WithToken(ctx, tok)
 		}
-		fn(w, r.WithContext(ctx))
+		r, ok := s.authorize(w, r.WithContext(ctx), sc)
+		if !ok {
+			return
+		}
+		fn(w, r)
 	})
 }
 
@@ -359,7 +392,7 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	if n <= 0 || n > 1000 {
 		n = 200
 	}
-	entries, err := s.Store.ListAudit(r.Context(), n)
+	entries, err := s.aus().ListAudit(r.Context(), n, userFrom(r)) // only their hosts' entries for a scoped admin
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -382,6 +415,7 @@ func (s *Server) writeAudit(ctx context.Context, e store.AuditEntry) {
 func (s *Server) record(r *http.Request, u *store.User, action, target string, detail any) {
 	e := auditEntry(r, u, action, target, detail)
 	e.IP = s.Auth.ClientIP(r)
+	e.HostIDs = accessFrom(r).hosts
 	if s.audited != nil {
 		s.audited(e)
 		return
@@ -761,11 +795,11 @@ func (s *Server) hosts(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, visible(userFrom(r), out, func(h hostView) string { return h.ID }))
 }
 
 func (s *Server) hostViews(ctx context.Context) ([]hostView, error) {
-	hs, err := s.Store.ListHosts(ctx)
+	hs, err := s.aus().ListHosts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1082,7 +1116,7 @@ type containerView struct {
 }
 
 func (s *Server) containers(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.containerViews())
+	writeJSON(w, http.StatusOK, visible(userFrom(r), s.containerViews(), func(c containerView) string { return c.HostID }))
 }
 
 func (s *Server) containerViews() []containerView {
@@ -1233,8 +1267,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	ctx := r.Context()
+	me := userFrom(r)
 	defer s.Reg.Watch()() // agents sample often only while someone is watching
-	// One shared producer builds each update; this stream just copies it.
+	// One shared producer builds each update; this stream just copies it,
+	// or, for a user limited to some hosts, sends the part about those.
 	feed := s.fleetFeed()
 	defer feed.subscribe()()
 	keepalive := time.NewTicker(25 * time.Second)
@@ -1243,7 +1279,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	recheck := time.NewTicker(time.Minute)
 	defer recheck.Stop()
 	for {
-		frame, next := feed.current()
+		frame, payload, next := feed.current()
+		if frame != nil && me.Scoped {
+			frame = scopedFleetFrame(me, payload)
+		}
 		if frame != nil {
 			if _, err := w.Write(frame); err != nil {
 				return
@@ -1263,7 +1302,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case <-recheck.C:
-				if _, err := s.Auth.UserFromRequest(r); err != nil {
+				if !s.stillAllowed(r, me, "viewer") {
 					return
 				}
 			case <-next:

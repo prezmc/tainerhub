@@ -65,6 +65,9 @@ func (s *Server) containerMoveCheck(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "choose a host")
 		return
 	}
+	if !s.allowHosts(w, r, to) { // a move needs both hosts
+		return
+	}
 	writeJSON(w, http.StatusOK, checkContainerMove(r.Context(), regEnv{s}, from, cid, to))
 }
 
@@ -81,6 +84,9 @@ func (s *Server) startContainerMove(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validUUID(in.HostID) {
 		jsonErr(w, http.StatusBadRequest, "choose a host")
+		return
+	}
+	if !s.allowHosts(w, r, in.HostID) { // a move needs both hosts
 		return
 	}
 	rep := checkContainerMove(r.Context(), regEnv{s}, from, cid, in.HostID)
@@ -152,12 +158,23 @@ func (s *Server) startContainerMove(w http.ResponseWriter, r *http.Request) {
 // containerMoves answers GET /api/container-moves: recent container moves,
 // so the UI can offer to delete what they left behind.
 func (s *Server) containerMoves(w http.ResponseWriter, r *http.Request) {
-	ms, err := s.Store.ContainerMoves(r.Context(), 100)
+	ms, err := s.aus().ContainerMoves(r.Context(), 100)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, ms)
+	u := userFrom(r)
+	writeJSON(w, http.StatusOK, visible(u, nonNil(ms), func(m store.StackMove) string {
+		if !moveVisible(u, m) {
+			return ""
+		}
+		return m.FromHost
+	}))
+}
+
+// moveVisible: a move is shown only to those who can see both its hosts.
+func moveVisible(u store.User, m store.StackMove) bool {
+	return u.CanSeeHost(m.FromHost) && u.CanSeeHost(m.ToHost)
 }
 
 // removeContainerLeftovers deletes what a container move left on a host:

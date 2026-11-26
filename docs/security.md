@@ -85,6 +85,12 @@ Roles are enforced by the hub's API on every request, not just hidden in the UI.
 
 Lowering someone's role or removing them takes effect on their open pages too: see [Open streams are re-checked](#open-streams-are-re-checked).
 
+### Users limited to some hosts
+
+An admin can limit a user to some hosts ([how](features.md#limiting-a-user-to-some-hosts)). The hub enforces it on every request: each API route declares which hosts it concerns, and the check runs in one place before the route's own code. A test goes over every route, so a new one can't skip it. Other hosts answer `404`, as if they didn't exist, and the user's API tokens are limited the same way.
+
+An admin limited to some hosts still has root on those hosts through compose files and terminals, so treat them as an admin of those machines. They can't reach hub-wide settings, users or tokens, and they can't be given the server the hub runs on: root there would be root on the hub, and admins see container settings such as the hub's database password. If such a user would somehow reach that server anyway, the hub treats them as an operator there.
+
 ## What non-admins can't see
 
 Secrets often live in places Docker shows freely. For everyone below admin, the hub removes them before they leave the server:
@@ -117,7 +123,7 @@ Container **logs** are visible to every role, including viewers. If your apps pr
 
 ### Open streams are re-checked
 
-Live updates, log views, terminals and stack output are long-lived connections. About once a minute the hub checks that the session or token behind each one is still valid and still has the role it needs. If the user was removed or signed out, the token was revoked or expired, or the role was lowered, the stream is closed within that minute. A terminal is closed once its user is no longer an admin.
+Live updates, log views, terminals and stack output are long-lived connections. About once a minute the hub checks that the session or token behind each one is still valid and still has the role it needs. If the user was removed or signed out, the token was revoked or expired, the role was lowered, or they lost a host they could reach, the stream is closed within that minute. A terminal is closed once its user is no longer an admin.
 
 ### Fresh sign-in for sensitive changes
 
@@ -125,7 +131,7 @@ Some changes would give a stolen session lasting access, or more access. They ne
 
 - adding or removing a passkey, generating new recovery codes, and setting a first password,
 - creating an API token,
-- creating invites, changing roles and removing users,
+- creating invites, changing roles or hosts and removing users,
 - adding a host and making a new join token,
 - turning HTTPS on or off.
 

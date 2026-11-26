@@ -80,7 +80,13 @@ func (s *Server) listAutoUpdates(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"targets": nonNil(ts), "window": s.autoSettingsView(set), "run": s.latestAutoRun()})
+	// A host admin sees their hosts' targets, and the run's outcomes on them.
+	u := userFrom(r)
+	run := s.latestAutoRun()
+	if run != nil && u.Scoped {
+		run.Outcomes = visible(u, run.Outcomes, func(o autoOutcome) string { return o.HostID })
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"targets": visible(u, nonNil(ts), func(t store.AutoUpdateTarget) string { return t.HostID }), "window": s.autoSettingsView(set), "run": run})
 }
 
 func (s *Server) latestAutoRunHandler(w http.ResponseWriter, r *http.Request) {

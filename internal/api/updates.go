@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prezmc/tainerhub/internal/store"
 	"github.com/prezmc/tainerhub/internal/version"
 	"github.com/prezmc/tainerhub/internal/wire"
 )
@@ -251,7 +252,7 @@ func (s *Server) writeUpdates(w http.ResponseWriter, r *http.Request, latest *la
 	if err != nil {
 		out["error"] = err.Error()
 	}
-	hosts, herr := s.Store.ListHosts(r.Context())
+	hosts, herr := s.aus().ListHosts(r.Context())
 	if herr != nil {
 		s.fail(w, herr)
 		return
@@ -260,6 +261,7 @@ func (s *Server) writeUpdates(w http.ResponseWriter, r *http.Request, latest *la
 	dockerLatest := s.dockerLatest.get(r.Context())
 	out["dockerLatest"] = dockerLatest
 	list := []hostUpdate{}
+	hosts = visible(userFrom(r), hosts, func(h store.Host) string { return h.ID })
 	for _, h := range hosts {
 		u := hostUpdate{ID: h.ID, Name: h.Name, HubHost: h.ID == local}
 		if a := s.Reg.Get(h.ID); a != nil {

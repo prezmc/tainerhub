@@ -544,14 +544,17 @@ Admins manage users on the **Users** page.
 
 1. Click **Invite someone**.
 2. Pick a role. You can't give out a role higher than your own.
-3. Optionally fill in **Who is it for?**, for example "Alex, for the media server".
-4. Click **Create invite link**, then **Copy link** and send it however you like.
+3. Under **Hosts**, keep **All hosts**, or pick **Only some hosts** and tick the hosts they may use (see [Limiting a user to some hosts](#limiting-a-user-to-some-hosts)).
+4. Optionally fill in **Who is it for?**, for example "Alex, for the media server".
+5. Click **Create invite link**, then **Copy link** and send it however you like.
 
 The link works once, for 24 hours. The person opens it, picks their own username and password (at least 10 characters), and gets their own recovery codes. Unused invites are listed under **Pending invites**, where you can **Revoke** them.
 
 **Changing a role or removing a user:** use the role menu or the remove button on their row. You can only manage users with a lower role than yours, and never your own account. Nobody can change or remove the owner. Removing a user also removes their API tokens.
 
-Creating invites, changing roles and removing users need a [recent sign-in](#the-fresh-sign-in-rule). If yours is older than 10 minutes, a **Sign in again to continue** dialog opens.
+Each user's row shows the hosts they can use: **All hosts**, or the hosts' names.
+
+Creating invites, changing roles or hosts and removing users need a [recent sign-in](#the-fresh-sign-in-rule). If yours is older than 10 minutes, a **Sign in again to continue** dialog opens.
 
 **API tokens.** Below the users, an **API tokens** section lists the tokens of users ranked below you, and your own (the owner sees every token), with their access level, expiry and when and from where they were last used. **Revoke** stops a token at once. This section only appears when there is at least one token to show.
 
@@ -585,9 +588,34 @@ There are four roles. Each one can do everything the role below it can.
 
 The owner is the account created at setup. There is one owner, and nobody else can change or remove it.
 
+A user can also be [limited to some hosts](#limiting-a-user-to-some-hosts). Their role then applies on those hosts only. An admin limited that way can't add, rename or remove hosts, manage users or tokens, open Settings or update TainerHub itself.
+
 These rules are enforced by the hub's API, not just hidden in the UI.
 
 To script TainerHub with an API token, see the [API guide](api.md).
+
+### Limiting a user to some hosts
+
+<img src="images/user-hosts.png" width="900" alt="The Hosts dialog for a user, limited to two hosts">
+
+By default everyone can use every host, including hosts added later. To limit someone to some hosts, click **Hosts** on their row, choose **Only some hosts**, tick the hosts and click **Save**. You can also pick hosts when you [invite someone](#users-and-roles). Choose **All hosts** to undo it.
+
+For someone limited to some hosts:
+
+- **They only see their hosts.** Every other host, with its containers, stacks, images, volumes, networks, logs, jobs, updates and activity, is hidden everywhere: the Overview, lists, search, the command palette and host suggestions. Asking the API for another host's things answers `404`, as if it didn't exist.
+- **Their role applies on their hosts only.** An operator limited to `nas` can restart containers on `nas`, and nothing anywhere else.
+- **Moving a stack or container needs both hosts.** They only see the hosts they could move it to.
+- **Their API tokens follow.** A token reaches the same hosts as its owner, and changes to the owner's hosts apply to their tokens at once.
+- **Changes apply at once.** Open log streams and terminals on a host they lose close within a minute.
+- **The audit log** shows them their own actions and the entries about their hosts only. Entries from before this feature have no hosts recorded, so they only see their own.
+
+**An admin limited to some hosts is a host admin.** They can edit stacks, open terminals, delete volumes, move things between their hosts, and update the agent, Docker Engine and OS packages on their hosts. Hub-wide things stay with admins who have every host: **Users**, **Settings** (HTTPS, passkeys, registry logins, the automatic update window), everyone's API tokens, adding, renaming and removing hosts, and updating TainerHub itself. They get `403` for those.
+
+A host admin can't include the server the hub runs on (marked **hub** in the list): a compose file can mount the whole machine, so root there is root on the hub, and admins see container settings such as the hub's database password. Make them an operator there, or give them every host.
+
+An admin with every host can manage an admin limited to some hosts, as if their role were lower. The owner always has every host.
+
+Changes to someone's hosts are recorded in the [audit log](#audit-log) as **user.hosts_changed**, with the hosts before and after.
 
 ## Audit log
 
@@ -606,7 +634,7 @@ It records, among other things:
 - terminal sessions,
 - hosts added, renamed, removed, enrolled and their certificates renewed,
 - TainerHub, Docker Engine and OS package updates, and stats-source changes,
-- users invited, joined, changed and removed,
+- users invited, joined, changed (role or hosts) and removed,
 - API tokens created and revoked,
 - HTTPS turned on or off.
 

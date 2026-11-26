@@ -6,6 +6,8 @@ import { Badge, Button, Card, ErrorNote, IconButton, Input, Modal, PageHeader, R
 import { useMe } from './AppLayout'
 import { useSignInAgain } from '../reauth'
 import { ApiTokensCard } from '../tokens'
+import { useHostsQuery } from '../fleet'
+import { scopeOf, scopeText } from '../hostscope'
 
 export function AccountPage() {
   const me = useMe()
@@ -50,13 +52,14 @@ export function AccountPage() {
     onError,
   })
 
+  const hosts = useHostsQuery()
   const low = me.recoveryCodesLeft <= 3
   const canAddPasskey = passkeysUsable(me.passkeysEnabled, me.publicURL)
   const onlyWayIn = (n: number) => !me.hasPassword && n <= 1
 
   return (
     <div className="max-w-3xl">
-      <PageHeader title="Account & sign-in" subtitle={`Signed in as ${me.user.username}`}>
+      <PageHeader title="Account & sign-in" subtitle={`Signed in as ${me.user.username}${me.user.scoped ? ` · ${scopeText(scopeOf(me.user), hosts.data ?? [])} only` : ''}`}>
         <Badge tone="info" className="capitalize">
           {me.user.role}
         </Badge>

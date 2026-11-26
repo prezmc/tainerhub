@@ -20,6 +20,19 @@ import {
 } from './autoupdates'
 import { Badge, Button, Card, ErrorNote, Input, cx, useToast } from './ui'
 import { useOpenJob } from './stacks'
+import { hubAdmin } from './hostscope'
+import { useMe } from './pages/AppLayout'
+
+/** The automatic update window lives in Settings, which only admins with every host can open. */
+function SettingsLink({ children, className }: { children: string; className: string }) {
+  const me = useMe()
+  if (!hubAdmin(me?.user)) return null
+  return (
+    <Link to="/settings" hash="auto-updates" className={className}>
+      {children}
+    </Link>
+  )
+}
 
 /** Opted-in targets, the window and the last run (admins only). Polls quickly while a run is going. */
 export function useAutoUpdates(enabled = true) {
@@ -80,22 +93,19 @@ function LastResult({ t }: { t: AutoUpdateTarget }) {
 }
 
 function WindowNote({ w }: { w: AutoWindow }) {
+  const me = useMe()
   if (!w.settings.enabled)
     return (
       <span className="text-amber-200">
-        Paused for everything under{' '}
-        <Link to="/settings" hash="auto-updates" className="underline underline-offset-2">
-          Settings
-        </Link>
-        .
+        Paused for everything{hubAdmin(me?.user) ? ' under ' : ' by an admin.'}
+        <SettingsLink className="underline underline-offset-2">Settings</SettingsLink>
+        {hubAdmin(me?.user) && '.'}
       </span>
     )
   return (
     <span>
       Next window {w.nextText ?? 'not scheduled'} ({daysText(w.settings.days)}).{' '}
-      <Link to="/settings" hash="auto-updates" className="text-lime-300 underline-offset-2 hover:underline">
-        Change
-      </Link>
+      <SettingsLink className="text-lime-300 underline-offset-2 hover:underline">Change</SettingsLink>
     </span>
   )
 }
@@ -192,9 +202,7 @@ export function AutoUpdatesSummary() {
         {targets.length > 0 && (w.settings.enabled ? `, next run ${w.nextText ?? '–'}` : ', paused')}
         {run?.running && ', running now'}
       </span>
-      <Link to="/settings" hash="auto-updates" className="text-lime-300 underline-offset-2 hover:underline">
-        Settings
-      </Link>
+      <SettingsLink className="text-lime-300 underline-offset-2 hover:underline">Settings</SettingsLink>
     </p>
   )
 }

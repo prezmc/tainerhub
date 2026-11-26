@@ -90,10 +90,13 @@ func (s *Store) GetAPIToken(ctx context.Context, id string) (APIToken, error) {
 // token-authenticated request.
 func (s *Store) APITokenUser(ctx context.Context, tokenHash []byte) (APIToken, User, error) {
 	var u User
-	t, err := scanAPIToken(s.db.QueryRow(ctx, `SELECT `+apiTokenCols+`,
-		u.id::text, u.username, u.display_name, u.role, u.webauthn_id, u.created_at, u.password_hash
+	// The user's host scope comes along: a token reaches the same hosts.
+	t, err := scanAPIToken(s.db.QueryRow(ctx, `SELECT `+apiTokenCols+`, `+userColsAs("u.")+`
 		FROM api_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = $1`, tokenHash),
-		&u.ID, &u.Username, &u.DisplayName, &u.Role, &u.WebAuthnID, &u.CreatedAt, &u.PasswordHash)
+		userDest(&u)...)
+	if !u.Scoped {
+		u.Hosts = nil
+	}
 	return t, u, err
 }
 

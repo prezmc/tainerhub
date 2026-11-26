@@ -5,6 +5,7 @@ import { Clock, Cpu, Ellipsis, KeyRound, Layers, MemoryStick, Pencil, Plus, Serv
 import { api, bytes, can, errorText, hostAddress, stackProblem, timeAgo, type Host, type JoinTokenResponse } from '../api'
 import { Badge, Button, Card, CopyButton, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, PageHeader, StatusDot, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
+import { hubAdmin } from '../hostscope'
 import { useHostsQuery } from '../fleet'
 
 // Admins only: load the updates card when it's shown.
@@ -18,6 +19,8 @@ export function HostsPage() {
   const toast = useToast()
   const confirm = useConfirm()
   const admin = can(me.user, 'admin')
+  // Adding, renaming and removing hosts is hub-wide: admins with every host.
+  const hostsAdmin = hubAdmin(me.user)
   const hosts = useHostsQuery()
   const [adding, setAdding] = useState(false)
   const [name, setName] = useState('')
@@ -99,7 +102,7 @@ export function HostsPage() {
   return (
     <div>
       <PageHeader title="Hosts" subtitle={hosts.data ? `${online} of ${hosts.data.length} connected` : undefined}>
-        {admin && (
+        {hostsAdmin && (
           <Button
             variant="primary"
             icon={Plus}
@@ -127,7 +130,7 @@ export function HostsPage() {
             <HostCard
               key={h.id}
               h={h}
-              admin={admin}
+              admin={hostsAdmin}
               onToken={() => openAdd(h)}
               onRemove={() => askRemove(h)}
               onRename={() => {

@@ -1,13 +1,19 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link2, Trash2, UserPlus, Users as UsersIcon } from 'lucide-react'
-import { api, errorText, roleRank, timeAgo, type Role, type User } from '../api'
+import { Link2, Server, Trash2, UserPlus, Users as UsersIcon } from 'lucide-react'
+import { api, errorText, needsReauth, roleRank, timeAgo, type Role, type User } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, IconButton, Input, Modal, PageHeader, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { AllTokensSection } from '../tokens'
+import { useHostsQuery } from '../fleet'
+import { allHosts, sameScope, scopeBody, scopeOf, scopeProblem, scopeText, type Scope } from '../hostscope'
+import { HostScopePicker } from '../hostscopeui'
 
 type UserRow = User & { hasPassword: boolean; manageable: boolean }
-type Invite = { id: string; role: Role; note: string; createdBy: string; createdAt: string; expiresAt: string }
+
+/** "an" before admin and operator, "a" before viewer. */
+const article = (role: string) => (/^[aeiou]/.test(role) ? 'an' : 'a')
+type Invite = { id: string; role: Role; note: string; createdBy: string; createdAt: string; expiresAt: string; scoped?: boolean; hosts?: string[] }
 
 const ROLE_HELP: Record<Exclude<Role, 'owner'>, string> = {
   viewer: 'Sees everything, changes nothing.',
@@ -24,13 +30,16 @@ export function UsersPage() {
   const [inviting, setInviting] = useState(false)
   const [role, setRole] = useState<Role>('operator')
   const [note, setNote] = useState('')
+  const [scope, setScope] = useState<Scope>(allHosts)
   const [link, setLink] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [hostsFor, setHostsFor] = useState<UserRow | null>(null)
   const roles = (['viewer', 'operator', 'admin'] as const).filter((r) => roleRank[r] <= roleRank[me.user.role])
+  const hosts = useHostsQuery().data ?? []
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['users'] })
   const invite = useMutation({
-    mutationFn: () => api<{ path: string }>('/api/invites', { method: 'POST', body: { role, note } }),
+    mutationFn: () => api<{ path: string }>('/api/invites', { method: 'POST', body: { role, note, hosts: scopeBody(scope, hosts) } }),
     onSuccess: (r) => {
       setLink(window.location.origin + r.path)
       setNote('')
@@ -41,10 +50,20 @@ export function UsersPage() {
   const setUserRole = useMutation({
     mutationFn: ({ u, r }: { u: UserRow; r: Role }) => api(`/api/users/${u.id}/role`, { method: 'PUT', body: { role: r } }),
     onSuccess: (_, { u, r }) => {
-      toast('good', `${u.username} is now ${r === 'admin' ? 'an' : 'a'} ${r}`)
+      toast('good', `${u.username} is now ${article(r)} ${r}`)
       refresh()
     },
     onError: (e) => toast('bad', errorText(e)),
+  })
+  const setUserHosts = useMutation({
+    mutationFn: ({ u, s }: { u: UserRow; s: Scope }) => api(`/api/users/${u.id}/hosts`, { method: 'PUT', body: { hosts: scopeBody(s, hosts) } }),
+    onSuccess: (_, { u, s }) => {
+      toast('good', `${u.username} now reaches ${s.scoped ? scopeText(s, hosts) : 'all hosts'}`)
+      setHostsFor(null)
+      refresh()
+    },
+    // A stale sign-in already opened the "Sign in again" dialog.
+    onError: (e) => !needsReauth(e) && toast('bad', errorText(e)),
   })
   const remove = useMutation({
     mutationFn: (u: UserRow) => api(`/api/users/${u.id}`, { method: 'DELETE' }),
@@ -73,6 +92,7 @@ export function UsersPage() {
             setInviting(true)
             setLink(null)
             setError(null)
+            setScope(allHosts)
           }}
         >
           Invite someone
@@ -82,7 +102,7 @@ export function UsersPage() {
       <Card className="divide-y divide-line">
         {data.data?.users.map((u) => (
           <div key={u.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
-            <div className="min-w-0 flex-1">
+            <div className="min-w-[11rem] flex-1">
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-white">{u.displayName}</span>
                 {u.id === me.user.id && <Badge tone="info">you</Badge>}
@@ -90,7 +110,16 @@ export function UsersPage() {
               <div className="text-xs text-ink-100/50">
                 {u.username} · joined {timeAgo(u.createdAt)}
               </div>
+              <div className={u.scoped ? 'mt-0.5 flex items-center gap-1.5 text-xs text-amber-100/80' : 'mt-0.5 flex items-center gap-1.5 text-xs text-ink-100/45'}>
+                <Server className="size-3 shrink-0" />
+                <span className="truncate">{scopeText(scopeOf(u), hosts)}</span>
+              </div>
             </div>
+            {u.manageable && (
+              <Button variant="ghost" icon={Server} className="!px-2.5 !py-1 text-[11px]" onClick={() => setHostsFor(u)}>
+                Hosts
+              </Button>
+            )}
             {u.manageable ? (
               <select
                 aria-label={`Role for ${u.username}`}
@@ -145,6 +174,7 @@ export function UsersPage() {
                   <div className="text-xs text-ink-100/50">
                     by {i.createdBy || 'someone'} · expires {new Date(i.expiresAt).toLocaleString()}
                   </div>
+                  {i.scoped && <div className="mt-0.5 truncate text-xs text-amber-100/80">Only {scopeText(scopeOf(i), hosts)}</div>}
                 </div>
                 <Badge className="capitalize">{i.role}</Badge>
                 <Button variant="dangerGhost" className="!px-2.5 !py-1 text-[11px]" onClick={() => revoke.mutate(i)}>
@@ -162,8 +192,13 @@ export function UsersPage() {
         {link ? (
           <div className="space-y-4 text-sm text-ink-100/80">
             <p>
-              Send it to them however you like. It works once, for 24 hours, and makes them {role === 'admin' ? 'an' : 'a'} <strong className="text-white">{role}</strong>. They choose
-              their own username and password.
+              Send it to them however you like. It works once, for 24 hours, and makes them {article(role)} <strong className="text-white">{role}</strong>
+              {scope.scoped ? (
+                <>
+                  {' '}on <strong className="text-white">{scopeText(scope, hosts)}</strong> only
+                </>
+              ) : null}
+              . They choose their own username and password.
             </p>
             <pre className="mono overflow-x-auto whitespace-pre-wrap break-all rounded-[3px] bg-black/40 p-3 text-xs text-lime-200 ring-1 ring-line">{link}</pre>
             <div className="flex justify-end gap-2">
@@ -194,24 +229,57 @@ export function UsersPage() {
                 </label>
               ))}
             </fieldset>
+            <HostScopePicker value={scope} onChange={setScope} role={role} hosts={hosts} />
             <Input label="Who is it for? (optional)" value={note} onChange={(e) => setNote(e.target.value)} maxLength={100} placeholder="Alex, for the media server" />
             <ErrorNote error={error} />
             <div className="flex justify-end gap-2">
               <Button type="button" variant="ghost" onClick={() => setInviting(false)}>
                 Cancel
               </Button>
-              <Button variant="primary" icon={Link2} loading={invite.isPending}>
+              <Button variant="primary" icon={Link2} loading={invite.isPending} disabled={!!scopeProblem(role, scope, hosts)}>
                 Create invite link
               </Button>
             </div>
           </form>
         )}
       </Modal>
+      {hostsFor && <HostsDialog u={hostsFor} hosts={hosts} busy={setUserHosts.isPending} onSave={(s) => setUserHosts.mutate({ u: hostsFor, s })} onClose={() => setHostsFor(null)} />}
       {data.data?.users.length === 1 && !inviting && (
         <p className="mt-4 flex items-center gap-2 text-sm text-ink-100/50">
           <UsersIcon className="size-4" /> Only you so far.
         </p>
       )}
     </div>
+  )
+}
+
+/** Which hosts a user reaches. */
+function HostsDialog({ u, hosts, busy, onSave, onClose }: { u: UserRow; hosts: Parameters<typeof HostScopePicker>[0]['hosts']; busy: boolean; onSave: (s: Scope) => void; onClose: () => void }) {
+  const [scope, setScope] = useState<Scope>(scopeOf(u))
+  const unchanged = sameScope(scope, scopeOf(u))
+  return (
+    <Modal open onClose={onClose} title={`Hosts for ${u.username}`}>
+      <form
+        className="space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault()
+          onSave(scope)
+        }}
+      >
+        <p className="text-sm text-ink-100/70">
+          As {article(u.role)} <strong className="text-white">{u.role}</strong>, they can act on the hosts they reach. Changes apply at once, to their API tokens too; open logs
+          and terminals on hosts they lose close within a minute.
+        </p>
+        <HostScopePicker value={scope} onChange={setScope} role={u.role} hosts={hosts} />
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" icon={Server} loading={busy} disabled={unchanged || !!scopeProblem(u.role, scope, hosts)}>
+            Save
+          </Button>
+        </div>
+      </form>
+    </Modal>
   )
 }

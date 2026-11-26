@@ -138,7 +138,7 @@ func (s *Server) execOpen(w http.ResponseWriter, r *http.Request) {
 // closes the terminal.
 func (s *Server) execStream(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
-	e := s.execs.get(r.PathValue("sid"), u.ID)
+	e := s.execs.get(r.PathValue("eid"), u.ID)
 	if e == nil {
 		jsonErr(w, http.StatusNotFound, "terminal not found or already closed")
 		return
@@ -193,7 +193,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) execInput(w http.ResponseWriter, r *http.Request) {
-	e := s.execs.get(r.PathValue("sid"), userFrom(r).ID)
+	e := s.execs.get(r.PathValue("eid"), userFrom(r).ID)
 	if e == nil {
 		jsonErr(w, http.StatusNotFound, "terminal not found or already closed")
 		return
@@ -219,7 +219,7 @@ func (s *Server) execInput(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) execResize(w http.ResponseWriter, r *http.Request) {
-	e := s.execs.get(r.PathValue("sid"), userFrom(r).ID)
+	e := s.execs.get(r.PathValue("eid"), userFrom(r).ID)
 	if e == nil {
 		jsonErr(w, http.StatusNotFound, "terminal not found or already closed")
 		return
@@ -238,7 +238,7 @@ func (s *Server) execResize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) execClose(w http.ResponseWriter, r *http.Request) {
-	if e := s.execs.get(r.PathValue("sid"), userFrom(r).ID); e != nil {
+	if e := s.execs.get(r.PathValue("eid"), userFrom(r).ID); e != nil {
 		s.execs.take(e.id)
 	}
 	w.WriteHeader(http.StatusNoContent)

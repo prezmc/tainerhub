@@ -313,6 +313,9 @@ func (s *Server) checkTakeover(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "choose a host and a valid name")
 		return
 	}
+	if !s.allowHosts(w, r, in.HostID) {
+		return
+	}
 	if strings.TrimSpace(in.Compose) == "" {
 		jsonErr(w, http.StatusBadRequest, "the compose file is empty")
 		return
@@ -336,6 +339,9 @@ func (s *Server) takeoverSource(w http.ResponseWriter, r *http.Request) {
 	hostID, name := r.URL.Query().Get("host"), r.URL.Query().Get("name")
 	if !validUUID(hostID) || !wire.ValidStackName(name) {
 		jsonErr(w, http.StatusBadRequest, "choose a host and a valid name")
+		return
+	}
+	if !s.allowHosts(w, r, hostID) {
 		return
 	}
 	a := s.Reg.Get(hostID)

@@ -4,6 +4,8 @@ import { ArrowUpCircle, CircleCheck, Feather, LoaderCircle, RefreshCw, TriangleA
 import { api, errorText, pullErrorText, timeAgo, type Host, type HubState } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, Modal, cx, useConfirm, useToast } from '../ui'
 import { AutoUpdatesSummary } from '../autoupdatesui'
+import { hubAdmin } from '../hostscope'
+import { useMe } from './AppLayout'
 
 type HostUpdate = {
   id: string
@@ -92,6 +94,8 @@ async function waitForNewHub(from: string) {
 
 /** Admins: compare every server with the newest published version and update in place. */
 export function UpdatesCard() {
+  // A host admin (limited to some hosts) can't update the hub: its version isn't theirs to act on.
+  const hubWide = hubAdmin(useMe().user)
   const qc = useQueryClient()
   const toast = useToast()
   const confirm = useConfirm()
@@ -106,6 +110,7 @@ export function UpdatesCard() {
   const d = u.data
   const stale = d.hosts.filter((h) => !h.current)
   const hubHost = d.hosts.find((h) => h.hubHost)
+  const hubCurrent = d.hubCurrent || !hubWide
 
   const updateOne = async (h: HostUpdate) => {
     await api(`/api/hosts/${h.id}/update`, { method: 'POST' })
@@ -223,7 +228,7 @@ export function UpdatesCard() {
     }
   }
 
-  const upToDate = stale.length === 0 && d.hubCurrent
+  const upToDate = stale.length === 0 && hubCurrent
   return (
     <Card className={cx('mb-6 p-5', !upToDate && d.latest && 'ring-lime-400/40')}>
       <div className="flex flex-wrap items-center gap-3">
@@ -270,13 +275,13 @@ export function UpdatesCard() {
           ))}
         </ul>
       )}
-      {!d.hubCurrent && !d.hubManaged && d.latest && (
+      {!hubCurrent && !d.hubManaged && d.latest && (
         <p className="mt-3 text-xs text-ink-100/60">
           This hub was installed without its built-in agent, so it can't update itself. On its server run{' '}
           <code className="mono text-lime-300">cd ~/tainerhub && docker compose pull && docker compose up -d</code>.
         </p>
       )}
-      {hubHost && !hubHost.online && !d.hubCurrent && <p className="mt-3 text-xs text-amber-200">The hub's own agent is offline, so the hub can't update itself right now.</p>}
+      {hubHost && !hubHost.online && !hubCurrent && <p className="mt-3 text-xs text-amber-200">The hub's own agent is offline, so the hub can't update itself right now.</p>}
 
       <div className="mt-5 border-t border-line pt-4">
         <div className="mb-2 flex flex-wrap items-baseline gap-2">

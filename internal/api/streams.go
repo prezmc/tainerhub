@@ -20,8 +20,8 @@ var streamRecheck = time.Minute
 // stream is need() for long-lived responses: the handler's request context
 // is cancelled as soon as the session stops passing the role check, which
 // ends the stream (and, for logs and terminals, the agent-side session).
-func (s *Server) stream(role string, fn http.HandlerFunc) http.Handler {
-	return s.need(role, s.rechecked(role, fn))
+func (s *Server) stream(role string, sc scope, fn http.HandlerFunc) http.Handler {
+	return s.need(role, sc, s.rechecked(role, fn))
 }
 
 // rechecked runs fn with a context that is cancelled once the caller's
@@ -53,7 +53,7 @@ func (s *Server) rechecked(role string, fn http.HandlerFunc) http.HandlerFunc {
 
 // stillAllowed re-reads the session behind r: it must still be valid, belong
 // to the same user, and that user must not have been demoted (a promotion is
-// fine) nor fallen below role.
+// fine) nor fallen below role, nor lost any host they could reach.
 func (s *Server) stillAllowed(r *http.Request, me store.User, role string) bool {
 	whoami := s.whoami
 	if whoami == nil {
@@ -63,7 +63,7 @@ func (s *Server) stillAllowed(r *http.Request, me store.User, role string) bool 
 	if err != nil || u.ID != me.ID {
 		return false
 	}
-	return roleRank[u.Role] >= roleRank[me.Role] && roleRank[u.Role] >= roleRank[role]
+	return roleRank[u.Role] >= roleRank[me.Role] && roleRank[u.Role] >= roleRank[role] && sameScope(me, u)
 }
 
 // Per-user caps on open log streams. The registry caps streams per host for

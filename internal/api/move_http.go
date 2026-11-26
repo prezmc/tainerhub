@@ -121,6 +121,9 @@ func (s *Server) moveCheck(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "choose a host")
 		return
 	}
+	if !s.allowHosts(w, r, to) { // a move needs both hosts
+		return
+	}
 	stacks, err := s.Store.ListStacks(r.Context())
 	if err != nil {
 		s.fail(w, err)
@@ -149,6 +152,9 @@ func (s *Server) startMove(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validUUID(in.HostID) {
 		jsonErr(w, http.StatusBadRequest, "choose a host")
+		return
+	}
+	if !s.allowHosts(w, r, in.HostID) { // a move needs both hosts
 		return
 	}
 	if st.DeployedHash != stackHash(st) {
@@ -243,9 +249,17 @@ func (s *Server) removeLeftovers(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusNotFound, "move not found")
 		return
 	}
-	mv, err := s.Store.GetMove(r.Context(), id)
+	mv, err := s.aus().GetMove(r.Context(), id)
 	if err != nil {
 		s.notFoundOr(w, err)
+		return
+	}
+	if !moveVisible(userFrom(r), mv) {
+		jsonErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	// The leftovers' host is one of the two; the audit names both.
+	if !s.allowHosts(w, r, mv.FromHost, mv.ToHost) {
 		return
 	}
 	if mv.State == "running" {

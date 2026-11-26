@@ -28,6 +28,7 @@ type fleetFeed struct {
 	subs   int
 	stop   context.CancelFunc
 	frame  []byte        // latest SSE message; never modified once published
+	data   any           // what frame encodes (for streams that send only part of it)
 	next   chan struct{} // closed when frame is replaced
 	stale  bool          // host rows changed since they were read
 	poke   chan struct{} // wakes the producer after a host change
@@ -72,12 +73,12 @@ func (f *fleetFeed) subscribe() (release func()) {
 	}
 }
 
-// current returns the latest message (nil before the first one) and a
-// channel that closes when a newer one is ready.
-func (f *fleetFeed) current() ([]byte, <-chan struct{}) {
+// current returns the latest message (nil before the first one), the
+// payload it encodes, and a channel that closes when a newer one is ready.
+func (f *fleetFeed) current() ([]byte, any, <-chan struct{}) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.frame, f.next
+	return f.frame, f.data, f.next
 }
 
 // hostsChanged marks the cached host rows out of date (a host was added,
@@ -129,7 +130,8 @@ func (f *fleetFeed) publish(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	b, err := json.Marshal(f.build(hosts))
+	data := f.build(hosts)
+	b, err := json.Marshal(data)
 	if err != nil {
 		return false
 	}
@@ -142,7 +144,7 @@ func (f *fleetFeed) publish(ctx context.Context) bool {
 		f.mu.Unlock()
 		return true
 	}
-	f.frame = frame
+	f.frame, f.data = frame, data
 	close(f.next)
 	f.next = make(chan struct{})
 	f.mu.Unlock()
@@ -193,8 +195,8 @@ func (f *fleetFeed) hostRows(ctx context.Context) ([]store.Host, error) {
 // fleetFeed returns the server's shared fleet producer.
 func (s *Server) fleetFeed() *fleetFeed {
 	s.fleetOnce.Do(func() {
-		s.fleet = newFleetFeed(s.Reg, s.Store.ListHosts, func(hs []store.Host) any {
-			return map[string]any{"hosts": s.hostViewsFrom(hs), "containers": s.containerViews(), "activity": s.Reg.Activity(40)}
+		s.fleet = newFleetFeed(s.Reg, s.aus().ListHosts, func(hs []store.Host) any {
+			return fleetPayload{Hosts: s.hostViewsFrom(hs), Containers: s.containerViews(), Activity: s.Reg.Activity(40)}
 		})
 	})
 	return s.fleet
@@ -203,3 +205,27 @@ func (s *Server) fleetFeed() *fleetFeed {
 // HostsChanged tells open fleet streams that host rows changed outside the
 // API handlers (e.g. an agent's hello updated its info and last-seen time).
 func (s *Server) HostsChanged() { s.fleetFeed().hostsChanged() }
+
+// fleetPayload is what /api/events sends.
+type fleetPayload struct {
+	Hosts      []hostView          `json:"hosts"`
+	Containers []containerView     `json:"containers"`
+	Activity   []registry.Activity `json:"activity"`
+}
+
+// scopedFleetFrame is the fleet message for a user limited to some hosts:
+// only those hosts, their containers and their activity.
+func scopedFleetFrame(u store.User, data any) []byte {
+	p, ok := data.(fleetPayload)
+	if !ok {
+		return nil
+	}
+	p.Hosts = visible(u, p.Hosts, func(h hostView) string { return h.ID })
+	p.Containers = visible(u, p.Containers, func(c containerView) string { return c.HostID })
+	p.Activity = visible(u, p.Activity, func(a registry.Activity) string { return a.HostID })
+	b, err := json.Marshal(p)
+	if err != nil {
+		return nil
+	}
+	return fmt.Appendf(nil, "event: fleet\ndata: %s\n\n", b)
+}

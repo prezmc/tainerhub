@@ -47,6 +47,10 @@ export interface User {
   displayName: string
   role: Role
   createdAt: string
+  /** Limited to `hosts`: the role applies there only, and other hosts are hidden. */
+  scoped?: boolean
+  /** Host IDs (only when scoped). */
+  hosts?: string[]
 }
 
 export interface Passkey {

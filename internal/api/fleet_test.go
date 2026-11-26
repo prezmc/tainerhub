@@ -55,7 +55,7 @@ func TestFleetFeedSharedAcrossSubscribers(t *testing.T) {
 				defer wg.Done()
 				deadline := time.After(5 * time.Second)
 				for {
-					frame, next := f.current()
+					frame, _, next := f.current()
 					if frame != nil && !bytes.Equal(frame, s.last) {
 						s.last, got[i] = frame, frame
 						return
@@ -124,18 +124,18 @@ func TestFleetFeedPeriodicRefreshSkipsIdenticalFrames(t *testing.T) {
 	release := f.subscribe()
 	defer release()
 	deadline := time.After(5 * time.Second)
-	first, next := f.current()
+	first, _, next := f.current()
 	for first == nil {
 		select {
 		case <-next:
 		case <-deadline:
 			t.Fatal("no first frame")
 		}
-		first, next = f.current()
+		first, _, next = f.current()
 	}
 
 	time.Sleep(10 * f.maxAge) // ~10 periodic re-reads
-	if frame, _ := f.current(); &frame[0] != &first[0] {
+	if frame, _, _ := f.current(); &frame[0] != &first[0] {
 		t.Fatal("an identical payload was republished")
 	}
 	select {
@@ -152,7 +152,7 @@ func TestFleetFeedPeriodicRefreshSkipsIdenticalFrames(t *testing.T) {
 	// right away.
 	release2 := f.subscribe()
 	defer release2()
-	if frame, _ := f.current(); frame == nil {
+	if frame, _, _ := f.current(); frame == nil {
 		t.Fatal("new subscriber got no frame")
 	}
 }

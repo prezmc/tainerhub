@@ -453,6 +453,9 @@ func (s *Server) checkPreflight(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "choose a host and a valid name")
 		return
 	}
+	if !s.allowHosts(w, r, in.HostID) {
+		return
+	}
 	if strings.TrimSpace(in.Compose) == "" {
 		jsonErr(w, http.StatusBadRequest, "the compose file is empty")
 		return

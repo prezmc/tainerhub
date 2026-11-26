@@ -56,7 +56,7 @@ func TestNeedWithToken(t *testing.T) {
 	} {
 		s := &Server{authn: func(*http.Request) (store.User, *auth.TokenInfo, error) { return store.User{}, nil, c.err }}
 		w := httptest.NewRecorder()
-		s.need("viewer", func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }).ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		s.need("viewer", scopeAny, func(http.ResponseWriter, *http.Request) { t.Fatal("handler ran") }).ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 		if w.Code != c.want || !strings.Contains(w.Body.String(), `"error"`) {
 			t.Errorf("%s: %d %s, want %d with a JSON error", name, w.Code, w.Body.String(), c.want)
 		}
@@ -66,14 +66,14 @@ func TestNeedWithToken(t *testing.T) {
 		return store.User{ID: "u1", Username: "alex", Role: "viewer"}, &auth.TokenInfo{ID: "t1", Name: "backup"}, nil
 	}}
 	var got *auth.TokenInfo
-	ok := s.need("viewer", func(w http.ResponseWriter, r *http.Request) { got = auth.TokenFrom(r.Context()) })
+	ok := s.need("viewer", scopeAny, func(w http.ResponseWriter, r *http.Request) { got = auth.TokenFrom(r.Context()) })
 	ok.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
 	if got == nil || got.Name != "backup" {
 		t.Fatalf("token in context = %+v", got)
 	}
 	// The effective role (already lowered by auth) still goes through the role check.
 	w := httptest.NewRecorder()
-	s.need("operator", func(http.ResponseWriter, *http.Request) { t.Fatal("viewer token ran an operator handler") }).ServeHTTP(w, httptest.NewRequest("POST", "/", nil))
+	s.need("operator", scopeAny, func(http.ResponseWriter, *http.Request) { t.Fatal("viewer token ran an operator handler") }).ServeHTTP(w, httptest.NewRequest("POST", "/", nil))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status %d, want 403", w.Code)
 	}

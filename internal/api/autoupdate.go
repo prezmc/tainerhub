@@ -70,6 +70,12 @@ type autoUpdateStore interface {
 	AddRollbackPoint(ctx context.Context, p store.RollbackPoint) (store.RollbackPoint, error)
 	LatestRollbackPoint(ctx context.Context, stackID string) (store.RollbackPoint, error)
 	SetStackRolledBack(ctx context.Context, id string, to *time.Time) error
+	// Lists the host-scope checks filter (see scope.go).
+	ListHosts(ctx context.Context) ([]store.Host, error)
+	ListStacks(ctx context.Context) ([]store.Stack, error)
+	GetMove(ctx context.Context, id string) (store.StackMove, error)
+	ContainerMoves(ctx context.Context, limit int) ([]store.StackMove, error)
+	ListAudit(ctx context.Context, limit int, viewer store.User) ([]store.AuditEntry, error)
 }
 
 func (s *Server) aus() autoUpdateStore {
@@ -385,7 +391,7 @@ func (s *Server) autoRecord(ctx context.Context, run *autoRun, t store.AutoUpdat
 	if o.Reason != "" {
 		detail["error"] = o.Reason
 	}
-	e := store.AuditEntry{Actor: autoActor, Action: action, Target: t.HostName + "/" + o.Name}
+	e := store.AuditEntry{Actor: autoActor, Action: action, Target: t.HostName + "/" + o.Name, HostIDs: []string{t.HostID}}
 	e.Detail, _ = json.Marshal(detail)
 	s.writeAudit(ctx, e)
 	s.Reg.AddActivity(registry.Activity{Kind: "user", Action: action, HostID: t.HostID, Host: t.HostName, Container: o.Name, Actor: autoActorName})

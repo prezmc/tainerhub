@@ -24,6 +24,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { can, type Container } from '../api'
+import { hubAdmin } from '../hostscope'
 import { ACTIONS, useContainerAction, useFleet, type Action } from '../fleet'
 import { Kbd, StatusDot, cx, toneOf, useLayer } from '../ui'
 import { useMe } from './AppLayout'
@@ -93,9 +94,9 @@ function Palette({ onClose, onLogs, onDetails }: Props) {
       { id: 'p-account', icon: Fingerprint, label: 'Account & passkeys', run: close(() => navigate({ to: '/account' })) },
       ...(admin
         ? [
-            { id: 'p-users', icon: Users, label: 'Users & invites', run: close(() => navigate({ to: '/users' })) },
+            ...(hubAdmin(me.user) ? [{ id: 'p-users', icon: Users, label: 'Users & invites', run: close(() => navigate({ to: '/users' })) }] : []),
             { id: 'p-audit', icon: ShieldCheck, label: 'Audit log', run: close(() => navigate({ to: '/audit' })) },
-            { id: 'p-settings', icon: Settings, label: 'Settings', run: close(() => navigate({ to: '/settings' })) },
+            ...(hubAdmin(me.user) ? [{ id: 'p-settings', icon: Settings, label: 'Settings', run: close(() => navigate({ to: '/settings' })) }] : []),
           ]
         : []),
     ].filter((p) => !text || p.label.toLowerCase().includes(text))
@@ -107,7 +108,7 @@ function Palette({ onClose, onLogs, onDetails }: Props) {
       .filter((h) => text && h.name.toLowerCase().includes(text))
       .map((h) => ({ id: `h-${h.id}`, icon: Server, label: h.name, hint: h.online ? 'online' : 'offline', run: close(() => navigate({ to: '/hosts' })) }))
     return [...pages, ...cs, ...hs]
-  }, [q, containers, hosts, operator, admin, navigate, onClose, onLogs, onDetails, run])
+  }, [q, containers, hosts, operator, admin, me.user, navigate, onClose, onLogs, onDetails, run])
 
   // Falls back to the first item when the selected one is gone (or nothing is picked yet).
   const selIndex = Math.max(0, items.findIndex((it) => it.id === selId))

@@ -39,6 +39,7 @@ How a token's access works:
 
 - **Effective access is the lower of the token's level and your current role.** An admin token belonging to someone who is later made a viewer acts as a viewer. Making them an admin again restores it.
 - **Removing a user removes their tokens.**
+- **A token reaches the same hosts as its owner.** If an admin limits the owner to some hosts, the token is limited too, at once (see [Limiting a user to some hosts](features.md#limiting-a-user-to-some-hosts)). Other hosts answer `404`, and hub-wide routes `403`.
 - An expired or revoked token gets `401` with `{"error": "..."}`.
 - Bad tokens are counted per IP address, separately from sign-in attempts. After 20 in 15 minutes, further bad tokens get `429` until the window passes. A valid token always works, even from that address.
 - Every action taken with a token appears in the **Audit** log under its owner, marked **via token** with the token's name.
@@ -48,7 +49,7 @@ How a token's access works:
 Tokens can't do anything that grants lasting access to TainerHub. These endpoints answer `403` with an explanation when called with a token, even an admin token:
 
 - creating invites,
-- changing a user's role or removing a user,
+- changing a user's role or hosts, or removing a user,
 - changing your password, passkeys or recovery codes, and "sign out other sessions",
 - turning HTTPS on or off,
 - adding a host or issuing a host join token,
@@ -341,12 +342,16 @@ Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. 
 | Method | Path | Role | Token | Notes |
 | --- | --- | --- | --- | --- |
 | GET | `/api/users` | admin | yes | `{"users": [...], "invites": [...]}` |
-| POST | `/api/invites` | admin | **no** | Create an invite link. |
+| POST | `/api/invites` | admin | **no** | Create an invite link. Body: `{"role", "note", "hosts"}`; `hosts` is a list of host IDs, or `null` for every host. |
 | DELETE | `/api/invites/{iid}` | admin | yes | Revoke a pending invite. `204`. |
 | PUT | `/api/users/{uid}/role` | admin | **no** | Change a role. |
+| PUT | `/api/users/{uid}/hosts` | admin | **no** | Limit a user to some hosts: `{"hosts": ["<host id>", ...]}`, or `{"hosts": null}` for every host. `204`. |
 | DELETE | `/api/users/{uid}` | admin | **no** | Remove a user. |
 | GET | `/api/tokens` | admin | yes | API tokens of users with a lower role, and your own (the owner sees all). |
 | DELETE | `/api/tokens/{id}` | admin | **no** | Revoke one of those tokens. |
+
+- **User** and **invite** objects have `scoped` (true when limited to some hosts) and, when scoped, `hosts` (host IDs). `GET /api/me` returns the same for you.
+- Every route on this page is for admins with every host; an admin limited to some hosts gets `403`.
 
 - **User:** `id`, `username`, `displayName`, `role` (`viewer`, `operator`, `admin`, `owner`), `createdAt`, `hasPassword`, `manageable` (you may change or remove them). **Invite:** `id`, `role`, `note`, `createdBy`, `createdAt`, `expiresAt`, `usedAt`.
 - You can't manage yourself, the owner, or anyone of your rank or above, nor give a role above your own.
@@ -400,7 +405,7 @@ See [Private registries](features.md#private-registries).
 - **API token:** `id`, `name`, `prefix` (the start of the secret, to tell tokens apart), `role` (its access level), `createdAt`, `expiresAt` (`null`: never), `lastUsedAt`, `lastUsedIp`, `userId`. `GET /api/tokens` adds `username` and `userRole`.
 - `POST /api/me/tokens` body: `name` (up to 60 characters), `role` (`viewer`, `operator`, `admin` or `owner`, up to your own), `expiresInDays` (1 to 3650; the UI offers 30, 90 or 365; `0` for never).
 
-Passkey and recovery-code changes, `POST /api/me/tokens`, adding a host, issuing a join token, invites, role changes, removing users and HTTPS changes need a sign-in from the last 10 minutes; otherwise they answer `403 {"error": ..., "reauth": true}`. See [the fresh sign-in rule](features.md#the-fresh-sign-in-rule).
+Passkey and recovery-code changes, `POST /api/me/tokens`, adding a host, issuing a join token, invites, role and host changes, removing users and HTTPS changes need a sign-in from the last 10 minutes; otherwise they answer `403 {"error": ..., "reauth": true}`. See [the fresh sign-in rule](features.md#the-fresh-sign-in-rule).
 
 ## Recipes
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -177,11 +178,13 @@ func stackFootprint(cs []wire.Container, name string) footprint {
 // stack (its current footprint is added to each other host), or with
 // ?host=<id>&container=<id> for moving that container.
 func (s *Server) placement(w http.ResponseWriter, r *http.Request) {
-	hs, err := s.Store.ListHosts(r.Context())
+	hs, err := s.aus().ListHosts(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
+	u := userFrom(r)
+	hs = visible(u, hs, func(h store.Host) string { return h.ID }) // only hosts they could pick
 	var (
 		fp      footprint
 		current string
@@ -192,9 +195,13 @@ func (s *Server) placement(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusNotFound, "stack not found")
 			return
 		}
-		st, err := s.Store.GetStack(r.Context(), id)
+		st, err := s.aus().GetStack(r.Context(), id)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && !u.CanSeeHost(st.HostID)) {
+			jsonErr(w, http.StatusNotFound, "stack not found")
+			return
+		}
 		if err != nil {
-			s.notFoundOr(w, err)
+			s.fail(w, err)
 			return
 		}
 		current = st.HostID
@@ -206,7 +213,7 @@ func (s *Server) placement(w http.ResponseWriter, r *http.Request) {
 	needStacks := true
 	if cid := r.URL.Query().Get("container"); cid != "" {
 		hid := r.URL.Query().Get("host")
-		if !validUUID(hid) || !wire.ValidContainerRef(cid) {
+		if !validUUID(hid) || !wire.ValidContainerRef(cid) || !u.CanSeeHost(hid) {
 			jsonErr(w, http.StatusNotFound, "container not found")
 			return
 		}
