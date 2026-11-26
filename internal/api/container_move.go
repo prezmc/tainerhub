@@ -130,7 +130,7 @@ func checkContainerMove(ctx context.Context, env ctrMoveEnv, from, ref, to strin
 		block("%s belongs to the compose project %s. Move it with its stack instead (Stacks → %s → Move to another host).", c.Name, c.Project, c.Project)
 		return rep
 	}
-	if strings.HasPrefix(c.Name, "tainerhub") {
+	if ownContainer(c, "") {
 		block("TainerHub's own containers can't be moved.")
 		return rep
 	}

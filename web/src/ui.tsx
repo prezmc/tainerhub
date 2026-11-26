@@ -473,12 +473,21 @@ export function Modal({ open, onClose, title, children, wide }: { open: boolean;
 
 // ---------------- confirm dialog ----------------
 
-type ConfirmOpts = { title: string; body?: ReactNode; confirm?: string; danger?: boolean }
+type ConfirmOpts = {
+  title: string
+  body?: ReactNode
+  /** The confirm button's label; null shows only a Close button (the dialog explains why it can't be done). */
+  confirm?: string | null
+  danger?: boolean
+  /** A checkbox the user must tick before the confirm button works. */
+  ack?: ReactNode
+}
 const ConfirmCtx = createContext<(o: ConfirmOpts) => Promise<boolean>>(async () => false)
 export const useConfirm = () => useContext(ConfirmCtx)
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ConfirmOpts | null>(null)
+  const [acked, setAcked] = useState(false)
   const pending = useRef<((v: boolean) => void) | null>(null)
   const ask = useCallback(
     (o: ConfirmOpts) =>
@@ -486,6 +495,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         // A new question replaces any open one: that one counts as cancelled.
         pending.current?.(false)
         pending.current = resolve
+        setAcked(false)
         setState(o)
       }),
     [],
@@ -502,13 +512,27 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       {children}
       <Modal open={!!state} onClose={cancel} title={state?.title ?? ''}>
         {state?.body && <div className="mb-6 text-sm leading-relaxed text-ink-100/80">{state.body}</div>}
+        {state?.ack && state.confirm !== null && (
+          <label className="-mt-2 mb-6 flex items-start gap-2.5 rounded-[3px] bg-rose-500/[0.07] p-3 text-sm ring-1 ring-inset ring-rose-500/20">
+            <input type="checkbox" checked={acked} onChange={(e) => setAcked(e.target.checked)} className="mt-0.5 accent-rose-500" />
+            <span>{state.ack}</span>
+          </label>
+        )}
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={cancel}>
-            Cancel
-          </Button>
-          <Button variant={state?.danger ? 'danger' : 'primary'} onClick={() => close(true)} autoFocus>
-            {state?.confirm ?? 'Confirm'}
-          </Button>
+          {state?.confirm === null ? (
+            <Button variant="primary" onClick={cancel} autoFocus>
+              Close
+            </Button>
+          ) : (
+            <>
+              <Button variant="ghost" onClick={cancel} autoFocus={!!state?.ack}>
+                Cancel
+              </Button>
+              <Button variant={state?.danger ? 'danger' : 'primary'} onClick={() => close(true)} disabled={!!state?.ack && !acked} autoFocus={!state?.ack}>
+                {state?.confirm ?? 'Confirm'}
+              </Button>
+            </>
+          )}
         </div>
       </Modal>
     </ConfirmCtx.Provider>

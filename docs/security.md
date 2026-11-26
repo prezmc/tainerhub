@@ -182,6 +182,9 @@ TainerHub won't cut off its own branch:
 - **Pull & recreate** refuses TainerHub's own containers. They're updated from the Hosts page.
 - A **stack can't use the name** of the compose project TainerHub runs in on that host, so a stack can't take over (and later remove) the hub, its database or the agent.
 
+- **Moving** a container refuses TainerHub's own (found by name, by the hub or agent image, or by being in the agent's compose project).
+- The web UI warns before any of these instead of letting them fail, and asks for a ticked acknowledgement before actions that would go through but still break TainerHub: stopping or removing a hub, database or agent outside the agent's own project, and deleting or pruning TainerHub's volumes or removing its networks.
+
 To stop TainerHub on purpose, use `docker compose` on the server.
 
 ## The audit log

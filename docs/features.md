@@ -55,6 +55,8 @@ Each row has buttons for **Logs**, **Stop** or **Start** (or **Resume** for a pa
 
 Stop, Kill, Remove and Pull & recreate ask you to confirm first.
 
+**TainerHub's own containers** (the hub, its database and the agents) get an extra warning. Where the agent refuses the action (Stop, Kill, Pause, Remove, or Pull & recreate on anything in the compose project it runs in, which on the hub's server includes the hub and its database), the dialog says so up front, explains what would break, and gives the commands to do it on purpose on the server (for example `docker stop tainerhub`, and `docker compose -p tainerhub up -d` to bring it back). Where it would go through, the dialog says what breaks and you have to tick a box first: removing an agent cuts its host off from TainerHub until the agent runs again (or, without its volume, is reinstalled with a new join token), and stopping or removing the hub or its database takes TainerHub down for every host. Deleting or pruning a volume, or removing a network, that belongs to TainerHub asks the same way. TainerHub's own containers can't be moved to another host.
+
 **Removing a container** deletes it even if it's running. Its image is kept. For operators, its named volumes are kept too. Admins get an extra checkbox to remove the container's volumes at the same time. Volumes that other containers still use are kept, and TainerHub tells you which ones and why.
 
 If a container belongs to a stack, removing it doesn't stop it coming back: redeploying the stack recreates it.

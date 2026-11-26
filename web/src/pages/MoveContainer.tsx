@@ -4,12 +4,13 @@ import { ArrowRightLeft } from 'lucide-react'
 import { api, ApiError, bytes, errorText, type Container, type MoveReport, type StackMove } from '../api'
 import { Button, ErrorNote, Modal } from '../ui'
 import { useFleet } from '../fleet'
+import { ownContainer } from '../own'
 import { usePlacement } from '../placement'
 import { useOpenJob } from '../stacks'
 import { COPY_BYTES_PER_SEC, HostChoice, MoveNote, Report, duration } from './MoveStack'
 
 /** A standalone container (not part of a compose project) that TainerHub can move. */
-export const movable = (c: Container) => !c.project && !c.name.startsWith('tainerhub')
+export const movable = (c: Container) => !c.project && !ownContainer(c)
 
 /** Moves a standalone container to another host: pick the host, see the check, start the job. */
 export function MoveContainerDialog({ c, onClose }: { c: Container; onClose: () => void }) {

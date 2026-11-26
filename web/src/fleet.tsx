@@ -1,7 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, can, errorText, pullErrorText, type Activity, type Container, type DetailResponse, type Host, type Me, type VolumeRes } from './api'
 import { cx, useConfirm, useToast } from './ui'
+import { ownConsequence, ownContainer, ownServerCommands, type OwnContainer } from './own'
+
+/** Actions that leave a container down (the agent's self-guard covers these, plus recreate). */
+const takesDown = (a: Action) => a === 'stop' || a === 'kill' || a === 'pause' || a === 'remove' || a === 'recreate'
 
 export type Action = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'kill' | 'remove' | 'recreate'
 export const ACTIONS: Action[] = ['start', 'stop', 'restart', 'pause', 'unpause', 'kill', 'remove']
@@ -44,12 +49,72 @@ export function useFleet() {
   }
 }
 
-/** Describes TainerHub's own containers, which are risky to stop or remove from TainerHub. */
-function ownContainer(c: Container): string | null {
-  if (c.name === 'tainerhub') return "TainerHub's hub"
-  if (c.name === 'tainerhub-postgres') return "TainerHub's database"
-  if (c.name === 'tainerhub-agent' || c.image.includes('tainerhub-agent')) return `the agent that connects ${c.hostName} to TainerHub`
-  return null
+/** The compose project the host's agent runs in, from the cached hosts list. */
+export function useOwnProject() {
+  const qc = useQueryClient()
+  return useCallback((hostId: string) => qc.getQueryData<Host[]>(['hosts'])?.find((h) => h.id === hostId)?.hello?.own_project, [qc])
+}
+
+/** The commands to run on the server, set apart from the text. */
+function Cmd({ children }: { children: string }) {
+  return <code className="mono mt-1 block rounded-[2px] bg-ink-950/70 px-2.5 py-1.5 text-[12px] text-ink-50 ring-1 ring-inset ring-white/10">{children}</code>
+}
+
+/** The warning block shown for TainerHub's own containers. */
+function OwnWarning({ children }: { children: ReactNode }) {
+  return (
+    <div className="mt-3 flex gap-2.5 rounded-[3px] bg-amber-400/[0.07] p-3 text-amber-100 ring-1 ring-inset ring-amber-400/25">
+      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-300" />
+      <div className="space-y-2">{children}</div>
+    </div>
+  )
+}
+
+const verbs: Partial<Record<Action, { verb: string; ing: string }>> = {
+  stop: { verb: 'Stop', ing: 'Stopping' },
+  kill: { verb: 'Kill', ing: 'Killing' },
+  pause: { verb: 'Pause', ing: 'Pausing' },
+  remove: { verb: 'Remove', ing: 'Removing' },
+  recreate: { verb: 'Pull & recreate', ing: 'Recreating' },
+}
+
+/**
+ * The dialog for an action the agent refuses on TainerHub's own containers:
+ * says why up front and how to do it on purpose, instead of letting it fail.
+ */
+function refusedDialog(c: Container, action: Action, own: OwnContainer) {
+  const v = verbs[action]!
+  if (action === 'recreate') {
+    return {
+      title: `Update ${c.name} from Hosts → Updates`,
+      body: (
+        <>
+          {c.name} is {own.what}. Recreating it from here would stop it halfway through, so TainerHub's own containers are updated from the update card on the Hosts page.
+        </>
+      ),
+      confirm: null,
+    }
+  }
+  const cmds = ownServerCommands(c, action, own)
+  return {
+    title: `${v.verb} ${c.name} on the server instead`,
+    body: (
+      <>
+        {c.name} is {own.what}.
+        <OwnWarning>
+          <p>
+            {v.ing} it: {ownConsequence(own, c.hostName, action === 'remove')}
+          </p>
+          <p>That's why the agent on {c.hostName} won't do it from here.</p>
+        </OwnWarning>
+        <p className="mt-3">To do it on purpose, run this on {c.hostName}:</p>
+        <Cmd>{cmds.run}</Cmd>
+        <p className="mt-3">To bring it back:</p>
+        <Cmd>{cmds.back}</Cmd>
+      </>
+    ),
+    confirm: null,
+  }
 }
 
 type VolumeChoice = { on: boolean; names: string[] }
@@ -108,6 +173,7 @@ export function useContainerAction() {
   const qc = useQueryClient()
   const toast = useToast()
   const confirm = useConfirm()
+  const ownProject = useOwnProject()
   const m = useMutation({
     mutationFn: ({ c, action }: { c: Container; action: Action }) => api(`/api/hosts/${c.hostId}/containers/${encodeURIComponent(c.id)}/${action}`, { method: 'POST' }),
     onSuccess: (_, { c, action }) => {
@@ -133,7 +199,11 @@ export function useContainerAction() {
   const removeWithVolumes = removeVolumes.mutate
   const run = useCallback(
     async (c: Container, action: Action): Promise<boolean> => {
-      const own = ownContainer(c)
+      const own = takesDown(action) ? ownContainer(c, ownProject(c.hostId)) : null
+      if (own && (own.refused || action === 'recreate')) {
+        await confirm(refusedDialog(c, action, own))
+        return false
+      }
       const fromStack = c.project && !own ? ` It belongs to the ${c.project} stack, so redeploying that stack recreates it.` : ''
       const destructive: Partial<Record<Action, { title: string; body: string; confirm: string }>> = {
         stop: { title: `Stop ${c.name}?`, body: `It stays stopped on ${c.hostName} until you start it again.`, confirm: 'Stop' },
@@ -148,19 +218,30 @@ export function useContainerAction() {
           body: `The container is deleted from ${c.hostName}, even if it's running. Its named volumes and image are kept.${fromStack}`,
           confirm: 'Remove',
         },
+        // Pausing only asks for TainerHub's own containers (below).
+        ...(own ? { pause: { title: `Pause ${c.name}?`, body: 'Its processes are frozen until you resume it.', confirm: 'Pause' } } : {}),
       }
       const d = destructive[action]
       if (d) {
-        // Stopping TainerHub's own containers from TainerHub cuts it off.
-        const body = own ? `${d.body} This is ${own}: TainerHub stops working until you start it again on the server with docker compose.` : d.body
+        // TainerHub's own containers the agent would let through (it can't
+        // tell they're TainerHub's): say what breaks, and ask to tick a box.
+        const warn = own && (
+          <OwnWarning>
+            <p>
+              This is {own.what}. {ownConsequence(own, c.hostName, action === 'remove')}
+            </p>
+          </OwnWarning>
+        )
+        const ack = own ? (own.kind === 'agent' ? `I understand this cuts ${c.hostName} off from TainerHub.` : 'I understand this can take TainerHub down for everyone.') : undefined
         const me = qc.getQueryData<Me>(['me'])
         if (action === 'remove' && can(me?.user, 'admin')) {
           volumeChoice.current = { on: false, names: [] }
           // The checkbox below decides about volumes, so don't promise they're kept.
-          const adminBody = body.replace(' Its named volumes and image are kept.', ' Its image is kept.')
+          const adminBody = d.body.replace(' Its named volumes and image are kept.', ' Its image is kept.')
           const full = (
             <>
               {adminBody}
+              {warn}
               <RemoveVolumesOption
                 c={c}
                 onChange={(v) => {
@@ -169,7 +250,7 @@ export function useContainerAction() {
               />
             </>
           )
-          if (!(await confirm({ ...d, body: full, danger: true }))) return false
+          if (!(await confirm({ ...d, body: full, danger: true, ack }))) return false
           if (volumeChoice.current.on) {
             removeWithVolumes({ c, names: volumeChoice.current.names })
             return true
@@ -177,12 +258,18 @@ export function useContainerAction() {
           mutate({ c, action })
           return true
         }
-        if (!(await confirm({ ...d, body, danger: action !== 'recreate' }))) return false
+        const body = (
+          <>
+            {d.body}
+            {warn}
+          </>
+        )
+        if (!(await confirm({ ...d, body, danger: action !== 'recreate' || !!own, ack }))) return false
       }
       mutate({ c, action })
       return true
     },
-    [confirm, mutate, qc, removeWithVolumes],
+    [confirm, mutate, qc, removeWithVolumes, ownProject],
   )
   const pendingId = m.isPending ? m.variables?.c.id : removeVolumes.isPending ? removeVolumes.variables?.c.id : undefined
   return { run, pendingId }

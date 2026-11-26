@@ -93,6 +93,8 @@ export interface Hello {
   agent_version: string
   /** Missing on agents older than stack support. */
   stacks?: { dir: string; compose_version?: string; error?: string }
+  /** The compose project the agent itself runs in (on the hub's server, also the hub's and its database's). */
+  own_project?: string
 }
 
 export interface Host {

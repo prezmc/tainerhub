@@ -9,6 +9,7 @@ import { Button, ErrorNote, IconButton, Menu, StatusDot, cx, toneOf, useToast } 
 import { useMe } from './AppLayout'
 import { StackLink } from '../stacks'
 import { MoveContainerDialog, movable } from './MoveContainer'
+import { ownContainer } from '../own'
 
 const routeApi = getRouteApi('/app/containers')
 
@@ -401,7 +402,7 @@ const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run }:
                   label: 'Move with its stack…',
                   icon: ArrowRightLeft,
                   onClick: () => navigate({ to: '/stacks', search: { q: c.project } }),
-                  hidden: !admin || !c.project || c.name.startsWith('tainerhub'),
+                  hidden: !admin || !c.project || !!ownContainer(c, host?.hello?.own_project),
                 },
               ]}
             />

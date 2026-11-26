@@ -517,9 +517,25 @@ func (s *Server) autoRollback(ctx context.Context, a *registry.Agent, stack stor
 }
 
 // ownContainer: TainerHub's own containers (the hub, its database, agents)
-// are updated from Hosts → Updates, never automatically.
+// are updated from Hosts → Updates, never automatically, and can't be
+// moved. They're found by name (as in the install files), by image (a
+// renamed hub or agent), or by being in the compose project the host's
+// agent runs in. The web UI's own.ts makes the same check.
 func ownContainer(c wire.Container, ownProject string) bool {
-	return strings.HasPrefix(c.Name, "tainerhub") || (ownProject != "" && strings.EqualFold(c.Project, ownProject))
+	img := ownImageName(c.Image)
+	return strings.HasPrefix(c.Name, "tainerhub") || img == "tainerhub" || img == "tainerhub-agent" ||
+		(ownProject != "" && strings.EqualFold(c.Project, ownProject))
+}
+
+// ownImageName is an image reference's repository name, without registry,
+// owner, tag or digest: "ghcr.io/prezmc/tainerhub-agent:1.2" → "tainerhub-agent".
+func ownImageName(ref string) string {
+	ref, _, _ = strings.Cut(ref, "@")
+	slash := strings.LastIndex(ref, "/")
+	if colon := strings.LastIndex(ref, ":"); colon > slash {
+		ref = ref[:colon]
+	}
+	return ref[slash+1:]
 }
 
 func ownProjectOf(st registry.Status) string {

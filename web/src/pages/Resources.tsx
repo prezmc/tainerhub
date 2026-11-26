@@ -1,12 +1,13 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query'
-import { Boxes, Download, Eraser, HardDrive, Layers, Network, RefreshCw, Search, Trash2, WifiOff, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Boxes, Download, Eraser, HardDrive, Layers, Network, RefreshCw, Search, Trash2, WifiOff, type LucideIcon } from 'lucide-react'
 import { api, can, errorText, pullErrorText, size, timeAgo, type Host, type ImageRes, type NetworkRes, type PruneResult, type VolumeRes } from '../api'
 import { loadPref, savePref, useFleet } from '../fleet'
 import { Button, Card, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, cx, useConfirm, useToast } from '../ui'
 import { useMe } from './AppLayout'
 import { RegistryAuthHint } from '../registries'
 import { displayTag, isRollbackTag } from '../rollback'
+import { ownResource } from '../own'
 
 type Tab = 'images' | 'volumes' | 'networks'
 type Row<T> = T & { host: Host }
@@ -332,9 +333,15 @@ function VolumesTable({ rows, q, loading }: { rows: Row<VolumeRes>[]; q: string;
                     if (
                       await confirm({
                         title: `Delete volume ${r.name}?`,
-                        body: <>All data in this volume on {r.host.name} is <b>permanently deleted</b>. This can't be undone.</>,
+                        body: (
+                          <>
+                            All data in this volume on {r.host.name} is <b>permanently deleted</b>. This can't be undone.
+                            {ownResource(r, r.host.hello?.own_project) && <OwnVolumeNote />}
+                          </>
+                        ),
                         confirm: 'Delete volume',
                         danger: true,
+                        ack: ownResource(r, r.host.hello?.own_project) ? 'I understand TainerHub may not come back without a backup.' : undefined,
                       })
                     )
                       m.mutate({ path: `/api/hosts/${r.host.id}/volumes/${encodeURIComponent(r.name)}`, method: 'DELETE', done: () => `Volume ${r.name} deleted` })
@@ -383,7 +390,19 @@ function NetworksTable({ rows, q, loading }: { rows: Row<NetworkRes>[]; q: strin
                   tone="bad"
                   disabled={r.usedBy.length > 0}
                   onClick={async () => {
-                    if (await confirm({ title: `Remove network ${r.name}?`, body: `Removes it from ${r.host.name}.`, confirm: 'Remove', danger: true }))
+                    const own = ownResource(r, r.host.hello?.own_project)
+                    const body = own ? (
+                      <>
+                        Removes it from {r.host.name}.
+                        <OwnNote>
+                          It belongs to TainerHub itself. Its containers can't start again without it until <code className="mono">docker compose up -d</code> is run in TainerHub's folder on {r.host.name}, which
+                          creates it again.
+                        </OwnNote>
+                      </>
+                    ) : (
+                      `Removes it from ${r.host.name}.`
+                    )
+                    if (await confirm({ title: `Remove network ${r.name}?`, body, confirm: 'Remove', danger: true, ack: own ? 'I understand TainerHub may not start again until then.' : undefined }))
                       m.mutate({ path: `/api/hosts/${r.host.id}/networks/${encodeURIComponent(r.id)}`, method: 'DELETE', done: () => `Network ${r.name} removed` })
                   }}
                 />
@@ -394,6 +413,23 @@ function NetworksTable({ rows, q, loading }: { rows: Row<NetworkRes>[]; q: strin
       </Table>
     </>
   )
+}
+
+const OWN_VOLUME_TEXT =
+  "If it holds the hub's data or its database, every user, host and stack is lost, and every agent has to be reinstalled with a new join token. If it's an agent's, that host has to be reinstalled with one."
+
+/** A warning about TainerHub's own volumes and networks. */
+function OwnNote({ children }: { children: ReactNode }) {
+  return (
+    <div className="mt-3 flex gap-2.5 rounded-[3px] bg-amber-400/[0.07] p-3 text-amber-100 ring-1 ring-inset ring-amber-400/25">
+      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-300" />
+      <div>{children}</div>
+    </div>
+  )
+}
+
+function OwnVolumeNote() {
+  return <OwnNote>It belongs to TainerHub itself. {OWN_VOLUME_TEXT}</OwnNote>
 }
 
 function Summary({ items }: { items: string[] }) {
@@ -412,6 +448,7 @@ function Summary({ items }: { items: string[] }) {
 
 function PruneMenu({ tab, hosts }: { tab: Tab; hosts: Host[] }) {
   const me = useMe()
+  const qc = useQueryClient()
   const confirm = useConfirm()
   const m = useResourceMutation()
   const allowed = tab === 'volumes' ? can(me.user, 'admin') : can(me.user, 'operator')
@@ -422,15 +459,25 @@ function PruneMenu({ tab, hosts }: { tab: Tab; hosts: Host[] }) {
     networks: { light: 'unused networks', all: 'unused networks' },
   }[tab]
   const go = async (h: Host, all: boolean) => {
+    // Named volumes TainerHub itself uses that nothing runs with right now
+    // (say, while the hub is being recreated): a full prune would delete them.
+    const ownUnused =
+      tab === 'volumes' && all ? (qc.getQueryData<VolumeRes[]>(['res', 'volumes', h.id]) ?? []).filter((v) => v.usedBy.length === 0 && ownResource(v, h.hello?.own_project)).map((v) => v.name) : []
     const ok = await confirm({
       title: `Prune ${tab} on ${h.name}?`,
       body: (
         <>
           Removes {all ? copy.all : copy.light}.{tab === 'volumes' && <b> Data in those volumes is deleted permanently.</b>}
+          {ownUnused.length > 0 && (
+            <OwnNote>
+              That includes TainerHub's own {ownUnused.length === 1 ? 'volume' : 'volumes'} <span className="mono">{ownUnused.join(', ')}</span>, which no container uses right now. {OWN_VOLUME_TEXT}
+            </OwnNote>
+          )}
         </>
       ),
       confirm: 'Prune',
       danger: true,
+      ack: ownUnused.length ? 'I understand TainerHub may not come back without a backup.' : undefined,
     })
     if (!ok) return
     m.mutate({

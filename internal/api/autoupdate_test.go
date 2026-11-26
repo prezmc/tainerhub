@@ -1278,3 +1278,25 @@ func TestComposeImagesAndBuilds(t *testing.T) {
 		t.Fatal("builds")
 	}
 }
+
+func TestOwnContainer(t *testing.T) {
+	for _, tc := range []struct {
+		name, image, project, own string
+		want                      bool
+	}{
+		{"tainerhub", "ghcr.io/prezmc/tainerhub:latest", "tainerhub", "tainerhub", true},
+		{"tainerhub-postgres", "postgres:17-alpine", "tainerhub", "tainerhub", true},
+		{"tainerhub-agent", "ghcr.io/prezmc/tainerhub-agent:latest", "tainerhub-agent", "tainerhub-agent", true},
+		{"agent", "ghcr.io/prezmc/tainerhub-agent:1.4", "", "", true}, // renamed, found by image
+		{"hub", "localhost:5000/tainerhub@sha256:abc", "", "", true},  // registry port and digest
+		{"db", "postgres:17", "TainerHub", "tainerhub", true},         // in the agent's project
+		{"postgres", "postgres:17", "app", "tainerhub", false},        // someone else's database
+		{"web", "nginx", "", "", false},                               // no project known
+		{"web", "example/tainerhub-dashboard", "", "", false},         // a look-alike image
+	} {
+		c := wire.Container{Name: tc.name, Image: tc.image, Project: tc.project}
+		if got := ownContainer(c, tc.own); got != tc.want {
+			t.Errorf("ownContainer(%s, %s, project %q, own %q) = %v, want %v", tc.name, tc.image, tc.project, tc.own, got, tc.want)
+		}
+	}
+}
