@@ -286,6 +286,13 @@ func (s *Store) UpdatePasskeyAfterLogin(ctx context.Context, id []byte, credenti
 	return err
 }
 
+// HasPasskey reports whether the user has at least one passkey.
+func (s *Store) HasPasskey(ctx context.Context, userID string) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM passkeys WHERE user_id = $1::uuid)`, userID).Scan(&ok)
+	return ok, err
+}
+
 // DeletePasskey removes a passkey unless it is the user's last way to sign
 // in (their last passkey and they have no password).
 func (s *Store) DeletePasskey(ctx context.Context, userID string, id []byte) error {

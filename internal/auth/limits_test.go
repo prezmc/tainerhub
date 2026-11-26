@@ -28,10 +28,15 @@ type fakeStore struct {
 	recoveryIDs   []string            // user IDs UseRecoveryCode was called with
 	tokens        map[string]tokenRow // API tokens by hash (see tokens_test.go)
 	touches       int
+	user          *store.User // what UserByUsername finds (nil: nobody)
+	hasPasskey    bool
 }
 
 func (f *fakeStore) UserByUsername(ctx context.Context, username string) (store.User, error) {
 	f.lookups.Add(1)
+	if f.user != nil {
+		return *f.user, nil
+	}
 	return store.User{}, store.ErrNotFound
 }
 
@@ -70,6 +75,10 @@ func (f *fakeStore) SetPasswordAndRevoke(ctx context.Context, userID, hash strin
 	f.revokedKeep = keep
 	f.passwordSetTo = hash
 	return nil
+}
+
+func (f *fakeStore) HasPasskey(ctx context.Context, userID string) (bool, error) {
+	return f.hasPasskey, nil
 }
 
 func testService(f *fakeStore, max int) *Service {

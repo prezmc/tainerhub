@@ -59,7 +59,7 @@ function useToggle() {
   })
 }
 
-function Switch({ on, busy, disabled, onChange, label }: { on: boolean; busy?: boolean; disabled?: boolean; onChange: (on: boolean) => void; label: string }) {
+export function Switch({ on, busy, disabled, onChange, label }: { on: boolean; busy?: boolean; disabled?: boolean; onChange: (on: boolean) => void; label: string }) {
   return (
     <button
       type="button"

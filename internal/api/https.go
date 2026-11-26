@@ -28,8 +28,9 @@ import (
 //     cookies. The LAN address keeps working as before.
 
 const (
-	settingPublicURL = "public_url"
-	settingTrusted   = "trusted_proxies"
+	settingPublicURL       = "public_url"
+	settingTrusted         = "trusted_proxies"
+	settingPasskeyRequired = "passkey_required"
 )
 
 // HTTPSConfig is what the hub was started with (environment variables win
@@ -53,6 +54,17 @@ type httpsState struct {
 	pending  map[string]*httpsCheck // nonce -> what the check request saw
 	instance string                 // proves the check reached this hub
 	passed   map[string]httpsResult // url -> last successful test
+
+	// untrusted is the latest address that sent forwarding headers without
+	// being a trusted proxy (see noteUntrustedProxy); warned holds when each
+	// was last logged.
+	untrusted untrustedSeen
+	warned    map[string]time.Time
+}
+
+type untrustedSeen struct {
+	IP string    `json:"ip"`
+	At time.Time `json:"at"`
 }
 
 type httpsResult struct {
@@ -69,6 +81,7 @@ func (h *httpsState) init() {
 	if h.pending == nil {
 		h.pending = map[string]*httpsCheck{}
 		h.passed = map[string]httpsResult{}
+		h.warned = map[string]time.Time{}
 		h.instance = randID()
 	}
 }
@@ -76,6 +89,9 @@ func (h *httpsState) init() {
 // LoadHTTPSSettings applies UI-saved settings at startup (unless the
 // environment sets the public URL).
 func (s *Server) LoadHTTPSSettings(ctx context.Context) error {
+	if v, err := s.Store.Setting(ctx, settingPasskeyRequired); err == nil {
+		s.Auth.SetPasskeyRequired(v == "1")
+	}
 	if s.HTTPS.EnvPublicURL != nil {
 		return nil
 	}
@@ -175,7 +191,14 @@ func (s *Server) httpsSettings(w http.ResponseWriter, r *http.Request) {
 		"passkeys":       s.Auth.PasskeysEnabled(),
 		"httpPort":       s.HTTPS.HTTPPort,
 		"viaHTTPS":       s.Auth.IsHTTPS(r),
+		// Sign-in rule for the secure address (see auth.SetPasskeyRequired).
+		"passkeyRequired": s.Auth.PasskeyRequired(),
 	}
+	s.https.mu.Lock()
+	if u := s.https.untrusted; u.IP != "" && time.Since(u.At) < untrustedShowFor {
+		out["untrustedProxy"] = u
+	}
+	s.https.mu.Unlock()
 	if u := s.Auth.PublicURL(); u != nil {
 		out["publicURL"] = u.String()
 	}
@@ -376,6 +399,13 @@ func (s *Server) httpsEnable(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if len(trusted) == 0 {
+		// Without it the hub can't tell visitors apart (they all look like
+		// the proxy: one bad guesser locks everyone out) or know they used
+		// HTTPS (cookies wouldn't be marked Secure).
+		jsonErr(w, http.StatusBadRequest, "enter your proxy's IP address (the test shows it), so TainerHub can see each visitor's real IP and that they used HTTPS")
+		return
+	}
 	var parts []string
 	for _, p := range trusted {
 		parts = append(parts, p.String())
@@ -423,4 +453,73 @@ func (s *Server) publicURLString() string {
 		return u.String()
 	}
 	return ""
+}
+
+// untrustedShowFor is how long Settings warns about a proxy that isn't
+// trusted after it was last seen; untrustedLogEvery how often the log does.
+const (
+	untrustedShowFor  = 24 * time.Hour
+	untrustedLogEvery = time.Hour
+)
+
+// noteUntrustedProxy spots a reverse proxy that isn't in the trusted list:
+// a request carrying forwarding headers from a peer that isn't trusted,
+// while a secure address is set. Its headers are ignored (as they must be),
+// so every visitor through it looks like the proxy itself: the sign-in limit
+// is shared by all of them and cookies aren't marked Secure. Settings shows
+// it, and the log says so once an hour per address.
+func (s *Server) noteUntrustedProxy(r *http.Request) {
+	if r.Header.Get("X-Forwarded-For") == "" && r.Header.Get("X-Forwarded-Proto") == "" {
+		return
+	}
+	if s.Auth.PublicURL() == nil || s.Auth.FromTrustedProxy(r) {
+		return
+	}
+	ip := r.RemoteAddr
+	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
+		ip = ap.Addr().Unmap().String()
+	}
+	now := time.Now()
+	s.https.mu.Lock()
+	s.https.init()
+	s.https.untrusted = untrustedSeen{IP: ip, At: now}
+	logIt := now.Sub(s.https.warned[ip]) > untrustedLogEvery
+	if logIt {
+		if len(s.https.warned) > 1000 { // bounded: a flood of addresses can't grow it
+			clear(s.https.warned)
+		}
+		s.https.warned[ip] = now
+	}
+	s.https.mu.Unlock()
+	if logIt {
+		s.Log.Warn("a reverse proxy that isn't trusted is forwarding to TainerHub, so visitors' real IPs and HTTPS are ignored. If it's your proxy, add its IP to TAINERHUB_TRUSTED_PROXIES (or turn HTTPS off and on again in Settings with it)", "proxy", ip)
+	}
+}
+
+// putSignInSettings changes the sign-in rule for the secure address:
+// accounts with a passkey must use it there (passwords keep working on the
+// LAN address). Either way changes how people sign in, so it needs a fresh
+// sign-in.
+func (s *Server) putSignInSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.fresh(w, r) {
+		return
+	}
+	var in struct {
+		PasskeyRequired bool `json:"passkeyRequired"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	v := "0"
+	if in.PasskeyRequired {
+		v = "1"
+	}
+	if err := s.Store.SetSetting(r.Context(), settingPasskeyRequired, v); err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.Auth.SetPasskeyRequired(in.PasskeyRequired)
+	me := userFrom(r)
+	s.record(r, &me, "settings.sign_in", "", map[string]bool{"passkey_required": in.PasskeyRequired})
+	w.WriteHeader(http.StatusNoContent)
 }

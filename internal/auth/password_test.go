@@ -27,13 +27,23 @@ func TestPasswordHashRoundTrip(t *testing.T) {
 }
 
 func TestPasswordPolicy(t *testing.T) {
-	if checkPasswordPolicy("short") == nil {
+	if checkPasswordPolicy("short", "") == nil {
 		t.Fatal("short password accepted")
 	}
-	if checkPasswordPolicy(strings.Repeat("x", maxPassword+1)) == nil {
+	if checkPasswordPolicy(strings.Repeat("x", maxPassword+1), "") == nil {
 		t.Fatal("overlong password accepted")
 	}
-	if err := checkPasswordPolicy("long enough pw"); err != nil {
+	if err := checkPasswordPolicy("long enough pw", "alice"); err != nil {
 		t.Fatal(err)
+	}
+	for _, weak := range []string{"Password123", "password123!", "QWERTYUIOP", "1234567890", "abcdefghijk", "9876543210", "aaaaaaaaaaaa", "abababababab", "alice-secret-99"} {
+		if checkPasswordPolicy(weak, "Alice") == nil {
+			t.Errorf("weak password %q accepted", weak)
+		}
+	}
+	for _, ok := range []string{"correct horse battery", "Tr0ub4dor&3x", "my cat eats 3 socks"} {
+		if err := checkPasswordPolicy(ok, "alice"); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
 	}
 }

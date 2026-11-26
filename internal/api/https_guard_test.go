@@ -2,10 +2,18 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/prezmc/tainerhub/internal/auth"
 )
 
 func TestParseTrustedStrict(t *testing.T) {
@@ -61,5 +69,41 @@ func TestFetchRefusesLoopback(t *testing.T) {
 	}
 	if msg := describeFetchError("hub.example.com", "8585", err); !strings.Contains(msg, "reserved address") {
 		t.Errorf("unexpected message %q", msg)
+	}
+}
+
+// A proxy that isn't trusted is spotted and shown in Settings; the trusted
+// one, and plain LAN visits, aren't.
+func TestNoteUntrustedProxy(t *testing.T) {
+	a := &auth.Service{}
+	pub, _ := url.Parse("https://hub.example.com")
+	if err := a.Reconfigure(pub, []netip.Prefix{netip.MustParsePrefix("192.0.2.1/32")}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Auth: a, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	seen := func() any {
+		w := httptest.NewRecorder()
+		s.httpsSettings(w, httptest.NewRequest(http.MethodGet, "/api/settings/https", nil))
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return out["untrustedProxy"]
+	}
+	visit := func(peer string, forwarded bool) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = peer + ":5000"
+		if forwarded {
+			r.Header.Set("X-Forwarded-For", "198.51.100.7")
+		}
+		s.noteUntrustedProxy(r)
+	}
+	visit("192.0.2.1", true)     // the trusted proxy
+	visit("192.168.1.40", false) // a LAN browser
+	if v := seen(); v != nil {
+		t.Fatalf("nothing untrusted yet, got %v", v)
+	}
+	visit("172.18.0.5", true)
+	v, _ := seen().(map[string]any)
+	if v["ip"] != "172.18.0.5" {
+		t.Fatalf("untrusted proxy not reported: %v", v)
 	}
 }

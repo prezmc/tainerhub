@@ -4,7 +4,7 @@ import { CircleCheck, CircleAlert, ExternalLink, Lock, LockOpen, ShieldCheck } f
 import { api, errorText } from '../api'
 import { Badge, Button, Card, CopyButton, ErrorNote, Input, PageHeader, useConfirm, useToast } from '../ui'
 import { RegistriesCard } from '../registries'
-import { AutoUpdatesCard } from '../autoupdatesui'
+import { AutoUpdatesCard, Switch } from '../autoupdatesui'
 
 type HTTPSSettings = {
   publicURL: string
@@ -13,6 +13,9 @@ type HTTPSSettings = {
   passkeys: boolean
   httpPort: string
   viaHTTPS: boolean
+  passkeyRequired: boolean
+  /** Latest address that forwarded requests without being a trusted proxy. */
+  untrustedProxy?: { ip: string; at: string }
 }
 
 type TestResult = {
@@ -166,6 +169,9 @@ export function SettingsPage() {
         )}
       </Card>
 
+      {on && <ProxyWarning s={s} />}
+      {on && <SignInCard s={s} />}
+
       {s.lockedByEnv ? (
         <Card className="px-5 py-4 text-sm text-ink-100/70">
           The secure address is set with <code className="text-white">TAINERHUB_PUBLIC_URL</code> in the hub's compose file, so it's managed there. Remove that line
@@ -197,7 +203,8 @@ export function SettingsPage() {
                   ['Forward Port', port, true],
                   ['Cache Assets', 'off', false],
                   ['Block Common Exploits', 'on', false],
-                  ['Websockets Support', 'on (needed for live updates and terminals)', false],
+                  ['Websockets Support', 'on or off (TainerHub streams without websockets)', false],
+                  ['Access List', 'Publicly Accessible, or one that allows only your networks', false],
                 ]}
               />
               <Values
@@ -206,6 +213,7 @@ export function SettingsPage() {
                   ['SSL Certificate', "Request a new SSL Certificate (Let's Encrypt), or pick your wildcard certificate", false],
                   ['Force SSL', 'on', false],
                   ['HTTP/2 Support', 'on', false],
+                  ['HSTS Enabled', 'on', false],
                 ]}
               />
               {isLocalName(hubHost) && (
@@ -244,12 +252,13 @@ export function SettingsPage() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {result.ok ? (
-                    <Button variant="primary" icon={Lock} loading={enable.isPending} onClick={() => enable.mutate(false)}>
+                    <Button variant="primary" icon={Lock} disabled={!trusted.trim()} loading={enable.isPending} onClick={() => enable.mutate(false)}>
                       Turn on HTTPS
                     </Button>
                   ) : (
                     <Button
                       variant="secondary"
+                      disabled={!trusted.trim()}
                       loading={enable.isPending}
                       onClick={async () => {
                         if (
@@ -277,6 +286,70 @@ export function SettingsPage() {
       <AutoUpdatesCard />
       <RegistriesCard />
     </div>
+  )
+}
+
+// ProxyWarning: with no trusted proxy, or a proxy that isn't the trusted
+// one, the hub ignores what the proxy says about visitors. They all look
+// like the proxy (one bad guesser locks everyone out of signing in) and
+// aren't seen as using HTTPS (cookies aren't marked Secure).
+function ProxyWarning({ s }: { s: HTTPSSettings }) {
+  const seen = s.untrustedProxy?.ip
+  if (s.trustedProxies.length > 0 && !seen) return null
+  const ip = seen || 'your-proxy-ip'
+  return (
+    <div className="flex items-start gap-2 rounded-[3px] bg-amber-500/10 px-4 py-3 text-sm text-amber-200 ring-1 ring-inset ring-amber-500/25">
+      <CircleAlert className="mt-0.5 size-4 shrink-0" />
+      <div className="space-y-1">
+        <p className="font-semibold">
+          {seen ? (
+            <>
+              Requests reach TainerHub through <code>{seen}</code>, which isn't a trusted proxy.
+            </>
+          ) : (
+            'No trusted proxy is set.'
+          )}
+        </p>
+        <p className="text-amber-200/80">
+          Until it is, TainerHub can't see visitors' real IPs, so one person guessing passwords locks everyone out of signing in, and it can't tell they used HTTPS, so
+          sign-in cookies aren't marked Secure.{' '}
+          {s.lockedByEnv ? (
+            <>
+              If {seen ? 'that' : 'it'} is your proxy, set <code className="text-white">TAINERHUB_TRUSTED_PROXIES: {ip}</code> in the hub's compose file and run{' '}
+              <code className="text-white">docker compose up -d</code>.
+            </>
+          ) : (
+            <>If {seen ? 'that' : 'it'} is your proxy, turn HTTPS off and on again here and enter {seen ? <code className="text-white">{seen}</code> : "your proxy's IP"} as the proxy IP.</>
+          )}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+// SignInCard: the sign-in rule for the secure address.
+function SignInCard({ s }: { s: HTTPSSettings }) {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const set = useMutation({
+    mutationFn: (passkeyRequired: boolean) => api('/api/settings/sign-in', { method: 'PUT', body: { passkeyRequired } }),
+    onSuccess: (_, on) => {
+      toast('good', on ? 'Accounts with a passkey must now use it on the secure address' : 'Passwords work on the secure address again')
+      qc.invalidateQueries({ queryKey: ['settings-https'] })
+    },
+    onError: (e) => toast('bad', errorText(e)),
+  })
+  return (
+    <Card className="flex items-start gap-3 px-5 py-4">
+      <Switch on={s.passkeyRequired} busy={set.isPending} onChange={(on) => set.mutate(on)} label="Accounts with a passkey must use it on the secure address" />
+      <div className="min-w-0 flex-1 space-y-1 text-sm">
+        <div className="font-semibold text-white">Accounts with a passkey must use it on the secure address</div>
+        <p className="text-ink-100/60">
+          Turn this on before you open TainerHub to the internet: nobody can then guess their way into an account that has a passkey. Accounts without one keep
+          their password, so they can sign in and add one. Recovery codes still work, and passwords still work on the LAN address.
+        </p>
+      </div>
+    </Card>
   )
 }
 

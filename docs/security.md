@@ -109,7 +109,7 @@ Container **logs** are visible to every role, including viewers. If your apps pr
 
 ### Passwords, passkeys and recovery codes
 
-- **Passwords** must be at least 10 characters. They're hashed with **argon2id** (19 MiB memory, 2 passes, the OWASP minimum).
+- **Passwords** must be at least 10 characters. Common passwords (like `Password123`), simple sequences (`1234567890`, `qwertyuiop`), passwords with few different characters, and passwords containing the username are refused. They're hashed with **argon2id** (19 MiB memory, 2 passes, the OWASP minimum).
 - **Passkeys** are available once TainerHub is on HTTPS. They require user verification (fingerprint, face or PIN) and are discoverable, so you don't type a username.
 - **Recovery codes**: 10 per user, each single-use, stored only as hashes. Making new ones cancels the old ones.
 - There's no external identity provider and no email reset. Recovery codes are the way back in.
@@ -153,11 +153,18 @@ Users can create API tokens for scripts on **Account & sign-in → API tokens**.
 ### Rate limits
 
 - **Failed sign-ins**: 10 per client IP per 15 minutes. This covers passwords, passkeys, recovery codes and guessing the current password when changing it.
+- **Failed sign-ins per account**: 10 per account per 15 minutes, for passwords and recovery codes, whatever address they come from. This stops many addresses (a botnet) from sharing the guessing. Passkeys aren't limited this way, so flooding someone's username can't lock them out of their passkey. Attempts through the trusted proxy and attempts on the LAN address are counted apart, so guesses from the internet can't lock anyone out of the LAN address. The answer is the same whether or not the account exists.
 - **Passkey ceremonies** (signing in with or adding a passkey): at most 30 started per client IP per minute.
 - **Bad API tokens**: 20 per client IP per 15 minutes, counted separately from sign-ins, so a misconfigured script doesn't lock people out of signing in. After that, bad tokens get `429` instead of `401`. A valid token always works, even from an address that has sent bad ones.
 - **Log streams**: each user can have 4 open per host and 8 in all. More get `429`.
 
 The client IP comes from `X-Forwarded-For` only when the request arrives from a trusted proxy (set in Settings or `TAINERHUB_TRUSTED_PROXIES`). Otherwise it's the connecting address. That's why Settings only accepts narrow proxy ranges: anything in a trusted range could claim to be any visitor.
+
+Settings requires a trusted proxy when you turn HTTPS on. If HTTPS is set in the compose file without `TAINERHUB_TRUSTED_PROXIES`, or requests arrive through a proxy that isn't trusted, the hub logs a warning (once an hour per address) and Settings shows it with the address to trust. Until it's fixed, every visitor looks like the proxy (one person guessing passwords locks everyone out) and sign-in cookies aren't marked `Secure`.
+
+### Passkeys required on the secure address
+
+**Settings → Accounts with a passkey must use it on the secure address** (off by default; admins with every host). When it's on, a password sign-in through the proxy is refused for any account that has a passkey, before the password is checked, so it can't be guessed there at all. Recovery codes still work. Accounts without a passkey keep their password, so they can sign in and add one. Passwords keep working on the LAN address. Changing it needs a sign-in from the last 10 minutes and is audited (`settings.sign_in`); refusals are logged as `login.failed` with reason `passkey_required`.
 
 ## Browser protections
 
@@ -229,12 +236,24 @@ Be clear-eyed about this:
 
 No software can promise zero vulnerabilities. This is defence in depth, plus automated checks on every change.
 
+## Opening TainerHub to the internet
+
+TainerHub can be reached from the internet through your reverse proxy, but every admin account is root on your servers, so do it deliberately:
+
+1. **Only the proxy is public.** Forward port 443 (and 80, for Let's Encrypt and the redirect to HTTPS) on your router to the proxy. Never forward 8585 or Postgres. Forward 7443 only if agents outside your network must dial in; it's mutual TLS, so it's safe to expose, but limit it to those servers' addresses if you can. Never put 7443 behind the proxy.
+2. **HTTPS with a trusted proxy.** Set it up as in [HTTPS and passkeys](https-and-passkeys.md), and check Settings shows no proxy warning.
+3. **In the proxy:** Force SSL and HSTS on (NPM: SSL tab). Keep Block Common Exploits on.
+4. **Passkeys:** add one for every admin, then turn on **Accounts with a passkey must use it on the secure address**. Ask everyone else to add one too.
+5. **Least privilege:** invite other people as viewers or operators, and [limit them to their hosts](features.md#limiting-a-user-to-some-hosts). Viewers can read every log on their hosts. Keep admins few.
+6. **Optional extra gate:** a VPN (Tailscale, WireGuard), or an identity proxy (Cloudflare Access, Authelia, Authentik) in front, means strangers never reach the sign-in page. An NPM Access List that only allows known networks does the same for fixed addresses.
+7. **Watch it:** look at the audit log for `login.failed` now and then, and keep TainerHub updated.
+
 ## Hardening checklist
 
 - [ ] **Save your recovery codes** outside TainerHub, and the database password in your password manager.
 - [ ] **Back up the hub's `/data` volume** and the database. Protect the backups like the hub itself.
 - [ ] **Don't expose port 8585 to the internet.** Use [HTTPS through a reverse proxy](https-and-passkeys.md) for remote access, ideally with an NPM Access List or a VPN.
-- [ ] **Set up HTTPS and add passkeys** for every admin.
+- [ ] **Set up HTTPS and add passkeys** for every admin, then turn on **Accounts with a passkey must use it on the secure address**.
 - [ ] **Trust only your proxy's single IP** in Settings or `TAINERHUB_TRUSTED_PROXIES`.
 - [ ] **Once everyone uses HTTPS, block port 8585** from everything except the proxy (`DOCKER-USER` chain; see [Getting started](getting-started.md#5-open-the-right-ports)).
 - [ ] **Limit who can reach port 7443** to your managed servers, if your firewall allows it. Never put 7443 behind a proxy.

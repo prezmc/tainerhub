@@ -40,7 +40,8 @@ In NPM, go to **Hosts → Proxy Hosts → Add Proxy Host**. Settings shows the e
 | Forward Port | `8585` |
 | Cache Assets | off |
 | Block Common Exploits | on |
-| Websockets Support | on (needed for live updates and terminals) |
+| Websockets Support | on or off (TainerHub streams without websockets) |
+| Access List | Publicly Accessible, or one that allows only your networks (see [Keeping it LAN-only](#keeping-it-lan-only)) |
 
 **SSL tab**
 
@@ -49,6 +50,7 @@ In NPM, go to **Hosts → Proxy Hosts → Add Proxy Host**. Settings shows the e
 | SSL Certificate | Request a new SSL Certificate (Let's Encrypt), or pick your wildcard certificate |
 | Force SSL | on |
 | HTTP/2 Support | on |
+| HSTS Enabled | on |
 
 Settings pre-fills the forward host with the address you opened TainerHub on. If you opened it as `localhost`, use the server's LAN IP instead, so NPM can reach it.
 
@@ -73,6 +75,8 @@ If something fails, see [Troubleshooting](#troubleshooting) below.
 After a test that reached the hub through the proxy, or that failed only on the certificate, a fourth step appears.
 
 **Proxy IP (trusted)** is filled in with the address the test saw. TainerHub trusts this IP, and only this IP, to say two things about each visitor: their real IP address (`X-Forwarded-For`) and that they used HTTPS (`X-Forwarded-Proto`). The real IP matters for the sign-in rate limit and the audit log.
+
+It's required: without it TainerHub can't see visitors' real IPs (so one person guessing passwords would lock everyone out) or that they used HTTPS (so cookies wouldn't be marked `Secure`).
 
 Keep it to **your proxy's single IP**. You can enter several addresses separated by commas, or a range, but:
 
@@ -104,6 +108,10 @@ Register a passkey on each device you use. Until you add one, everyone sees a ba
 
 The sign-in page at the secure address now shows **Sign in with passkey**, with the password form below it. Passwords and recovery codes keep working.
 
+## Step 6: Require passkeys on the secure address
+
+Once your admins have passkeys, turn on **Accounts with a passkey must use it on the secure address** in Settings. Then nobody can guess their way into those accounts through the proxy: a password sign-in there is refused for any account with a passkey. Recovery codes still work, accounts without a passkey keep their password (so they can add one), and passwords keep working on the LAN address. Do this before opening TainerHub to the internet; see [Security: Opening TainerHub to the internet](security.md#opening-tainerhub-to-the-internet).
+
 ## Keeping it LAN-only
 
 HTTPS doesn't have to mean "on the internet". To use passkeys at home without exposing TainerHub:
@@ -134,7 +142,7 @@ Then run `docker compose up -d`.
 
 The compose file takes priority and **locks the Settings page**: it shows "set in compose file", and you can't test, turn on or turn off HTTPS there. To manage it from Settings again, remove `TAINERHUB_PUBLIC_URL` and run `docker compose up -d`.
 
-`TAINERHUB_TRUSTED_PROXIES` takes IPs or ranges, separated by commas. While `TAINERHUB_PUBLIC_URL` is set, the address and proxy saved in Settings are ignored. Unlike Settings, a too-broad range here is still applied (so an existing install keeps starting), but the hub logs a warning. Use your proxy's own IP.
+`TAINERHUB_TRUSTED_PROXIES` takes IPs or ranges, separated by commas. Don't leave it out: the hub starts without it but logs a warning, and Settings shows one too, naming the proxy address it sees. While `TAINERHUB_PUBLIC_URL` is set, the address and proxy saved in Settings are ignored. Unlike Settings, a too-broad range here is still applied (so an existing install keeps starting), but the hub logs a warning. Use your proxy's own IP.
 
 ## Turning it off
 

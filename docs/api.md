@@ -368,10 +368,11 @@ Each entry: `{"id", "at", "userId", "actor", "action", "target", "detail", "ip"}
 
 | Method | Path | Role | Token | Notes |
 | --- | --- | --- | --- | --- |
-| GET | `/api/settings/https` | admin | yes | `{"publicURL", "trustedProxies", "lockedByEnv", "passkeys", "httpPort", "viaHTTPS"}` |
+| GET | `/api/settings/https` | admin | yes | `{"publicURL", "trustedProxies", "lockedByEnv", "passkeys", "httpPort", "viaHTTPS", "passkeyRequired", "untrustedProxy"}` (`untrustedProxy`: `{"ip", "at"}`, only when a proxy that isn't trusted was seen in the last 24 hours) |
 | POST | `/api/settings/https/test` | admin | yes | Test an address through your proxy. Body: `url`. |
-| PUT | `/api/settings/https` | admin | **no** | Turn HTTPS on. Body: `url`, `trusted` (comma-separated IPs or CIDRs), `force`. |
+| PUT | `/api/settings/https` | admin | **no** | Turn HTTPS on. Body: `url`, `trusted` (comma-separated IPs or CIDRs; required), `force`. |
 | DELETE | `/api/settings/https` | admin | **no** | Turn HTTPS off. |
+| PUT | `/api/settings/sign-in` | admin | **no** | Body: `passkeyRequired` (bool): on the secure address, accounts with a passkey must use it. |
 
 Both changes answer `409` when the address is set by `TAINERHUB_PUBLIC_URL`. See [HTTPS and passkeys](https-and-passkeys.md).
 

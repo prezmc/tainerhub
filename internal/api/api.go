@@ -211,6 +211,7 @@ func (s *Server) routes() []route {
 		rt("POST /api/settings/https/test", "admin", scopeHub, s.httpsTest),
 		rt("PUT /api/settings/https", "admin", scopeHub, s.httpsEnable),
 		rt("DELETE /api/settings/https", "admin", scopeHub, s.httpsDisable),
+		rt("PUT /api/settings/sign-in", "admin", scopeHub, s.putSignInSettings),
 		// private registry logins (see registries.go); changes need a fresh sign-in
 		rt("GET /api/registries", "admin", scopeHub, s.listRegistries),
 		rt("POST /api/registries", "admin", scopeHub, s.addRegistry),
@@ -262,6 +263,7 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		// A request with a bearer token is authenticated by it alone, never
 		// by cookies (see auth.HasBearer), so there is nothing for a forged
 		// cross-site request to ride on: the CSRF checks don't apply.
+		s.noteUntrustedProxy(r)
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions && !auth.HasBearer(r) {
 			// SameSite=Strict cookies plus a custom header (which cross-site
 			// forms cannot send) plus an Origin check.
@@ -554,6 +556,11 @@ func (s *Server) loginPassword(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, auth.ErrRateLimited) {
 			jsonErr(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+		if errors.Is(err, auth.ErrPasskeyRequired) {
+			s.record(r, nil, "login.failed", truncate(in.Username, 64), map[string]string{"method": "password", "reason": "passkey_required"})
+			jsonErr(w, http.StatusForbidden, err.Error())
 			return
 		}
 		if !errors.Is(err, auth.ErrBadPassword) {

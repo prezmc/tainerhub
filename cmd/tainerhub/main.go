@@ -161,6 +161,9 @@ func run(log *slog.Logger) error {
 		publicURL = cfg.PublicURL.String()
 	}
 	log.Info("tainerhub starting", "version", version.Version, "public_url", publicURL, "agent_addr", cfg.AgentAddr)
+	if cfg.PublicURL != nil && len(cfg.Trusted) == 0 {
+		log.Warn("TAINERHUB_PUBLIC_URL is set but TAINERHUB_TRUSTED_PROXIES is not. Until it is, TainerHub can't see visitors' real IPs (one bad guesser locks everyone out of signing in) or that they used HTTPS (cookies aren't marked Secure). Set it to your reverse proxy's IP")
+	}
 
 	var st *store.Store
 	if cfg.DBPassword != "" { // TAINERHUB_DATABASE_PASSWORD_FILE: managed by the admin

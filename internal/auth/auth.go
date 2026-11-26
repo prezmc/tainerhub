@@ -75,6 +75,12 @@ type Service struct {
 	// beginLimiter caps how fast one client can start passkey ceremonies, so
 	// a single source can't fill the ceremony table and lock others out.
 	beginLimiter *Limiter
+	// AccountLimiter counts failed password and recovery-code sign-ins per
+	// account (see signin.go), so many addresses can't share one guess budget.
+	AccountLimiter *Limiter
+	// passkeyRequired: on the secure address, accounts with a passkey can't
+	// use a password (see SetPasskeyRequired).
+	passkeyRequired atomic.Bool
 
 	// db, when set, stands in for Store on the sign-in and session paths
 	// below (tests use it to run them without Postgres).
@@ -94,6 +100,7 @@ type authStore interface {
 	SetPasswordAndRevoke(ctx context.Context, userID, hash string, keep []byte) error
 	APITokenUser(ctx context.Context, tokenHash []byte) (store.APIToken, store.User, error)
 	TouchAPIToken(ctx context.Context, id, ip string) error
+	HasPasskey(ctx context.Context, userID string) (bool, error)
 }
 
 func (s *Service) st() authStore {
@@ -125,7 +132,7 @@ type webConfig struct {
 // New builds the auth service. publicURL may be nil: then only passwords and
 // recovery codes work.
 func New(st *store.Store, publicURL *url.URL, trusted []netip.Prefix, log *slog.Logger) (*Service, error) {
-	s := &Service{Store: st, Log: log, ceremonies: map[string]*ceremony{}, Limiter: NewLimiter(10, 15*time.Minute), TokenLimiter: NewLimiter(20, 15*time.Minute), beginLimiter: NewLimiter(beginPerMinute, time.Minute)}
+	s := &Service{Store: st, Log: log, ceremonies: map[string]*ceremony{}, Limiter: NewLimiter(10, 15*time.Minute), TokenLimiter: NewLimiter(20, 15*time.Minute), AccountLimiter: NewLimiter(accountMaxFails, 15*time.Minute), beginLimiter: NewLimiter(beginPerMinute, time.Minute)}
 	if err := s.Reconfigure(publicURL, trusted); err != nil {
 		return nil, err
 	}
@@ -588,14 +595,14 @@ const noUserID = "00000000-0000-0000-0000-000000000000"
 
 // LoginWithRecoveryCode signs in with a single-use code. Each code works once.
 func (s *Service) LoginWithRecoveryCode(w http.ResponseWriter, r *http.Request, username, code string) (store.User, error) {
-	ip := s.ClientIP(r)
-	if !s.Limiter.Reserve(ip) {
-		return store.User{}, ErrRateLimited
+	release, err := s.reserveSignIn(r, username)
+	if err != nil {
+		return store.User{}, err
 	}
 	failed := false
 	defer func() {
 		if !failed {
-			s.Limiter.Release(ip)
+			release()
 		}
 	}()
 	fail := errors.New("username or recovery code is wrong")

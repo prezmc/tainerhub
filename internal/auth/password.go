@@ -35,13 +35,18 @@ const (
 
 var ErrBadPassword = errors.New("username or password is wrong")
 
-func checkPasswordPolicy(p string) error {
+// checkPasswordPolicy checks a new password for the account username (which
+// may be empty).
+func checkPasswordPolicy(p, username string) error {
 	n := utf8.RuneCountInString(p)
 	if n < minPassword {
 		return fmt.Errorf("use at least %d characters", minPassword)
 	}
 	if len(p) > maxPassword {
 		return fmt.Errorf("use at most %d characters", maxPassword)
+	}
+	if why := weakPassword(p, username); why != "" {
+		return errors.New(why)
 	}
 	return nil
 }
@@ -155,7 +160,7 @@ func (s *Service) SetupWithPassword(w http.ResponseWriter, r *http.Request, in S
 	if !validUsername(in.Username) {
 		return store.User{}, nil, errBadUsername
 	}
-	if err := checkPasswordPolicy(in.Password); err != nil {
+	if err := checkPasswordPolicy(in.Password, in.Username); err != nil {
 		return store.User{}, nil, errors.New("password: " + err.Error())
 	}
 	if strings.TrimSpace(in.DisplayName) == "" {
@@ -181,16 +186,17 @@ func (s *Service) SetupWithPassword(w http.ResponseWriter, r *http.Request, in S
 // LoginWithPassword signs in with a username and password, rate-limited per
 // client IP like the other sign-in methods.
 func (s *Service) LoginWithPassword(w http.ResponseWriter, r *http.Request, username, password string) (store.User, error) {
-	ip := s.ClientIP(r)
-	// Reserve the attempt before the costly hash check, so a parallel burst
-	// can't all get past the limit; a successful sign-in hands it back.
-	if !s.Limiter.Reserve(ip) {
-		return store.User{}, ErrRateLimited
+	// Reserve the attempt (per IP and per account) before the costly hash
+	// check, so a parallel burst can't all get past the limit; a successful
+	// sign-in hands it back.
+	release, err := s.reserveSignIn(r, username)
+	if err != nil {
+		return store.User{}, err
 	}
 	failed := false
 	defer func() {
 		if !failed {
-			s.Limiter.Release(ip)
+			release()
 		}
 	}()
 	if len(password) > maxPassword {
@@ -200,6 +206,17 @@ func (s *Service) LoginWithPassword(w http.ResponseWriter, r *http.Request, user
 	u, err := s.st().UserByUsername(r.Context(), strings.TrimSpace(username))
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return store.User{}, err
+	}
+	if err == nil && u.PasswordHash != "" {
+		// Checked before the password, so a refused account is no oracle
+		// for guessing it. Not counted as a failure: nothing was guessed.
+		refused, err := s.passwordRefused(r.Context(), r, u)
+		if err != nil {
+			return store.User{}, err
+		}
+		if refused {
+			return store.User{}, ErrPasskeyRequired
+		}
 	}
 	hash := u.PasswordHash
 	if hash == "" {
@@ -244,7 +261,7 @@ func (s *Service) ChangePassword(r *http.Request, u store.User, current, next st
 	} else if err := s.RequireFreshSignIn(r); err != nil {
 		return err
 	}
-	if err := checkPasswordPolicy(next); err != nil {
+	if err := checkPasswordPolicy(next, u.Username); err != nil {
 		return errors.New("new password: " + err.Error())
 	}
 	keep := s.sessionHash(r)
@@ -301,7 +318,7 @@ func (s *Service) AcceptInvite(w http.ResponseWriter, r *http.Request, in Accept
 	if !validUsername(in.Username) {
 		return store.User{}, nil, errBadUsername
 	}
-	if err := checkPasswordPolicy(in.Password); err != nil {
+	if err := checkPasswordPolicy(in.Password, in.Username); err != nil {
 		return store.User{}, nil, errors.New("password: " + err.Error())
 	}
 	if strings.TrimSpace(in.DisplayName) == "" {

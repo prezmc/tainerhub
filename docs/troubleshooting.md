@@ -184,7 +184,13 @@ More on tokens and every endpoint is in the [API guide](api.md).
 
 After 10 failed sign-ins from one IP address within 15 minutes, further attempts are refused for a while. Wait up to 15 minutes.
 
-If everyone gets locked out together behind a reverse proxy, the hub may be seeing the proxy's IP for every visitor. Make sure the proxy's IP is set as trusted, in **Settings** or `TAINERHUB_TRUSTED_PROXIES`. See [HTTPS and passkeys, step 4](https-and-passkeys.md#step-4-turn-on-https).
+"Too many failed sign-ins for this account" means someone, from any number of addresses, got one account's password or recovery code wrong 10 times in 15 minutes. Sign in with a passkey (not limited), wait up to 15 minutes, or use the LAN address, which is counted separately. If it keeps happening, someone is guessing: turn on **Accounts with a passkey must use it on the secure address** in Settings.
+
+If everyone gets locked out together behind a reverse proxy, the hub may be seeing the proxy's IP for every visitor. Make sure the proxy's IP is set as trusted, in **Settings** or `TAINERHUB_TRUSTED_PROXIES`. See [HTTPS and passkeys, step 4](https-and-passkeys.md#step-4-turn-on-https). Settings shows a warning with the address to trust when it spots this.
+
+## "This account signs in with its passkey on this address"
+
+**Accounts with a passkey must use it on the secure address** is on in Settings, and your account has a passkey. Use **Sign in with passkey**, or a recovery code. On a device without your passkey, use the LAN address, where passwords still work.
 
 ## The update card shows an error
 
