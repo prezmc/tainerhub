@@ -12,6 +12,7 @@ import { MoveSection } from './MoveStack'
 import { AutoUpdateToggle } from '../autoupdatesui'
 import { RollbackButton, RolledBackBanner } from '../rollbackui'
 import { clearStackDraft, peekStackDraft } from '../stackdraft'
+import { PreflightPanel, usePreflight } from '../preflight'
 import { SourceNote, TakeoverPanel, takeoverReady, useTakeoverCheck, useTakeoverSource } from '../takeover'
 import {
   composeBuilds,
@@ -112,6 +113,9 @@ export function NewStackPage() {
   const check = useTakeoverCheck({ hostId, name, compose, env }, takingOver)
   const [acked, setAcked] = useState('')
   const deployReady = !takingOver || takeoverReady(check.data, acked)
+  // A new stack (not a takeover) is checked against the host before it's deployed.
+  const preflight = usePreflight({ hostId, name, compose, env }, !adopting && !!host?.online && !problem && validName && !existing)
+  const preflightBlocked = !adopting && preflight.settled && !!preflight.data?.blocked
 
   const save = useMutation({
     mutationFn: (deploy: boolean) => api<StackSaveResult>('/api/stacks', { method: 'POST', body: { hostId, name, compose, env, files: clean(files), deploy, adopt: adopting, ack: acked } }),
@@ -209,6 +213,7 @@ export function NewStackPage() {
               </>
             )}
             {existing?.managed && <p className="text-xs text-rose-300">This host already has a stack called {name}.</p>}
+            {!adopting && host?.online && validName && !existing && <PreflightPanel check={preflight} hostName={host.name} waiting={problem} />}
             <ErrorNote error={error} />
             <div className="flex flex-col gap-2">
               <Button
@@ -217,8 +222,8 @@ export function NewStackPage() {
                 name="action"
                 value="deploy"
                 loading={save.isPending && save.variables}
-                disabled={!validName || !!problem || !!existing?.managed || (!!existing && !adopting) || save.isPending || !deployReady || check.isFetching || !!filesProblem(files)}
-                title={!deployReady ? 'Deal with the takeover check first' : undefined}
+                disabled={!validName || !!problem || !!existing?.managed || (!!existing && !adopting) || save.isPending || !deployReady || check.isFetching || preflightBlocked || !!filesProblem(files)}
+                title={!deployReady ? 'Deal with the takeover check first' : preflightBlocked ? 'Fix what the check found first' : undefined}
               >
                 Save & deploy
               </Button>

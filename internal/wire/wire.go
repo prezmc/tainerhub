@@ -133,6 +133,9 @@ type StackSupport struct {
 	// Rollback: the agent records and keeps rollback images and runs
 	// StackRollback. Older agents would refuse the command.
 	Rollback bool `json:"rollback,omitempty"`
+	// Preflight: the agent answers OpStackPreflight. Older agents only
+	// have OpStackPreview.
+	Preflight bool `json:"preflight,omitempty"`
 }
 
 type Container struct {
@@ -524,10 +527,11 @@ func ValidRegistryAuth(auths []RegistryAuth) error {
 }
 
 // PullsImages says whether an operation of this kind may pull images (or,
-// for OpRegistryLogin, log in), and so may carry registry logins.
+// for OpRegistryLogin, log in; for OpStackPreflight, ask a registry about
+// an image), and so may carry registry logins.
 func PullsImages(kind string) bool {
 	switch kind {
-	case OpImagePull, OpContainerRecreate, OpImagesCheckUpdates, OpSelfUpdate, OpRegistryLogin:
+	case OpImagePull, OpContainerRecreate, OpImagesCheckUpdates, OpSelfUpdate, OpRegistryLogin, OpStackPreflight:
 		return true
 	}
 	return false
@@ -769,7 +773,67 @@ const (
 	// those images tainerhub-rollback/<stack>:<service> so pruning leaves
 	// them, and drops that stack's older rollback tags. Result: StackImages.
 	OpStackImages = "stack.images"
+	// OpStackPreflight checks Files (a compose file and .env for new stack
+	// Target) against this host before a first deploy, without changing
+	// anything: what `compose config` says, each service's published ports,
+	// limits, devices and GPUs, whether its image exists in its registry
+	// (with Auth) for this host's platform, and which external networks and
+	// volumes exist. Result: StackPreflight.
+	OpStackPreflight = "stack.preflight"
 )
+
+// StackPreflight is what OpStackPreflight found.
+type StackPreflight struct {
+	// ConfigError is set when `compose config` rejects the files; the rest
+	// is then empty.
+	ConfigError string             `json:"config_error,omitempty"`
+	Warnings    []string           `json:"warnings,omitempty"`
+	Dir         string             `json:"dir"`
+	Services    []PreflightService `json:"services,omitempty"`
+	// External networks and volumes the file expects to exist already.
+	Networks []PreflightResource `json:"networks,omitempty"`
+	Volumes  []PreflightResource `json:"volumes,omitempty"`
+	// GPURuntime: Docker can hand NVIDIA GPUs to containers (the nvidia
+	// runtime or CDI devices are set up).
+	GPURuntime bool   `json:"gpu_runtime"`
+	Arch       string `json:"arch"` // the host's, as Docker names platforms (amd64, arm64, arm/v7)
+}
+
+type PreflightService struct {
+	Name          string          `json:"name"`
+	ContainerName string          `json:"container_name,omitempty"`
+	Image         string          `json:"image,omitempty"`
+	Build         bool            `json:"build,omitempty"`
+	HostNetwork   bool            `json:"host_network,omitempty"`
+	Ports         []PreflightPort `json:"ports,omitempty"`
+	CPUs          float64         `json:"cpus,omitempty"`
+	Memory        int64           `json:"memory,omitempty"` // bytes
+	GPU           bool            `json:"gpu,omitempty"`
+	Devices       []string        `json:"devices,omitempty"` // host paths
+	Binds         []StackBind     `json:"binds,omitempty"`
+	ImageCheck    *ImageCheck     `json:"image_check,omitempty"`
+}
+
+type PreflightPort struct {
+	HostIP    string `json:"host_ip,omitempty"`
+	Published string `json:"published"` // a port or a range like 8000-8010
+	Target    string `json:"target"`
+	Protocol  string `json:"protocol"`
+}
+
+type PreflightResource struct {
+	Name   string `json:"name"`
+	Exists bool   `json:"exists"`
+}
+
+// ImageCheck is what the host and the image's registry say about an image.
+type ImageCheck struct {
+	Local bool `json:"local"` // already on the host
+	// Remote: "found", "not_found", "denied" (needs a login) or "error".
+	Remote    string   `json:"remote"`
+	Error     string   `json:"error,omitempty"`
+	Platforms []string `json:"platforms,omitempty"` // e.g. linux/amd64, linux/arm/v7
+}
 
 // RegistryLoginResult is what the registry said to a login check.
 type RegistryLoginResult struct {
@@ -1031,8 +1095,9 @@ var OpKinds = map[string]bool{
 	OpDockerPlan: false, OpDockerUpgrade: true,
 	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false, OpStackRead: true,
 	OpContainerExport: false, OpContainerCreate: true,
-	OpRegistryLogin: false,
-	OpStackImages:   true, // with StackImagesProtect it tags images
+	OpRegistryLogin:  false,
+	OpStackImages:    true, // with StackImagesProtect it tags images
+	OpStackPreflight: false,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -1092,7 +1157,7 @@ func ValidOperation(op Operation) error {
 		if op.Arg != "" && op.Arg != StackImagesProtect {
 			return errors.New("invalid stack images mode")
 		}
-	case OpStackPreview:
+	case OpStackPreview, OpStackPreflight:
 		if !ValidStackName(op.Target) {
 			return errors.New("invalid stack name")
 		}

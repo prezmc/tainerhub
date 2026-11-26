@@ -192,3 +192,101 @@ func (s *Server) hubTags(w http.ResponseWriter, r *http.Request) {
 	s.hub.put(key, out)
 	writeJSON(w, http.StatusOK, out)
 }
+
+// hubTagsFor suggests a few tags of Docker Hub repository repo, instead of
+// tag want, that have a linux build for arch ("arm64", "arm/v7") (see
+// rankTags). Empty for images elsewhere.
+func (s *Server) hubTagsFor(ctx context.Context, repo, want, arch string) []string {
+	if strings.Contains(strings.Split(repo, "/")[0], ".") || strings.Contains(repo, "@") {
+		return nil // another registry
+	}
+	path, ok := hubRepoPath(repo)
+	if !ok {
+		return nil
+	}
+	type tagArch struct {
+		Name  string
+		Archs []string
+	}
+	key := "ta:" + path
+	var tags []tagArch
+	if v, ok := s.hub.get(key); ok {
+		tags, _ = v.([]tagArch)
+	} else {
+		var raw struct {
+			Results []struct {
+				Name   string `json:"name"`
+				Images []struct {
+					Architecture string `json:"architecture"`
+					OS           string `json:"os"`
+					Variant      string `json:"variant"`
+				} `json:"images"`
+			} `json:"results"`
+		}
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := hubGet(ctx, "/v2/repositories/"+path+"/tags", url.Values{"page_size": {"50"}, "ordering": {"last_updated"}}, &raw); err != nil {
+			return nil
+		}
+		for _, r := range raw.Results {
+			t := tagArch{Name: r.Name}
+			for _, im := range r.Images {
+				if im.OS != "linux" {
+					continue
+				}
+				a := im.Architecture
+				if im.Variant != "" {
+					a += "/" + im.Variant
+				}
+				t.Archs = append(t.Archs, a)
+			}
+			tags = append(tags, t)
+		}
+		s.hub.put(key, tags)
+	}
+	var names []string
+	for _, t := range tags {
+		for _, a := range t.Archs {
+			if a == arch || strings.HasPrefix(a, arch+"/") {
+				names = append(names, t.Name)
+				break
+			}
+		}
+	}
+	return rankTags(names, want)
+}
+
+var (
+	versionTag  = regexp.MustCompile(`^v?\d+(\.\d+){0,3}$`)
+	unsteadyTag = regexp.MustCompile(`(?i)(unstable|nightly|dev|rc|beta|alpha|edge|test|preview|snapshot)`)
+	buildTag    = regexp.MustCompile(`^\d{8,}$`) // dates and build numbers
+)
+
+// rankTags picks up to 3 of tags (newest first) to suggest instead of want:
+// versions in the same series as want, then latest, then other plain versions.
+func rankTags(tags []string, want string) []string {
+	series := ""
+	if m := regexp.MustCompile(`^v?(\d+)`).FindStringSubmatch(want); m != nil {
+		series = m[1]
+	}
+	var near, latest, versions []string
+	for _, t := range tags {
+		switch {
+		case t == want:
+		case t == "latest":
+			latest = append(latest, t)
+		case unsteadyTag.MatchString(t), buildTag.MatchString(t):
+		case versionTag.MatchString(t):
+			if series != "" && (strings.TrimPrefix(t, "v") == series || strings.HasPrefix(strings.TrimPrefix(t, "v"), series+".")) {
+				near = append(near, t)
+			} else {
+				versions = append(versions, t)
+			}
+		}
+	}
+	out := append(append(near, latest...), versions...)
+	if len(out) > 3 {
+		out = out[:3]
+	}
+	return out
+}

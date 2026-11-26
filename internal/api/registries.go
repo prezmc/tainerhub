@@ -359,6 +359,10 @@ func imagesToPull(st registry.Status, cmd *wire.Command) []string {
 					return []string{c.Image}
 				}
 			}
+		case wire.OpStackPreflight:
+			if op.Files != nil {
+				return regcred.ComposeImages(op.Files.Compose, op.Files.Env)
+			}
 		case wire.OpImagesCheckUpdates:
 			var out []string
 			for _, c := range st.Containers {

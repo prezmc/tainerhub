@@ -12,6 +12,7 @@ import { AdvancedOptions, ComposePreview, FieldError, Rows, field } from './Cont
 import { ComposeImportDialog, ImportedNotice } from './ComposeImport'
 import type { Imported, Note } from '../composeimport'
 import { setStackDraft, type StackDraft } from '../stackdraft'
+import { PreflightPanel, useFreshPreflight, usePreflight, type PreflightFix } from '../preflight'
 
 type Repo = { name: string; description: string; stars: number; pulls: number; official: boolean }
 type Tag = { name: string; updated: string; size: number }
@@ -147,6 +148,50 @@ export function NewContainerPage() {
       ? `${host?.name ?? 'This host'} already has a container or stack called ${name}.`
       : null
 
+  // The check against the chosen host: it runs once the form itself is valid.
+  const preflightInput = { hostId, name, compose, env: adv.envFile }
+  const formOK = issues.length === 0
+  const canCheck = !!image && !!host?.online && !hostIssue && formOK
+  const preflight = usePreflight(preflightInput, canCheck)
+  const freshPreflight = useFreshPreflight()
+  const preflightWaiting = !host ? 'Pick a host to check the settings against it.' : !host.online ? `${host.name} is offline, so nothing can be checked.` : hostIssue ? hostIssue : !formOK ? `It checks the settings against ${host.name} once they're complete. First: ${issues[0].msg}` : null
+
+  const applyFix = (f: PreflightFix) => {
+    switch (f.kind) {
+      case 'port': {
+        const [num, proto] = (f.target ?? '').split('/')
+        setPorts((old) => old.map((p) => (p.host === num && p.proto === proto ? { ...p, host: f.value ?? '' } : p)))
+        break
+      }
+      case 'name':
+        setName(f.value ?? '')
+        setNameEdited(true)
+        break
+      case 'cpus':
+        patchAdv({ cpus: f.value ?? '' })
+        break
+      case 'memory':
+        patchAdv({ memory: f.value ?? '', memoryUnit: 'm' })
+        break
+      case 'gpu-off':
+        patchAdv({ gpu: false })
+        break
+      case 'network-create':
+        patchAdv({ networks: adv.networks.filter((n) => n !== f.target), newNetwork: f.target ?? '' })
+        setOpenSections((old) => new Set([...old, 'network']))
+        break
+      case 'network-drop':
+        patchAdv({ networks: adv.networks.filter((n) => n !== f.target) })
+        break
+      case 'tag':
+        if (typedTag) setImage(image.includes('@') ? image.split('@')[0] : image.slice(0, image.lastIndexOf(':')))
+        setTag(f.value ?? 'latest')
+        break
+    }
+  }
+  // A fix the form can't make right now (it creates one network at most).
+  const canFix = (f: PreflightFix) => f.kind !== 'network-create' || !adv.newNetwork || adv.newNetwork === f.target
+
   const deploy = useMutation({
     mutationFn: () => api<StackSaveResult>('/api/stacks', { method: 'POST', body: { hostId, name, compose, env: adv.envFile, deploy: true } }),
     onSuccess: (res) => {
@@ -169,6 +214,15 @@ export function NewContainerPage() {
     const p = hostIssue ?? clash
     if (p) return setError(p)
     setError(null)
+    if (host?.online) {
+      try {
+        const rep = await freshPreflight(preflightInput)
+        const blocks = rep.items.filter((i) => i.level === 'block')
+        if (blocks.length) return setError(blocks.length === 1 ? `Fix this first: ${blocks[0].title}.` : `Fix these first: ${blocks.map((b) => b.title).join('; ')}.`)
+      } catch {
+        // The check itself failed (an old or busy agent): the deploy will say what's wrong, if anything.
+      }
+    }
     if (
       adv.privileged &&
       !(await confirm({
@@ -407,6 +461,7 @@ export function NewContainerPage() {
             />
           )}
           {image && <ComposePreview compose={compose} />}
+          {image && <PreflightPanel check={preflight} hostName={host?.name ?? ''} onFix={applyFix} canFix={canFix} waiting={preflightWaiting} />}
           <ErrorNote error={error} />
           {image && hostIssue && <p className="text-xs text-amber-200">{hostIssue}</p>}
           <div className="flex flex-wrap items-center gap-3">

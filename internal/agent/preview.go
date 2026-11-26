@@ -17,62 +17,28 @@ import (
 )
 
 // Preview resolves a compose file and .env for stack name as if they were
-// in the stack's folder, without writing anything there. The files go to a
-// temporary folder; --project-directory points relative paths at the stack
-// folder, as a deploy would.
+// in the stack's folder (see config).
 func (r *StackRunner) Preview(ctx context.Context, name string, f wire.StackFiles) (wire.StackPreview, error) {
 	var out wire.StackPreview
-	if sup := r.Supported(ctx); sup.Error != "" {
-		return out, errors.New(sup.Error)
-	}
 	dir := filepath.Join(r.Dir, name)
 	out.Dir = dir
-	out.DirFiles, _, _ = scanStackDir(dir)
-
-	tmpRoot := filepath.Join(r.WorkDir, "tmp")
-	if err := os.MkdirAll(tmpRoot, 0o700); err != nil {
-		return out, err
-	}
-	tmp, err := os.MkdirTemp(tmpRoot, "preview-")
+	cfg, warnings, cfgErr, err := r.config(ctx, name, f)
 	if err != nil {
 		return out, err
 	}
-	defer os.RemoveAll(tmp)
-	if err := os.WriteFile(filepath.Join(tmp, composeFile), []byte(f.Compose), 0o600); err != nil {
-		return out, err
-	}
-	if err := os.WriteFile(filepath.Join(tmp, envFile), []byte(f.Env), 0o600); err != nil {
-		return out, err
-	}
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, r.Bin, "--project-name", name,
-		"--file", filepath.Join(tmp, composeFile), "--project-directory", dir,
-		"--env-file", filepath.Join(tmp, envFile), "config", "--format", "json")
-	cmd.Env = r.env()
-	cmd.Dir = r.Dir
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	runErr := cmd.Run()
-	out.Warnings = composeWarnings(stderr.String())
-	if runErr != nil {
-		msg := strings.TrimSpace(composeErrors(stderr.String()))
-		if msg == "" {
-			msg = runErr.Error()
-		}
-		if len(msg) > 1000 {
-			msg = msg[:1000]
-		}
-		out.ConfigError = msg
+	out.DirFiles, _, _ = scanStackDir(dir)
+	out.Warnings = warnings
+	if cfgErr != "" {
+		out.ConfigError = cfgErr
 		return out, nil
 	}
 	var in wire.StackInspect
-	if err := parseComposeConfig(stdout.Bytes(), dir, &in); err != nil {
+	if err := parseComposeConfig(cfg, dir, &in); err != nil {
 		out.ConfigError = err.Error()
 		return out, nil
 	}
 	out.Services = in.Services
-	out.Mounts, err = parseMounts(stdout.Bytes())
+	out.Mounts, err = parseMounts(cfg)
 	if err != nil {
 		out.ConfigError = err.Error()
 		return out, nil
@@ -87,6 +53,55 @@ func (r *StackRunner) Preview(ctx context.Context, name string, f wire.StackFile
 		out.Paths[m.Source] = pathEntries(m.Source)
 	}
 	return out, nil
+}
+
+// config runs `compose config --format json` on files for stack name as if
+// they were in the stack's folder, without writing anything there. The files
+// go to a temporary folder; --project-directory points relative paths at the
+// stack folder, as a deploy would. cfgErr is compose's complaint when it
+// rejects the files; err is for not being able to ask at all.
+func (r *StackRunner) config(ctx context.Context, name string, f wire.StackFiles) (cfg []byte, warnings []string, cfgErr string, err error) {
+	if sup := r.Supported(ctx); sup.Error != "" {
+		return nil, nil, "", errors.New(sup.Error)
+	}
+	dir := filepath.Join(r.Dir, name)
+	tmpRoot := filepath.Join(r.WorkDir, "tmp")
+	if err := os.MkdirAll(tmpRoot, 0o700); err != nil {
+		return nil, nil, "", err
+	}
+	tmp, err := os.MkdirTemp(tmpRoot, "preview-")
+	if err != nil {
+		return nil, nil, "", err
+	}
+	defer os.RemoveAll(tmp)
+	if err := os.WriteFile(filepath.Join(tmp, composeFile), []byte(f.Compose), 0o600); err != nil {
+		return nil, nil, "", err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, envFile), []byte(f.Env), 0o600); err != nil {
+		return nil, nil, "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, r.Bin, "--project-name", name,
+		"--file", filepath.Join(tmp, composeFile), "--project-directory", dir,
+		"--env-file", filepath.Join(tmp, envFile), "config", "--format", "json")
+	cmd.Env = r.env()
+	cmd.Dir = r.Dir
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	warnings = composeWarnings(stderr.String())
+	if runErr != nil {
+		msg := strings.TrimSpace(composeErrors(stderr.String()))
+		if msg == "" {
+			msg = runErr.Error()
+		}
+		if len(msg) > 1000 {
+			msg = msg[:1000]
+		}
+		return nil, warnings, msg, nil
+	}
+	return stdout.Bytes(), warnings, "", nil
 }
 
 // pathEntries is -1 if p doesn't exist, the number of entries for a folder,

@@ -207,7 +207,8 @@ Admins can click **New container** on the Containers page to run an image from D
    - **Security:** add or drop Linux capabilities, no-new-privileges, and privileged mode (full root access to the host; it asks you to confirm).
    - **Logging:** cap the log size, for example 10 MB × 3 files.
    - **Env file:** paste `KEY=value` lines; they're saved as the stack's `.env`.
-4. Check the **Compose file** preview: it's exactly what will be deployed. Click **Deploy**.
+4. Check the **Compose file** preview: it's exactly what will be deployed.
+5. Read the **Checks on** *host* panel (see [Checks before deploying](#checks-before-deploying)), then click **Deploy**.
 
 <img src="images/new-container-advanced.png" width="900" alt="The New container page with the Networking and Resources sections open and the compose preview">
 
@@ -224,7 +225,25 @@ Many projects publish a `docker-compose.yml` snippet in their README (Uptime Kum
 - **What it fills in.** The image and tag, name (`container_name`, else the service name), restart policy, ports (including udp, ranges and the long syntax), volumes and binds (`:ro` is kept), environment, networks (`external: true` ones are joined, one other is created), labels, command and entrypoint, hostname, extra hosts, DNS, user, working directory, init, read-only, stop grace period, memory, CPU and shared-memory limits, devices, NVIDIA GPUs (`deploy.resources.reservations`, `gpus:` or `runtime: nvidia`), health check, `cap_add`/`cap_drop`, privileged, no-new-privileges and json-file log limits. Advanced sections that got values open by themselves.
 - **What it can't.** Anything the form has no field for is listed as a warning, never dropped silently: `depends_on`, `build:`, other services, `env_file` (paste its lines under **Env file**), external volumes, ports published on one address only (like `127.0.0.1:9000:9000`), capabilities outside the form's list, Swarm `deploy` settings and other keys. If those matter, deploy the whole file as a stack instead.
 
-**Fill the form** replaces what's in the form. The warnings stay above **Settings** until you dismiss them, and nothing is deployed until you click **Deploy**. The file is read in your browser; it isn't sent anywhere until you deploy, and every value goes through the same checks and quoting as values you type.
+**Fill the form** replaces what's in the form. The warnings stay above **Settings** until you dismiss them, and nothing is deployed until you click **Deploy**. The pasted file is read in your browser, and every value goes through the same checks and quoting as values you type. Only the form's own compose file goes to the host, to be checked and deployed.
+
+#### Checks before deploying
+
+<img src="images/new-container-checks.png" width="900" alt="The Checks on nas panel: port 8096 in use by another container with a Use port 8098 button, a missing network with Create proxy with the stack and Leave it out buttons, a CPU limit above the host's 16 CPUs with a Use 16 CPUs button, and the checks that passed">
+
+Once the settings are complete, TainerHub checks them against the host you picked, and checks again as you change them. Nothing on the host changes. It checks:
+
+- **The compose file:** Docker Compose on the host resolves it as it would for the deploy, so anything it would reject shows up now.
+- **Names:** no stack, compose project or container on the host has the same name.
+- **Ports:** no other container on the host publishes the same host port, and the file doesn't publish one twice. Containers on the host network can't be checked, so they're flagged.
+- **The image:** the tag exists in its registry, with a build for the host's CPU (amd64, arm64, arm/v7, …). Private images use the logins under Settings → Container registries. An image the host already has can still start without the registry.
+- **Networks and volumes** the file expects to exist already (`external: true`).
+- **Limits and hardware:** a CPU limit above the host's CPU count (Docker refuses it), a memory limit above its memory, and a GPU when Docker on the host isn't set up for NVIDIA GPUs.
+- **Things it can't see:** host folders outside the stack's folder and devices like `/dev/dri` are listed so you can check them yourself. Docker creates a missing folder as an empty one owned by root.
+
+Problems that would stop the deploy are red, and **Deploy** refuses to start until they're fixed. Yellow ones are worth a look but don't stop it, and green ones passed. Where there's an obvious fix, a button applies it to the form: **Use port 8097** (the next free port), **Use** *name***-2**, **Use 16 CPUs**, **Turn the GPU off**, or a tag of the image that has a build for the host's CPU (Docker Hub images only; a tag from the same series first, then `latest`, then other versions). Where it can't guess, it says what to decide: a missing network can be created with the stack or left out. Click **Check again** after changing something on the host.
+
+Hosts whose agent is older than this check only get the compose file checked; update the agent for the rest.
 
 ## Stacks
 
@@ -247,7 +266,8 @@ Admins: **Stacks → New stack**.
 2. Add variables to **.env** if your compose file uses them.
 3. Pick the **Host**. Hosts are listed with the most room first, with their recent CPU and memory use, and the best one is marked **★ suggested** and chosen for you. Hosts that can't run stacks are marked "(stacks not set up)" or "(offline)".
 4. Enter a **Name**: lowercase letters, digits, `-` and `_`, starting with a letter or digit, up to 63 characters.
-5. Click **Save & deploy**, or **Save without deploying**.
+5. The same [checks](#checks-before-deploying) as New container run against the host, with their suggestions as text. **Save & deploy** waits until nothing red is left; **Save without deploying** always works.
+6. Click **Save & deploy**, or **Save without deploying**.
 
 Limits: the compose file can be up to 256 KB and `.env` up to 64 KB.
 

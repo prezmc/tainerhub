@@ -58,7 +58,7 @@ type StackRunner struct {
 // Probe checks the compose binary and the stacks folder. The result is sent
 // to the hub in Hello so the UI can explain what is missing.
 func (r *StackRunner) Probe(ctx context.Context) wire.StackSupport {
-	sup := wire.StackSupport{Dir: r.Dir, Files: true, Rollback: r.Images != nil}
+	sup := wire.StackSupport{Dir: r.Dir, Files: true, Rollback: r.Images != nil, Preflight: true}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var out bytes.Buffer
