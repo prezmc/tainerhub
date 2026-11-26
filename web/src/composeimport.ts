@@ -9,6 +9,7 @@
 
 import { parseDocument } from 'yaml'
 import { CAPS, DROP_CAPS, blankAdvanced, type Advanced, type Env, type KV, type Port, type Section, type Vol } from './compose.ts'
+import { isSecretKey, looksLikePlaceholder, suggestSource } from './placeholder.ts'
 
 export const MAX_COMPOSE_BYTES = 256 << 10
 
@@ -42,7 +43,16 @@ export type Imported = {
   notes: Note[]
   /** Advanced sections worth opening: they were filled or need a look. */
   open: Section[]
+  /** Values that look like examples from the docs, to ask the user about. */
+  placeholders: Placeholder[]
 }
+
+/**
+ * A value that looks like an example from the docs ("/path/to/data",
+ * "changeme"). id is how replacements refer to it: volume:<row>, env:<key>
+ * or label:<key>. suggestion is a sensible replacement, when there is one.
+ */
+export type Placeholder = { id: string; kind: 'volume' | 'env' | 'label'; label: string; value: string; suggestion?: string; secret?: boolean }
 
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v)
 const has = (o: Obj, k: string) => Object.prototype.hasOwnProperty.call(o, k)
@@ -385,7 +395,7 @@ const STACK_HINT = 'Deploy the whole file as a stack to keep it.'
  * Maps one service onto the form. values are the variables the user filled
  * in (an empty string means "no value": defaults apply, else it's empty).
  */
-export function importService(p: Extract<Parsed, { ok: true }>, service: string, values: Record<string, string> = {}): Imported {
+export function importService(p: Extract<Parsed, { ok: true }>, service: string, values: Record<string, string> = {}, replacements: Record<string, string> = {}): Imported {
   const notes: Note[] = [...p.notes]
   const warn = (msg: string) => notes.push({ level: 'warn', msg })
   const info = (msg: string) => notes.push({ level: 'info', msg })
@@ -638,7 +648,23 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
   if (adv.logLimit) open.add('logging')
   if (has(s, 'env_file')) open.add('envfile')
 
-  return { service, image, tag, name, restart, ports, env, vols, adv, notes, open: [...open] }
+  // Examples from the docs: replaced with what the user entered, else flagged.
+  const placeholders: Placeholder[] = []
+  const check = (ph: Placeholder, set: (v: string) => void) => {
+    placeholders.push(ph)
+    const r = replacements[ph.id]?.trim()
+    if (r) set(r)
+    else warn(`${ph.label}: ${code(ph.value)} looks like an example from the docs. Replace it with your own ${ph.kind === 'volume' ? 'folder' : 'value'}.`)
+  }
+  vols.forEach((v, i) => {
+    if (looksLikePlaceholder(v.source))
+      check({ id: `volume:${i}`, kind: 'volume', label: `Volume for ${v.target.split(':')[0]}`, value: v.source, suggestion: suggestSource(v.target) }, (r) => (v.source = r))
+  })
+  for (const e of env)
+    if (looksLikePlaceholder(e.value)) check({ id: `env:${e.key}`, kind: 'env', label: e.key, value: e.value, secret: isSecretKey(e.key) }, (r) => (e.value = r))
+  for (const l of adv.labels) if (looksLikePlaceholder(l.value)) check({ id: `label:${l.key}`, kind: 'label', label: `Label ${l.key}`, value: l.value }, (r) => (l.value = r))
+
+  return { service, image, tag, name, restart, ports, env, vols, adv, notes, open: [...open], placeholders }
 }
 
 // ---------------- whole file as a stack ----------------

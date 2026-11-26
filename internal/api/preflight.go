@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,7 +40,9 @@ type preflightItem struct {
 // preflightFix is one suggested change. Kinds: "port" (Target "8080/tcp",
 // Value the new host port), "name", "cpus", "memory" (Value in MB),
 // "gpu-off", "network-create" and "network-drop" (Target the network),
-// "tag" (Target the image, Value the tag).
+// "tag" (Target the image, Value the tag), "volume-source" (Target the path
+// in the container, Value the new source) and "env-generate" (Target the
+// variable, which gets a random value).
 type preflightFix struct {
 	Label  string `json:"label"`
 	Kind   string `json:"kind"`
@@ -312,8 +315,27 @@ func buildPreflightReport(p wire.StackPreflight, h preflightHost, name string) p
 			rep.add("devices:"+s.Name, levelWarn, fmt.Sprintf("%s uses %s: make sure %s %s on %s", s.Name, strings.Join(s.Devices, ", "), plural(len(s.Devices), "it", "they"), plural(len(s.Devices), "exists", "exist"), h.Name),
 				"TainerHub can't see the host's devices. If one is missing, the container won't start.")
 		}
+		for _, b := range s.Binds {
+			if wire.LooksLikePlaceholder(b.Source) {
+				alt := suggestSource(b.Target)
+				rep.add("placeholder:"+s.Name+":"+b.Target, levelBlock, fmt.Sprintf("%s's folder for %s is an example from the docs: %s", s.Name, b.Target, b.Source),
+					"Docker would create it empty on "+h.Name+", owned by root. Where should the data live? Enter a folder that exists on the host, or keep it in the stack's own folder ("+alt+"), which TainerHub creates and moves with the stack.",
+					preflightFix{Label: "Use " + alt, Kind: "volume-source", Target: b.Target, Value: alt})
+			}
+		}
+		for _, k := range s.PlaceholderEnv {
+			var fixes []preflightFix
+			if isSecretName(k) {
+				fixes = append(fixes, preflightFix{Label: "Generate a value for " + k, Kind: "env-generate", Target: k})
+			}
+			rep.add("placeholder-env:"+s.Name+":"+k, levelWarn, fmt.Sprintf("%s's %s looks like an example from the docs", s.Name, k),
+				"Replace it with your own value under Environment variables, or the app runs with the sample one.", fixes...)
+		}
 		var outside []string
 		for _, b := range s.Binds {
+			if wire.LooksLikePlaceholder(b.Source) {
+				continue
+			}
 			if !b.InStackDir && !strings.HasPrefix(b.Source, "/var/run/") && !strings.HasPrefix(b.Source, "/run/") && b.Source != "/etc/localtime" {
 				outside = append(outside, b.Source)
 			}
@@ -326,6 +348,26 @@ func buildPreflightReport(p wire.StackPreflight, h preflightHost, name string) p
 	sort.SliceStable(rep.Items, func(i, j int) bool { return preflightRank(rep.Items[i].Level) < preflightRank(rep.Items[j].Level) })
 	return rep
 }
+
+// suggestSource is a folder in the stack's own folder for a mount at target
+// ("/config" -> "./config"); web/src/placeholder.ts has the same rule.
+func suggestSource(target string) string {
+	path, _, _ := strings.Cut(target, ":")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	last := strings.ToLower(parts[len(parts)-1])
+	clean := strings.TrimLeft(nonNameChars.ReplaceAllString(last, "-"), "-.")
+	if clean == "" {
+		clean = "data"
+	}
+	return "./" + clean
+}
+
+var (
+	nonNameChars = regexp.MustCompile(`[^a-z0-9._-]+`)
+	secretName   = regexp.MustCompile(`(?i)pass(word)?|secret|token|salt|api[_-]?key|private[_-]?key|(^|_)key$`)
+)
+
+func isSecretName(k string) bool { return secretName.MatchString(k) }
 
 func nameFix(name string, h preflightHost) []preflightFix {
 	if alt := freeName(name, h); alt != "" {

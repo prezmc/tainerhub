@@ -9,7 +9,7 @@ import { useDebounced } from './takeover'
 
 export type PreflightFix = {
   label: string
-  kind: 'port' | 'name' | 'cpus' | 'memory' | 'gpu-off' | 'network-create' | 'network-drop' | 'tag'
+  kind: 'port' | 'name' | 'cpus' | 'memory' | 'gpu-off' | 'network-create' | 'network-drop' | 'tag' | 'volume-source' | 'env-generate'
   target?: string
   value?: string
 }

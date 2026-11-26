@@ -177,3 +177,37 @@ func TestPreflightOldAgent(t *testing.T) {
 		t.Error("config error not blocking")
 	}
 }
+
+func TestPreflightPlaceholders(t *testing.T) {
+	p := wire.StackPreflight{Services: []wire.PreflightService{{Name: "prowlarr",
+		Binds: []wire.StackBind{
+			{Source: "/path/to/prowlarr/data", Target: "/config"},
+			{Source: "/opt/tainerhub/stacks/p/<downloads>", Target: "/downloads", InStackDir: true},
+			{Source: "/srv/media", Target: "/media"},
+		},
+		PlaceholderEnv: []string{"API_KEY", "DOMAIN"},
+	}}}
+	rep := buildPreflightReport(p, pfHostWith(), "p")
+	if !rep.Blocked {
+		t.Fatal("placeholder folder doesn't block")
+	}
+	it := pfItem(rep, "placeholder:prowlarr:/config")
+	if it == nil || len(it.Fixes) != 1 || it.Fixes[0] != (preflightFix{Label: "Use ./config", Kind: "volume-source", Target: "/config", Value: "./config"}) {
+		t.Errorf("%+v", it)
+	}
+	if pfItem(rep, "placeholder:prowlarr:/downloads") == nil {
+		t.Error("placeholder inside the stack folder missed")
+	}
+	if b := pfItem(rep, "binds:prowlarr"); b == nil || strings.Contains(b.Title, "path/to") || !strings.Contains(b.Title, "/srv/media") {
+		t.Errorf("binds: %+v", b)
+	}
+	if e := pfItem(rep, "placeholder-env:prowlarr:API_KEY"); e == nil || e.Level != levelWarn || len(e.Fixes) != 1 || e.Fixes[0].Kind != "env-generate" {
+		t.Errorf("%+v", e)
+	}
+	if e := pfItem(rep, "placeholder-env:prowlarr:DOMAIN"); e == nil || len(e.Fixes) != 0 {
+		t.Errorf("%+v", e)
+	}
+	if suggestSource("/var/lib/App Data:ro") != "./app-data" || suggestSource("/") != "./data" {
+		t.Error(suggestSource("/var/lib/App Data:ro"))
+	}
+}

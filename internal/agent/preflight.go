@@ -59,6 +59,7 @@ type preflightConfig struct {
 			Source string `json:"source"`
 			Target string `json:"target"`
 		} `json:"volumes"`
+		Environment map[string]*string `json:"environment"`
 	} `json:"services"`
 	Networks map[string]struct {
 		Name     string `json:"name"`
@@ -160,6 +161,11 @@ func parsePreflight(b []byte, dir string, out *wire.StackPreflight) error {
 			}
 			in := v.Source == dir || strings.HasPrefix(v.Source, dir+"/")
 			ps.Binds = append(ps.Binds, wire.StackBind{Service: n, Source: v.Source, Target: v.Target, InStackDir: in})
+		}
+		for _, k := range sortedKeys(s.Environment) {
+			if v := s.Environment[k]; v != nil && wire.LooksLikePlaceholder(*v) {
+				ps.PlaceholderEnv = append(ps.PlaceholderEnv, k)
+			}
 		}
 		out.Services = append(out.Services, ps)
 	}

@@ -2,12 +2,13 @@
 // project's docs and fills the form's own fields from one of its services.
 // The parser (and the yaml package) load only when the dialog first opens.
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ClipboardPaste, Info, Layers, X } from 'lucide-react'
+import { AlertTriangle, ClipboardPaste, Dices, Info, Layers, Wand2, X } from 'lucide-react'
 import { Button, ErrorNote, IconButton, Modal, cx } from '../ui'
 import { CodeEditor } from '../stacks'
 import type { Imported, Note } from '../composeimport'
 import type { StackDraft } from '../stackdraft'
 import { field } from './ContainerOptions'
+import { generateSecret } from '../placeholder'
 
 type Lib = typeof import('../composeimport')
 
@@ -39,6 +40,8 @@ export function ComposeImportDialog({
   const [text, setText] = useState('')
   const [picked, setPicked] = useState('')
   const [values, setValues] = useState<Record<string, string>>({})
+  const [replacements, setReplacements] = useState<Record<string, string>>({})
+  const replace = (id: string, v: string) => setReplacements((old) => ({ ...old, [id]: v }))
 
   useEffect(() => {
     if (!open || lib) return
@@ -49,13 +52,14 @@ export function ComposeImportDialog({
   const ok = parsed?.ok ? parsed : null
   const service = ok ? (ok.services.includes(picked) ? picked : ok.services[0]) : ''
   const vars = useMemo(() => (ok && lib ? lib.variablesOf(ok, service) : []), [ok, lib, service])
-  const result = useMemo(() => (ok && lib ? lib.importService(ok, service, values) : null), [ok, lib, service, values])
+  const result = useMemo(() => (ok && lib ? lib.importService(ok, service, values, replacements) : null), [ok, lib, service, values, replacements])
 
   const apply = () => {
     if (!result) return
     onApply(result)
     setText('')
     setValues({})
+    setReplacements({})
     setPicked('')
   }
   const asStack = () => {
@@ -120,6 +124,49 @@ export function ComposeImportDialog({
                   autoCapitalize="off"
                 />
               </label>
+            ))}
+          </fieldset>
+        )}
+
+        {result && result.placeholders.length > 0 && (
+          <fieldset className="space-y-2">
+            <legend className="mb-1 text-sm font-medium text-ink-100/80">Replace the examples</legend>
+            <p className="-mt-1 text-xs text-ink-100/50">
+              These look like sample values from the project's docs. Deployed as they are, Docker would create the example folder empty on the host, or the app would run with the
+              sample value. What should they be?
+            </p>
+            {result.placeholders.map((ph) => (
+              <div key={ph.id} className="space-y-1.5 rounded-[3px] bg-amber-500/[0.06] p-2.5 ring-1 ring-inset ring-amber-500/20">
+                <p className="text-xs text-amber-100">
+                  <span className="mono">{ph.label}</span> <span className="text-ink-100/50">is</span> <code className="mono break-all text-amber-200">{ph.value}</code>
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    aria-label={`Replacement for ${ph.label}`}
+                    value={replacements[ph.id] ?? ''}
+                    onChange={(e) => replace(ph.id, e.target.value)}
+                    placeholder={ph.kind === 'volume' ? `a folder on the host, or ${ph.suggestion}` : ph.secret ? 'your own value, or generate one' : 'your own value'}
+                    className={cx(field, 'min-w-0 flex-1 basis-48')}
+                    spellCheck={false}
+                    autoCapitalize="off"
+                  />
+                  {ph.suggestion && (
+                    <Button type="button" variant="secondary" icon={Wand2} className="!px-2 !py-1 text-[11px]" onClick={() => replace(ph.id, ph.suggestion!)}>
+                      Use {ph.suggestion}
+                    </Button>
+                  )}
+                  {ph.secret && (
+                    <Button type="button" variant="secondary" icon={Dices} className="!px-2 !py-1 text-[11px]" onClick={() => replace(ph.id, generateSecret())}>
+                      Generate
+                    </Button>
+                  )}
+                </div>
+                {ph.kind === 'volume' && (
+                  <p className="text-[11px] text-ink-100/45">
+                    {ph.suggestion} is a folder inside the stack's own folder on the host: TainerHub creates it, and it moves with the stack.
+                  </p>
+                )}
+              </div>
             ))}
           </fieldset>
         )}

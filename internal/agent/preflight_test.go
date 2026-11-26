@@ -22,7 +22,8 @@ const preflightJSON = `{
    "volumes": [{"type":"bind","source":"/opt/tainerhub/stacks/s/data","target":"/data"},
                {"type":"bind","source":"/srv/media","target":"/media"},
                {"type":"volume","source":"vol","target":"/v"}],
-   "networks": {"own": null, "proxy": null}
+   "networks": {"own": null, "proxy": null},
+   "environment": {"DB_PASSWORD": "changeme", "TZ": "Europe/London", "EMPTY": null, "URL": "https://<your-domain>"}
   },
   "b": {"image": "redis", "gpus": [{"count": -1}], "network_mode": "host",
         "deploy": {"resources": {"limits": {"cpus": "2", "memory": "1073741824"}}}},
@@ -52,6 +53,9 @@ func TestParsePreflight(t *testing.T) {
 	}
 	if len(a.Binds) != 2 || !a.Binds[0].InStackDir || a.Binds[1].InStackDir {
 		t.Errorf("binds: %+v", a.Binds)
+	}
+	if len(a.PlaceholderEnv) != 2 || a.PlaceholderEnv[0] != "DB_PASSWORD" || a.PlaceholderEnv[1] != "URL" {
+		t.Errorf("placeholder env: %v", a.PlaceholderEnv)
 	}
 	if !b.GPU || !b.HostNetwork || b.CPUs != 2 || b.Memory != 1<<30 {
 		t.Errorf("b: %+v", b)

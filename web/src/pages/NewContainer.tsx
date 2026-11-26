@@ -13,6 +13,7 @@ import { ComposeImportDialog, ImportedNotice } from './ComposeImport'
 import type { Imported, Note } from '../composeimport'
 import { setStackDraft, type StackDraft } from '../stackdraft'
 import { PreflightPanel, useFreshPreflight, usePreflight, type PreflightFix } from '../preflight'
+import { generateSecret } from '../placeholder'
 
 type Repo = { name: string; description: string; stars: number; pulls: number; official: boolean }
 type Tag = { name: string; updated: string; size: number }
@@ -182,6 +183,12 @@ export function NewContainerPage() {
         break
       case 'network-drop':
         patchAdv({ networks: adv.networks.filter((n) => n !== f.target) })
+        break
+      case 'volume-source':
+        setVols((old) => old.map((v) => (v.target.split(':')[0] === f.target ? { ...v, source: f.value ?? '' } : v)))
+        break
+      case 'env-generate':
+        setEnv((old) => old.map((e) => (e.key === f.target ? { ...e, value: generateSecret() } : e)))
         break
       case 'tag':
         if (typedTag) setImage(image.includes('@') ? image.split('@')[0] : image.slice(0, image.lastIndexOf(':')))

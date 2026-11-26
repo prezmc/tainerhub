@@ -816,6 +816,10 @@ type PreflightService struct {
 	Devices       []string        `json:"devices,omitempty"` // host paths
 	Binds         []StackBind     `json:"binds,omitempty"`
 	ImageCheck    *ImageCheck     `json:"image_check,omitempty"`
+	// PlaceholderEnv names the environment variables whose values look like
+	// examples from the docs ("changeme", "<your-domain>"; see
+	// LooksLikePlaceholder). Their values aren't sent.
+	PlaceholderEnv []string `json:"placeholder_env,omitempty"`
 }
 
 type PreflightPort struct {
