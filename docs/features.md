@@ -487,6 +487,7 @@ At the top of the page, admins see a card with four parts.
 | **up to date** · "29.10.1 released, not in apt yet" | Docker released a newer version, but the repository doesn't have it yet. | **Check…** |
 | "29.10.1 released; check what this server's repository offers" | Docker released a newer version and TainerHub hasn't asked this host's repository yet (or can't, for snap and distribution packages). | **Check…** |
 | **up to date** | Nothing newer. | **Check…** |
+| **repository off** | No repository on the server offers Docker, usually because an OS release upgrade turned Docker's source off. **Check…** shows the command that fixes it. | **Check…** |
 
 TainerHub asks a host's repository only when you open the dialog, and remembers the answer for 12 hours, until the host's Docker version or the latest release changes, or until the hub restarts. Click **Update Docker…** (or **Check…**) to open a dialog that:
 
@@ -503,9 +504,18 @@ The upgrade runs through the server's systemd, outside Docker, and logs to `/var
 - **reboot needed** when the server asks for a reboot (on Debian and Ubuntu, `/var/run/reboot-required`; on Fedora and RHEL, `needs-restarting -r` when installed). Hover to see which packages asked for it.
 - **couldn't refresh** when `apt-get update` (or `dnf check-update`) failed, with apt's own message: for example, a repository the server can't reach. The list may then be out of date.
 
-TainerHub keeps each host's answer until the next check or a hub restart, and doesn't check on its own. To install the updates, run your package manager on the server, or let `unattended-upgrades` do it.
+- **installing** while TainerHub installs updates there, and a red line when the last install failed, with the package manager's error.
 
-The Docker update dialog also says when the host couldn't refresh its package lists, since the versions it shows may then be out of date.
+TainerHub keeps each host's answer until the next check or a hub restart, and doesn't check on its own.
+
+**Install updates…** installs everything the check listed. The dialog shows the packages, and the host checks again before it starts. Then `apt-get upgrade --with-new-pkgs` (or `dnf upgrade`, `yum update`) runs through the server's systemd, keeping config files you've changed, and logs to `/var/log/tainerhub-os-upgrade.log` on the server. The row shows **installing** until it's done, then checks again on its own.
+
+- **Containers keep running**, unless the updates include Docker or containerd. Then the dialog warns that every container on the server restarts, and asks you to tick "I understand…" first, as for a Docker update.
+- Services that use updated libraries keep the old ones until they restart (on Ubuntu, `needrestart` only lists them).
+- **TainerHub doesn't reboot.** A new kernel takes effect after you reboot the server yourself; the host then stops showing **reboot needed**.
+- It needs systemd on the server; without it, run your package manager there yourself. For routine security updates, `unattended-upgrades` is still a good idea: TainerHub installs only when you ask.
+
+The Docker update dialog also says when the host couldn't refresh its package lists, since the versions it shows may then be out of date. When no repository offers Docker at all, the Docker row shows **repository off**. This usually happens after an Ubuntu release upgrade (`do-release-upgrade`), which turns Docker's apt source off (`Enabled: no`) and leaves it on the old release. The dialog then shows the command that turns it back on for the release the server runs. If the source is on but set to another release, the dialog warns about that too.
 
 **Container stats.** Where each host's CPU and memory numbers come from:
 
@@ -561,7 +571,7 @@ There are four roles. Each one can do everything the role below it can.
 | Delete volumes; prune volumes; remove a container together with its volumes | | | ✓ | ✓ |
 | Open a terminal in a container | | | ✓ | ✓ |
 | Add, rename and remove hosts; create join tokens | | | ✓ | ✓ |
-| Update TainerHub and Docker Engine; switch container stats source | | | ✓ | ✓ |
+| Update TainerHub, Docker Engine and OS packages; switch container stats source | | | ✓ | ✓ |
 | Invite users, change roles, remove users (lower roles only) | | | ✓ | ✓ |
 | See and revoke API tokens of users with a lower role | | | ✓ | ✓ |
 | View the audit log | | | ✓ | ✓ |
@@ -590,7 +600,7 @@ It records, among other things:
 - stack creation, edits and deletion,
 - terminal sessions,
 - hosts added, renamed, removed, enrolled and their certificates renewed,
-- TainerHub and Docker Engine updates, and stats-source changes,
+- TainerHub, Docker Engine and OS package updates, and stats-source changes,
 - users invited, joined, changed and removed,
 - API tokens created and revoked,
 - HTTPS turned on or off.

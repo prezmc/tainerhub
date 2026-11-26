@@ -13,7 +13,7 @@ type HostUpdate = {
   docker: string
   dockerBehind: boolean
   /** What an upgrade can install now: the host's package repository decides, not Docker's release. */
-  dockerStatus?: 'current' | 'available' | 'not-in-repo' | 'released'
+  dockerStatus?: 'current' | 'available' | 'not-in-repo' | 'released' | 'no-repo'
   dockerCandidate?: string
   dockerManager?: string
   current: boolean
@@ -36,6 +36,11 @@ type OSStatus = {
   reboot_packages?: string[]
   refresh_failed?: boolean
   refresh_error?: string
+  systemd: boolean
+  can_install: boolean
+  restarts_docker?: boolean
+  upgrade_running?: boolean
+  last_upgrade?: { at: number; exit: number; error?: string }
   checkedAt: string
 }
 type Updates = {
@@ -61,6 +66,9 @@ type DockerPlan = {
   command: string
   refresh_failed?: boolean
   refresh_error?: string
+  repo_missing?: boolean
+  fix?: string
+  warning?: string
 }
 
 /** "5:29.10.0-1~debian.12~bookworm" -> "29.10.0" */
@@ -286,7 +294,7 @@ export function UpdatesCard() {
                 <span className="ml-auto" />
                 <Button
                   icon={ArrowUpCircle}
-                  variant={h.dockerStatus === 'available' ? 'secondary' : 'ghost'}
+                  variant={h.dockerStatus === 'available' || h.dockerStatus === 'no-repo' ? 'secondary' : 'ghost'}
                   title={h.dockerStatus === 'available' ? undefined : `Ask ${h.name}'s package repository what it offers now`}
                   onClick={() => setDockerFor(h)}
                 >
@@ -361,6 +369,22 @@ function OSUpdates({ hosts }: { hosts: HostUpdate[] }) {
   const qc = useQueryClient()
   const toast = useToast()
   const [checking, setChecking] = useState<Set<string>>(new Set())
+  const [installFor, setInstallFor] = useState<HostUpdate | null>(null)
+
+  // While a host installs updates, ask it every 10 s how it's going (cheap:
+  // the host doesn't refresh its package lists meanwhile). Docker may be
+  // restarting, so failures are expected and ignored.
+  const running = hosts.filter((h) => h.os?.upgrade_running).map((h) => h.id)
+  const runningKey = running.join(',')
+  useEffect(() => {
+    if (!runningKey) return
+    const t = setInterval(async () => {
+      await Promise.all(runningKey.split(',').map((id) => api(`/api/hosts/${id}/os/check`, { method: 'POST' }).catch(() => {})))
+      qc.invalidateQueries({ queryKey: ['updates'] })
+    }, 10_000)
+    return () => clearInterval(t)
+  }, [runningKey, qc])
+
   if (hosts.length === 0) return null
 
   const check = async (list: HostUpdate[]) => {
@@ -421,6 +445,11 @@ function OSUpdates({ hosts }: { hosts: HostUpdate[] }) {
                       </Badge>
                     )}
                     {os.security > 0 && <Badge tone="bad">{os.security} security</Badge>}
+                    {os.upgrade_running && (
+                      <Badge tone="info">
+                        <LoaderCircle className="size-3 animate-spin" /> installing
+                      </Badge>
+                    )}
                     {os.reboot_required && (
                       <span title={os.reboot_packages?.length ? `Asked for by ${os.reboot_packages.join(', ')}` : undefined}>
                         <Badge tone="warn">reboot needed</Badge>
@@ -430,10 +459,24 @@ function OSUpdates({ hosts }: { hosts: HostUpdate[] }) {
                   </>
                 )}
                 <span className="ml-auto" />
-                <Button variant="ghost" icon={RefreshCw} loading={checking.has(h.id)} disabled={checking.has(h.id)} onClick={() => check([h])}>
+                {os && n > 0 && os.can_install && !os.upgrade_running && !os.refresh_failed && (
+                  <Button icon={ArrowUpCircle} onClick={() => setInstallFor(h)}>
+                    Install updates…
+                  </Button>
+                )}
+                <Button variant="ghost" icon={RefreshCw} loading={checking.has(h.id)} disabled={checking.has(h.id) || !!os?.upgrade_running} onClick={() => check([h])}>
                   Check
                 </Button>
               </div>
+              {os?.last_upgrade && os.last_upgrade.exit !== 0 && !os.upgrade_running && (
+                <p className="mt-1.5 text-xs text-rose-200/80">
+                  The last install ({timeAgo(new Date(os.last_upgrade.at * 1000).toISOString())}) failed (exit {os.last_upgrade.exit})
+                  {os.last_upgrade.error ? `: ${os.last_upgrade.error}` : ''}. The full log is /var/log/tainerhub-os-upgrade.log on the server.
+                </p>
+              )}
+              {os && n > 0 && !os.can_install && !os.upgrade_running && os.manager !== 'unknown' && (
+                <p className="mt-1.5 text-xs text-ink-100/50">This server doesn't use systemd, so TainerHub can't install updates here; run {os.manager} on the server.</p>
+              )}
               {os?.refresh_failed && (
                 <p className="mt-1.5 text-xs text-rose-200/80">
                   {os.manager === 'apt' ? 'apt-get update' : `${os.manager} check-update`} failed, so this list may be out of date{os.refresh_error ? `: ${os.refresh_error}` : '.'}
@@ -467,7 +510,105 @@ function OSUpdates({ hosts }: { hosts: HostUpdate[] }) {
           )
         })}
       </ul>
+      {installFor?.os && (
+        <OSUpgradeDialog
+          host={installFor}
+          os={installFor.os}
+          onClose={() => setInstallFor(null)}
+          onStarted={() => {
+            setInstallFor(null)
+            qc.invalidateQueries({ queryKey: ['updates'] })
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * Installing OS updates: lists what will be installed, and when that
+ * includes Docker, asks for the same explicit OK as a Docker upgrade.
+ */
+function OSUpgradeDialog({ host, os, onClose, onStarted }: { host: HostUpdate; os: OSStatus; onClose: () => void; onStarted: () => void }) {
+  const toast = useToast()
+  const [ok, setOk] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const n = os.packages.length
+  const kernel = os.packages.some((p) => /^linux-image|^kernel/.test(p.name))
+
+  const start = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await api(`/api/hosts/${host.id}/os/upgrade`, { method: 'POST', body: { confirm: host.name, restartAll: !!os.restarts_docker } })
+      toast('good', `Installing updates on ${host.name}`)
+      onStarted()
+    } catch (e) {
+      setError(errorText(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={busy ? () => {} : onClose} title={`Install updates on ${host.name}`} wide>
+      <div className="space-y-4 text-sm text-ink-100/80">
+        <p>
+          {n} update{n === 1 ? '' : 's'}
+          {os.security > 0 && `, ${os.security} of them security`}, as of the check {timeAgo(os.checkedAt)}. {host.name} checks again first, then installs everything{' '}
+          {os.manager === 'apt' ? 'apt-get upgrade' : `${os.manager} upgrade`} offers, keeping config files you've changed. It runs through the server's systemd and logs to{' '}
+          <code className="mono text-xs">/var/log/tainerhub-os-upgrade.log</code>.
+        </p>
+        <details className="text-xs">
+          <summary className="cursor-pointer text-ink-100/60 hover:text-white">Packages</summary>
+          <ul className="mono mt-2 columns-2 gap-6 text-ink-100/70 sm:columns-3">
+            {os.packages.map((p) => (
+              <li key={p.name} className={cx(p.security && 'text-rose-200')}>
+                {p.name}
+              </li>
+            ))}
+          </ul>
+        </details>
+        {os.restarts_docker ? (
+          <div className="space-y-2 rounded-[3px] border-l-4 border-rose-400 bg-rose-500/[0.08] p-3 ring-1 ring-inset ring-rose-400/25">
+            <div className="flex items-center gap-2 font-semibold text-rose-200">
+              <TriangleAlert className="size-4" /> These updates include Docker
+            </div>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                Docker restarts on {host.name}: <strong className="text-white">every container there stops and starts again</strong>, usually within a minute.
+              </li>
+              <li>Containers without a restart policy (restart: no) stay stopped until you start them.</li>
+              {host.hubHost && (
+                <li>
+                  <strong className="text-white">This server runs TainerHub itself</strong>, so TainerHub is unavailable for a minute or two.
+                </li>
+              )}
+            </ul>
+          </div>
+        ) : (
+          <p>Docker isn't among them, so your containers keep running. Services that use updated libraries keep the old ones until they restart.</p>
+        )}
+        {kernel && <p>A new kernel is included: it takes effect after a reboot, which TainerHub doesn't do. The host will show "reboot needed".</p>}
+        {os.restarts_docker && (
+          <label className="flex cursor-pointer items-start gap-2.5 rounded-[3px] p-3 ring-1 ring-inset ring-line has-[:checked]:ring-rose-400/50">
+            <input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} className="mt-0.5 accent-rose-500" />
+            <span>
+              I understand that <strong className="text-white">every container on {host.name} will restart</strong>, and I want to install the updates now.
+            </span>
+          </label>
+        )}
+        <ErrorNote error={error} />
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant={os.restarts_docker ? 'danger' : 'primary'} icon={ArrowUpCircle} loading={busy} disabled={busy || (!!os.restarts_docker && !ok)} onClick={start}>
+            Install {n} update{n === 1 ? '' : 's'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -488,6 +629,13 @@ function DockerStatus({ h, latest }: { h: Pick<HostUpdate, 'dockerStatus' | 'doc
           <span className="text-xs text-ink-100/50">
             {latest} released, not in {h.dockerManager} yet
           </span>
+        </>
+      )
+    case 'no-repo':
+      return (
+        <>
+          <Badge tone="warn">repository off</Badge>
+          <span className="text-xs text-ink-100/50">apt can't see Docker's repository; Check… shows how to fix it</span>
         </>
       )
     case 'released':
@@ -560,6 +708,15 @@ function DockerUpgradeDialog({ host, onClose, onDone }: { host: HostUpdate; onCl
         {plan && !plan.supported && (
           <>
             <p>{plan.reason}.</p>
+            {plan.fix && (
+              <>
+                <p>To turn it back on, run this on {host.name}, then check again:</p>
+                <pre className="mono overflow-x-auto whitespace-pre-wrap break-all rounded-[3px] bg-black/40 p-3 text-xs text-lime-200 ring-1 ring-line">{plan.fix}</pre>
+                <div className="flex justify-end">
+                  <CopyButton text={plan.fix} label="Copy command" />
+                </div>
+              </>
+            )}
             {plan.command && (
               <>
                 <p>To update Docker yourself, run this on {host.name}:</p>
@@ -570,6 +727,17 @@ function DockerUpgradeDialog({ host, onClose, onDone }: { host: HostUpdate; onCl
               </>
             )}
           </>
+        )}
+        {plan?.warning && (
+          <div className="space-y-2 rounded-[3px] bg-amber-500/[0.08] p-3 text-amber-100 ring-1 ring-inset ring-amber-400/25">
+            <p>{plan.warning}.</p>
+            {plan.fix && (
+              <>
+                <p>To point it at the right release, run this on {host.name}, then check again:</p>
+                <pre className="mono overflow-x-auto whitespace-pre-wrap break-all rounded-[3px] bg-black/40 p-3 text-xs text-lime-200 ring-1 ring-line">{plan.fix}</pre>
+              </>
+            )}
+          </div>
         )}
         {plan && plan.supported && plan.refresh_failed && (
           <p className="rounded-[3px] bg-rose-500/[0.08] p-3 text-rose-200 ring-1 ring-inset ring-rose-400/25">

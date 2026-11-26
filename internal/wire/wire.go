@@ -736,6 +736,14 @@ const (
 	// packages its package manager would upgrade, without installing
 	// anything. Result: HostOSStatus.
 	OpHostOSStatus = "host.os_status"
+	// OpHostOSUpgrade installs every pending OS package update (what
+	// OpHostOSStatus lists) through the host's systemd and returns at once.
+	// Arg is "install", or OSUpgradeRestartAll when the updates include
+	// Docker (which restarts every container). Result: HostOSStatus of what
+	// was started.
+	OpHostOSUpgrade = "host.os_upgrade"
+	// OSUpgradeRestartAll is OpHostOSUpgrade's Arg accepting Docker restarts.
+	OSUpgradeRestartAll = "restart-all"
 	// OpStackInspect describes stack Target on this host for moving it: its
 	// volumes (with sizes), bind mounts, published ports and images, read from
 	// `compose config`. Works for a stack not deployed here too (Deployed is
@@ -1063,6 +1071,13 @@ type DockerPlan struct {
 	// may be out of date. RefreshError says why (apt's own words).
 	RefreshFailed bool   `json:"refresh_failed,omitempty"`
 	RefreshError  string `json:"refresh_error,omitempty"`
+	// RepoMissing: no repository offers Docker (apt lists only the
+	// installed copy), often because an OS release upgrade turned Docker's
+	// source off. Fix, when set, is the command that turns it back on.
+	RepoMissing bool   `json:"repo_missing,omitempty"`
+	Fix         string `json:"fix,omitempty"`
+	// Warning: something worth knowing that doesn't stop the upgrade.
+	Warning string `json:"warning,omitempty"`
 }
 
 // HostOSStatus is what the host's package manager would upgrade.
@@ -1076,6 +1091,23 @@ type HostOSStatus struct {
 	RebootPackages []string    `json:"reboot_packages,omitempty"` // what asked for the reboot (apt)
 	RefreshFailed  bool        `json:"refresh_failed,omitempty"`
 	RefreshError   string      `json:"refresh_error,omitempty"`
+	Systemd        bool        `json:"systemd"`
+	// CanInstall: TainerHub can install the updates (OpHostOSUpgrade).
+	CanInstall bool `json:"can_install"`
+	// RestartsDocker: the updates include Docker or containerd, so
+	// installing them restarts every container.
+	RestartsDocker bool `json:"restarts_docker,omitempty"`
+	// UpgradeRunning: TainerHub is installing updates right now (the list
+	// isn't refreshed meanwhile).
+	UpgradeRunning bool             `json:"upgrade_running,omitempty"`
+	LastUpgrade    *OSUpgradeResult `json:"last_upgrade,omitempty"`
+}
+
+// OSUpgradeResult is how the last install TainerHub started ended.
+type OSUpgradeResult struct {
+	At    int64  `json:"at"`   // unix seconds
+	Exit  int    `json:"exit"` // the package manager's exit status
+	Error string `json:"error,omitempty"`
 }
 
 type OSPackage struct {
@@ -1125,7 +1157,7 @@ var OpKinds = map[string]bool{
 	OpVolumeRemove: true, OpVolumesPrune: true, OpNetworkRemove: true, OpNetworksPrune: true,
 	OpContainerRemoveVolumes: true, OpSelfUpdate: true,
 	OpImagesCheckUpdates: false, OpContainerRecreate: true,
-	OpDockerPlan: false, OpDockerUpgrade: true, OpHostOSStatus: false,
+	OpDockerPlan: false, OpDockerUpgrade: true, OpHostOSStatus: false, OpHostOSUpgrade: true,
 	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false, OpStackRead: true,
 	OpContainerExport: false, OpContainerCreate: true,
 	OpRegistryLogin:  false,
@@ -1174,6 +1206,10 @@ func ValidOperation(op Operation) error {
 	case OpSelfUpdate:
 		if op.Arg != "" && op.Arg != SelfUpdateAddCgroupMount {
 			return errors.New("invalid update mode")
+		}
+	case OpHostOSUpgrade:
+		if op.Arg != "install" && op.Arg != OSUpgradeRestartAll {
+			return errors.New("invalid install mode")
 		}
 	case OpDockerUpgrade:
 		if op.Arg != "restart-all" {

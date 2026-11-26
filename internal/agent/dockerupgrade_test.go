@@ -128,6 +128,38 @@ func TestParsePlan(t *testing.T) {
 	}
 }
 
+func TestParsePlanDockerSource(t *testing.T) {
+	base := "systemd=yes\nmanager=apt\ninstalled=5:29.10.0-1~ubuntu.24.04~noble\ncandidate=5:29.10.0-1~ubuntu.24.04~noble\ncodename=resolute\n"
+	// An Ubuntu release upgrade turned the source off and left it on noble.
+	p := parsePlan(base + "repo_sources=0\nsource_file=/etc/apt/sources.list.d/docker.sources\nsource_suites=noble\nsource_disabled=yes\n")
+	if !p.RepoMissing || p.Supported || p.Available || !strings.Contains(p.Reason, "turned off") || !strings.Contains(p.Reason, "noble") {
+		t.Fatalf("disabled source: %+v", p)
+	}
+	if p.Fix != "sudo sed -i -e '/^Enabled:/d' -e 's/^Suites: .*/Suites: resolute/' /etc/apt/sources.list.d/docker.sources && sudo apt-get update" {
+		t.Fatalf("fix: %q", p.Fix)
+	}
+	// No Docker source at all.
+	p = parsePlan(base + "repo_sources=0\n")
+	if !p.RepoMissing || p.Fix != "" || !strings.Contains(p.Reason, "no package repository") {
+		t.Fatalf("no source: %+v", p)
+	}
+	// Enabled, but for the old release: works, with a warning.
+	p = parsePlan(base + "repo_sources=1\nsource_file=/etc/apt/sources.list.d/docker.sources\nsource_suites=noble\n")
+	if p.RepoMissing || !p.Supported || p.Warning == "" || p.Fix == "" {
+		t.Fatalf("old suite: %+v", p)
+	}
+	// All good.
+	p = parsePlan(base + "repo_sources=1\nsource_file=/etc/apt/sources.list.d/docker.sources\nsource_suites=resolute\n")
+	if p.RepoMissing || p.Warning != "" || p.Fix != "" {
+		t.Fatalf("healthy: %+v", p)
+	}
+	// Nothing odd reaches the fix command.
+	p = parsePlan("systemd=yes\nmanager=apt\ninstalled=1\ncandidate=1\ncodename=x;rm -rf /\nrepo_sources=0\nsource_file=/etc/apt/sources.list.d/docker.sources\nsource_disabled=yes\n")
+	if p.Fix != "" {
+		t.Fatalf("unsafe fix: %q", p.Fix)
+	}
+}
+
 // The plan script runs on the host's /bin/sh: it must at least parse.
 func TestPlanScriptParses(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "plan.sh")

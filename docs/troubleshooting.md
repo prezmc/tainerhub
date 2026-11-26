@@ -29,6 +29,13 @@ journalctl -u tainerhub-docker-upgrade
 cat /var/log/tainerhub-docker-upgrade.log
 ```
 
+OS updates installed from TainerHub run the same way:
+
+```bash
+journalctl -u tainerhub-os-upgrade
+cat /var/log/tainerhub-os-upgrade.log
+```
+
 ## A host shows "Agent offline"
 
 The card says **Agent offline. Check docker logs tainerhub-agent on this host.** Do that first:

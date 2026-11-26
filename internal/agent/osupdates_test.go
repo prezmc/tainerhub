@@ -62,3 +62,36 @@ func TestOSStatusScriptParses(t *testing.T) {
 		t.Fatalf("%v %s", err, out)
 	}
 }
+
+func TestParseOSStatusInstall(t *testing.T) {
+	s := parseOSStatus("systemd=yes\nlast_upgrade=100 1764000000\nlast_upgrade_log=E: dpkg was interrupted \nmanager=apt\ninst=containerd.io [1.7.27-1] (1.7.28-1 Docker CE:noble [amd64])\n")
+	if !s.Systemd || !s.CanInstall || !s.RestartsDocker {
+		t.Fatalf("flags: %+v", s)
+	}
+	if s.LastUpgrade == nil || s.LastUpgrade.Exit != 100 || s.LastUpgrade.At != 1764000000 || s.LastUpgrade.Error != "E: dpkg was interrupted" {
+		t.Fatalf("last upgrade: %+v", s.LastUpgrade)
+	}
+	s = parseOSStatus("last_upgrade=0 1764000000\nlast_upgrade_log=W: something old\nmanager=apt\nupgrade_running=yes\n")
+	if s.CanInstall || !s.UpgradeRunning || s.LastUpgrade.Error != "" {
+		t.Fatalf("no systemd / ok run: %+v %+v", s, s.LastUpgrade)
+	}
+	if s := parseOSStatus("systemd=yes\nmanager=unknown\n"); s.CanInstall {
+		t.Fatal("unknown manager installable")
+	}
+}
+
+func TestRestartsDocker(t *testing.T) {
+	for name, want := range map[string]bool{
+		"docker-ce": true, "containerd.io": true, "containerd.io.x86_64": true, "moby-engine.aarch64": true, "containerd.io:amd64": true,
+		"docker-ce-cli": false, "docker-compose-plugin": false, "libssl3": false, "openssl-libs.x86_64": false,
+	} {
+		if restartsDocker(name) != want {
+			t.Errorf("restartsDocker(%q) = %v", name, !want)
+		}
+	}
+	for _, m := range []string{"apt", "dnf", "yum"} {
+		if osUpgradeCommand(m) == "" {
+			t.Errorf("no command for %s", m)
+		}
+	}
+}

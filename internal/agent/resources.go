@@ -66,6 +66,8 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return d.dockerUpgrade(ctx)
 	case wire.OpHostOSStatus:
 		return d.osStatus(ctx)
+	case wire.OpHostOSUpgrade:
+		return d.osUpgrade(ctx, op.Arg)
 	case wire.OpImagesCheckUpdates:
 		done := d.hubChecks.begin()
 		r, err := d.checkUpdates(ctx, op.Auth)

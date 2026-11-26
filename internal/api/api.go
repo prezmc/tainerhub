@@ -208,6 +208,7 @@ func (s *Server) Handler() http.Handler {
 	// Docker Engine upgrades restart every container: admins, with explicit confirmation
 	mux.Handle("POST /api/hosts/{id}/docker/plan", s.need("admin", s.dockerPlan))
 	mux.Handle("POST /api/hosts/{id}/os/check", s.need("admin", s.checkOS))
+	mux.Handle("POST /api/hosts/{id}/os/upgrade", s.need("admin", s.upgradeOS))
 	mux.Handle("POST /api/hosts/{id}/docker/upgrade", s.need("admin", s.dockerUpgrade))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { jsonErr(w, http.StatusNotFound, "not found") })

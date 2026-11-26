@@ -12,6 +12,7 @@ func TestDockerUpdateStatus(t *testing.T) {
 	aptNewer := &wire.DockerPlan{Manager: "apt", Installed: "5:29.10.0-1~debian.12~bookworm", Candidate: "5:29.10.1-1~debian.12~bookworm", Supported: true, Available: true}
 	dnfCurrent := &wire.DockerPlan{Manager: "dnf", Installed: "29.10.0-1.fc41", Candidate: "29.10.0-1.fc41", Supported: true}
 	snap := &wire.DockerPlan{Manager: "snap"}
+	noRepo := &wire.DockerPlan{Manager: "apt", Installed: "5:29.10.0-1", Candidate: "5:29.10.0-1", RepoMissing: true}
 	aptStale := &wire.DockerPlan{Manager: "apt", Installed: "5:29.10.0-1", Candidate: "5:29.10.0-1", Supported: true, RefreshFailed: true}
 	// A repository can carry a packaging fix (same engine version): not an update.
 	aptRepack := &wire.DockerPlan{Manager: "apt", Installed: "5:29.10.0-1~ubuntu", Candidate: "5:29.10.0-2~ubuntu", Supported: true, Available: true}
@@ -31,6 +32,8 @@ func TestDockerUpdateStatus(t *testing.T) {
 		{"snap: can't see its repository", "29.10.0", "29.10.1", snap, dockerUnverified, ""},
 		{"repackaged same version", "29.10.0", "29.10.1", aptRepack, dockerNotInRepo, "29.10.0"},
 		{"no Docker version", "", "29.10.1", nil, "", ""},
+		{"Docker's source is off", "29.10.0", "29.10.1", noRepo, dockerNoRepo, ""},
+		{"Docker's source is off, nothing newer", "29.10.0", "29.10.0", noRepo, dockerNoRepo, ""},
 		{"apt couldn't refresh: its answer may be stale", "29.10.0", "29.10.1", aptStale, dockerUnverified, ""},
 		{"apt couldn't refresh, nothing newer released", "29.10.0", "29.10.0", aptStale, dockerCurrent, ""},
 	} {

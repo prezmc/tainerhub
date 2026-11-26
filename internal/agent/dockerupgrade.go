@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -47,7 +48,16 @@ if command -v dpkg-query >/dev/null 2>&1; then
   err=$(apt-get update -q 2>&1 >/dev/null); rc=$?
   msg=$(printf '%s\n' "$err" | grep -E '^(E:|W: (Failed|Some index))' | head -3 | tr '\n' ' ')
   if [ $rc -ne 0 ] || [ -n "$msg" ]; then echo refresh_failed=yes; echo "refresh_error=$msg"; fi
-  echo candidate=$(apt-cache policy docker-ce 2>/dev/null | awk '/Candidate:/{print $2}')
+  pol=$(LC_ALL=C apt-cache policy docker-ce 2>/dev/null)
+  echo candidate=$(printf '%s\n' "$pol" | awk '/Candidate:/{print $2}')
+  echo repo_sources=$(printf '%s\n' "$pol" | grep -cE '^ +[0-9-]+ [a-z+]+:/')
+  echo codename=$(. /etc/os-release 2>/dev/null; echo "$VERSION_CODENAME")
+  f=$(grep -l download.docker.com /etc/apt/sources.list.d/*.sources 2>/dev/null | head -1)
+  if [ -n "$f" ]; then
+    echo source_file=$f
+    echo source_suites=$(awk -F': *' 'tolower($1)=="suites"{print $2}' "$f")
+    grep -qiE '^Enabled: *no' "$f" && echo source_disabled=yes
+  fi
   exit 0
 fi
 if command -v rpm >/dev/null 2>&1; then
@@ -100,6 +110,12 @@ func parsePlan(out string) wire.DockerPlan {
 			p.Reason = "this server doesn't use systemd, so TainerHub can't run the upgrade safely; run the command below on the server"
 		} else {
 			p.Supported = true
+		}
+		if p.Manager == "apt" {
+			aptSource(&p, kv) // after the systemd reason: a missing repository says more
+		}
+		if p.RepoMissing {
+			p.Supported, p.Available, p.Command = false, false, ""
 		}
 		if kv["refresh_failed"] == "yes" {
 			p.RefreshFailed, p.RefreshError = true, kv["refresh_error"]
@@ -262,8 +278,8 @@ func (d *SocketDocker) dockerUpgrade(ctx context.Context) (wire.DockerPlan, erro
 		return p, errors.New("Docker is already the newest version this server's repository offers")
 	}
 	// The command is fixed per manager (no user input reaches the host).
-	launch := "systemd-run --unit=tainerhub-docker-upgrade --collect --description='TainerHub: upgrade Docker' /bin/sh -c '" +
-		strings.ReplaceAll(p.Command, "'", `'"'"'`) + " >/var/log/tainerhub-docker-upgrade.log 2>&1'"
+	launch := "systemd-run --unit=tainerhub-docker-upgrade --collect --description='TainerHub: upgrade Docker' /bin/sh -c '{ " +
+		strings.ReplaceAll(p.Command, "'", `'"'"'`) + "; } >/var/log/tainerhub-docker-upgrade.log 2>&1'"
 	if _, err := d.runOnHost(ctx, launch); err != nil {
 		if strings.Contains(err.Error(), "already") {
 			return p, errors.New("a Docker upgrade is already running on this server")
@@ -271,4 +287,36 @@ func (d *SocketDocker) dockerUpgrade(ctx context.Context) (wire.DockerPlan, erro
 		return p, err
 	}
 	return p, nil
+}
+
+var aptName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+var aptPath = regexp.MustCompile(`^/etc/apt/sources\.list\.d/[A-Za-z0-9._-]+\.sources$`)
+
+// aptSource notices when apt can't see Docker's repository at all (only the
+// installed copy is listed), typically because an Ubuntu release upgrade
+// turned the source off, or when the source names another release than the
+// one the server runs. Fix is the command that puts it right, for a deb822
+// .sources file.
+func aptSource(p *wire.DockerPlan, kv map[string]string) {
+	codename, suites, file := kv["codename"], kv["source_suites"], kv["source_file"]
+	disabled := kv["source_disabled"] == "yes"
+	wrongSuite := codename != "" && suites != "" && suites != codename
+	if file != "" && aptPath.MatchString(file) && aptName.MatchString(codename) && (disabled || wrongSuite) {
+		p.Fix = "sudo sed -i -e '/^Enabled:/d' -e 's/^Suites: .*/Suites: " + codename + "/' " + file + " && sudo apt-get update"
+	}
+	if kv["repo_sources"] == "0" && kv["refresh_failed"] != "yes" {
+		p.RepoMissing = true
+		switch {
+		case disabled && wrongSuite:
+			p.Reason = "Docker's apt repository is turned off on this server (Enabled: no in " + file + ") and still set to " + suites + " while the server runs " + codename + ". Upgrading the OS release does that, so apt can't see newer Docker versions"
+		case disabled:
+			p.Reason = "Docker's apt repository is turned off on this server (Enabled: no in " + file + "), so apt can't see newer Docker versions. Upgrading the OS release does that"
+		default:
+			p.Reason = "no package repository on this server offers Docker (apt only knows the installed copy), so apt can't see newer versions. Add Docker's apt repository again (docs.docker.com/engine/install)"
+		}
+		return
+	}
+	if wrongSuite {
+		p.Warning = "Docker's apt repository is set to " + suites + ", but this server runs " + codename + ": apt installs Docker built for " + suites
+	}
 }

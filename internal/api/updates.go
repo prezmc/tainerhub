@@ -489,6 +489,7 @@ const (
 	dockerAvailable  = "available"   // the host's repository offers a newer version
 	dockerNotInRepo  = "not-in-repo" // Docker released a newer one; the repository doesn't have it yet
 	dockerUnverified = "released"    // Docker released a newer one; the repository wasn't asked (or can't tell)
+	dockerNoRepo     = "no-repo"     // no repository offers Docker on the host (its source is off, say)
 )
 
 var pkgVersionRe = regexp.MustCompile(`\d+\.\d+\.\d+`)
@@ -512,6 +513,9 @@ func dockerUpdateStatus(installed, latest string, plan *wire.DockerPlan) (status
 			return dockerUnverified, ""
 		}
 		return dockerCurrent, ""
+	}
+	if plan.RepoMissing {
+		return dockerNoRepo, ""
 	}
 	if plan.RefreshFailed { // the repository's answer may be stale
 		if behind {
@@ -692,4 +696,59 @@ func (s *Server) checkOS(w http.ResponseWriter, r *http.Request) {
 		st.Packages = []wire.OSPackage{}
 	}
 	writeJSON(w, http.StatusOK, s.osStatus.put(id, st, time.Now()))
+}
+
+// upgradeOS answers POST /api/hosts/{id}/os/upgrade: the host installs
+// every pending OS update through its systemd. The request must name the
+// host exactly, and accept restarting every container when the updates
+// include Docker. It returns at once; checking again shows the progress.
+func (s *Server) upgradeOS(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Confirm    string
+		RestartAll bool
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	id := r.PathValue("id")
+	a := s.Reg.Get(id)
+	if a == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host is offline")
+		return
+	}
+	if strings.TrimSpace(in.Confirm) != a.Name {
+		jsonErr(w, http.StatusBadRequest, "confirm by giving the host's exact name")
+		return
+	}
+	arg := "install"
+	if in.RestartAll {
+		arg = wire.OSUpgradeRestartAll
+	}
+	data, err := a.Operate(r.Context(), wire.Operation{Kind: wire.OpHostOSUpgrade, Arg: arg})
+	var st wire.HostOSStatus
+	_ = json.Unmarshal(data, &st)
+	u := userFrom(r)
+	names := make([]string, 0, len(st.Packages))
+	for _, p := range st.Packages {
+		names = append(names, p.Name)
+	}
+	detail := map[string]string{"host": a.Name, "manager": st.Manager, "count": fmt.Sprint(len(st.Packages)), "packages": strings.Join(names, " ")}
+	if st.RestartsDocker {
+		detail["restarts_docker"] = "yes"
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown operation") {
+			err = errors.New("this host's agent is too old to install OS updates; update it first")
+		}
+		detail["error"] = err.Error()
+	}
+	s.record(r, &u, "host.os_upgrade", a.Name, detail)
+	if err != nil {
+		jsonErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if st.Packages == nil {
+		st.Packages = []wire.OSPackage{}
+	}
+	writeJSON(w, http.StatusAccepted, s.osStatus.put(id, st, time.Now()))
 }
