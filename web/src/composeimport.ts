@@ -62,7 +62,7 @@ export type Change = { id: string; label: string; from: string; to: string; why:
  * "changeme"). id is how replacements refer to it: volume:<row>, env:<key>
  * or label:<key>. suggestion is a sensible replacement, when there is one.
  */
-export type Placeholder = { id: string; kind: 'volume' | 'env' | 'label'; label: string; value: string; suggestion?: string; secret?: boolean }
+export type Placeholder = { id: string; kind: 'volume' | 'env' | 'label'; label: string; value: string; suggestion?: string; secret?: boolean; target?: string }
 
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v)
 const has = (o: Obj, k: string) => Object.prototype.hasOwnProperty.call(o, k)
@@ -697,7 +697,7 @@ export function importService(p: Extract<Parsed, { ok: true }>, service: string,
   }
   vols.forEach((v, i) => {
     if (looksLikePlaceholder(v.source))
-      check({ id: `volume:${i}`, kind: 'volume', label: `Volume for ${v.target.split(':')[0]}`, value: v.source, suggestion: suggestSource(v.target) }, (r) => (v.source = r))
+      check({ id: `volume:${i}`, kind: 'volume', label: `Volume for ${v.target.split(':')[0]}`, value: v.source, suggestion: suggestSource(v.target), target: v.target }, (r) => (v.source = r))
   })
   for (const e of env)
     if (looksLikePlaceholder(e.value)) check({ id: `env:${e.key}`, kind: 'env', label: e.key, value: e.value, secret: isSecretKey(e.key) }, (r) => (e.value = r))

@@ -517,3 +517,40 @@ func (s *Server) preflight(ctx context.Context, h store.Host, stacks []store.Sta
 	}
 	return buildPreflightReport(p, ph, in.Name), nil
 }
+
+// hostFolders answers GET /api/hosts/{id}/folders: where TainerHub keeps
+// stacks on the host, and the folders its containers mount, so the New
+// container page can recommend folders that follow the host's own layout.
+func (s *Server) hostFolders(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validUUID(id) {
+		jsonErr(w, http.StatusBadRequest, "invalid host")
+		return
+	}
+	a := s.Reg.Get(id)
+	if a == nil {
+		jsonErr(w, http.StatusServiceUnavailable, "host is offline")
+		return
+	}
+	out := struct {
+		StacksDir string           `json:"stacksDir"`
+		Binds     []wire.BindMount `json:"binds"`
+	}{Binds: []wire.BindMount{}}
+	if h := a.Status().Hello; h != nil && h.Stacks != nil {
+		out.StacksDir = h.Stacks.Dir
+	}
+	raw, err := a.Operate(r.Context(), wire.Operation{Kind: wire.OpBindsList})
+	switch {
+	case err != nil && strings.Contains(err.Error(), "unknown operation"):
+		// an older agent: recommend the stack's own folder only
+	case err != nil:
+		jsonErr(w, http.StatusBadGateway, err.Error())
+		return
+	default:
+		if err := json.Unmarshal(raw, &out.Binds); err != nil {
+			jsonErr(w, http.StatusBadGateway, "unreadable answer from the agent")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}

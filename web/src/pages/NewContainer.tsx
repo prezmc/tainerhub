@@ -277,7 +277,16 @@ export function NewContainerPage() {
           Paste compose
         </Button>
       </PageHeader>
-      <ComposeImportDialog open={pasting} onClose={() => setPasting(false)} onApply={applyImport} onStack={deployAsStack} replacing={!!image} />
+      <ComposeImportDialog
+        open={pasting}
+        onClose={() => setPasting(false)}
+        onApply={applyImport}
+        onStack={deployAsStack}
+        replacing={!!image}
+        hostId={hostId}
+        hostName={hosts.find((h) => h.id === hostId)?.name ?? ''}
+        hostOnline={!!hosts.find((h) => h.id === hostId)?.online}
+      />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         {/* ---- image ---- */}

@@ -50,6 +50,8 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return d.prune(ctx, "/volumes/prune", f, "VolumesDeleted")
 	case wire.OpNetworksList:
 		return d.networks(ctx)
+	case wire.OpBindsList:
+		return d.binds(ctx)
 	case wire.OpNetworkRemove:
 		return nil, d.remove(ctx, "/networks/"+url.PathEscape(op.Target))
 	case wire.OpContainerRemoveVolumes:

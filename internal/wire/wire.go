@@ -792,7 +792,19 @@ const (
 	// (with Auth) for this host's platform, and which external networks and
 	// volumes exist. Result: StackPreflight.
 	OpStackPreflight = "stack.preflight"
+	// OpBindsList lists the host folders containers mount (bind mounts),
+	// leaving out Docker's socket and system paths, so a new container can be
+	// pointed at folders that follow the host's own layout. Result: []BindMount.
+	OpBindsList = "binds.list"
 )
+
+// BindMount is one host folder a container mounts.
+type BindMount struct {
+	Container string `json:"container"`
+	Image     string `json:"image"`
+	Source    string `json:"source"` // on the host
+	Target    string `json:"target"` // in the container
+}
 
 // StackPreflight is what OpStackPreflight found.
 type StackPreflight struct {
@@ -1163,6 +1175,7 @@ var OpKinds = map[string]bool{
 	OpRegistryLogin:  false,
 	OpStackImages:    true, // with StackImagesProtect it tags images
 	OpStackPreflight: false,
+	OpBindsList:      false,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.

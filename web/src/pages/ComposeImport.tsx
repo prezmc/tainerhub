@@ -2,7 +2,10 @@
 // project's docs and fills the form's own fields from one of its services.
 // The parser (and the yaml package) load only when the dialog first opens.
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ClipboardPaste, Dices, Info, Layers, Wand2, X } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api'
+import { recommendPaths, type BindMount, type PathRecommendation } from '../hostpaths'
+import { AlertTriangle, ClipboardPaste, Dices, Info, Layers, LoaderCircle, Wand2, X } from 'lucide-react'
 import { Button, ErrorNote, IconButton, Modal, cx } from '../ui'
 import { CodeEditor } from '../stacks'
 import type { Change, Imported, Note } from '../composeimport'
@@ -27,6 +30,9 @@ export function ComposeImportDialog({
   onApply,
   onStack,
   replacing,
+  hostId,
+  hostName,
+  hostOnline,
 }: {
   open: boolean
   onClose: () => void
@@ -34,6 +40,10 @@ export function ComposeImportDialog({
   onStack: (d: StackDraft) => void
   /** The form already has something in it, which applying replaces. */
   replacing: boolean
+  /** The host picked on the form, whose folders recommend where volumes go. */
+  hostId: string
+  hostName: string
+  hostOnline: boolean
 }) {
   const [lib, setLib] = useState<Lib | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -54,7 +64,32 @@ export function ComposeImportDialog({
   const vars = useMemo(() => (ok && lib ? lib.variablesOf(ok, service) : []), [ok, lib, service])
   // Variables with a default are listed under "Changed for you" instead.
   const needed = vars.filter((v) => v.def === undefined)
-  const result = useMemo(() => (ok && lib ? lib.importService(ok, service, values, replacements) : null), [ok, lib, service, values, replacements])
+  const first = useMemo(() => (ok && lib ? lib.importService(ok, service, values, replacements) : null), [ok, lib, service, values, replacements])
+
+  // Where volumes that only have an example folder should go: the host's
+  // own layout if it has one, else the stack's folder. The first
+  // recommendation is filled in until the user picks or types another.
+  const needFolders = !!first?.placeholders.some((ph) => ph.kind === 'volume')
+  const folders = useQuery({
+    queryKey: ['host-folders', hostId],
+    queryFn: () => api<{ stacksDir: string; binds: BindMount[] }>(`/api/hosts/${hostId}/folders`),
+    enabled: open && needFolders && !!hostId && hostOnline,
+    staleTime: 60_000,
+    retry: false,
+  })
+  const folderLookup = needFolders && !!hostId && hostOnline && folders.isPending && folders.fetchStatus !== 'idle'
+  const recs = useMemo(() => {
+    const m: Record<string, PathRecommendation[]> = {}
+    for (const ph of first?.placeholders ?? [])
+      if (ph.kind === 'volume') m[ph.id] = recommendPaths(folders.data?.binds ?? [], { app: first!.name, target: ph.target ?? '', stacksDir: folders.data?.stacksDir, host: hostName })
+    return m
+  }, [first, folders.data, hostName])
+  const edits = useMemo(() => {
+    const d: Record<string, string> = {}
+    for (const [id, rs] of Object.entries(recs)) if (replacements[id] === undefined && rs[0] && !folderLookup) d[id] = rs[0].value
+    return { ...d, ...replacements }
+  }, [recs, replacements, folderLookup])
+  const result = useMemo(() => (ok && lib ? lib.importService(ok, service, values, edits) : null), [ok, lib, service, values, edits])
 
   const apply = () => {
     if (!result) return
@@ -145,29 +180,55 @@ export function ComposeImportDialog({
                 <div className="flex flex-wrap items-center gap-2">
                   <input
                     aria-label={`Replacement for ${ph.label}`}
-                    value={replacements[ph.id] ?? ''}
+                    value={edits[ph.id] ?? ''}
                     onChange={(e) => replace(ph.id, e.target.value)}
-                    placeholder={ph.kind === 'volume' ? `a folder on the host, or ${ph.suggestion}` : ph.secret ? 'your own value, or generate one' : 'your own value'}
+                    placeholder={ph.kind === 'volume' ? 'a folder on the host' : ph.secret ? 'your own value, or generate one' : 'your own value'}
                     className={cx(field, 'min-w-0 flex-1 basis-48')}
                     spellCheck={false}
                     autoCapitalize="off"
                   />
-                  {ph.suggestion && (
-                    <Button type="button" variant="secondary" icon={Wand2} className="!px-2 !py-1 text-[11px]" onClick={() => replace(ph.id, ph.suggestion!)}>
-                      Use {ph.suggestion}
-                    </Button>
-                  )}
                   {ph.secret && (
                     <Button type="button" variant="secondary" icon={Dices} className="!px-2 !py-1 text-[11px]" onClick={() => replace(ph.id, generateSecret())}>
                       Generate
                     </Button>
                   )}
                 </div>
-                {ph.kind === 'volume' && (
-                  <p className="text-[11px] text-ink-100/45">
-                    {ph.suggestion} is a folder inside the stack's own folder on the host: TainerHub creates it, and it moves with the stack.
-                  </p>
-                )}
+                {ph.kind === 'volume' &&
+                  (folderLookup ? (
+                    <p className="flex items-center gap-1.5 text-[11px] text-ink-100/50">
+                      <LoaderCircle className="size-3 animate-spin" />
+                      Looking at where {hostName || 'the host'} keeps app data…
+                    </p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {(recs[ph.id] ?? []).map((rec, i) => {
+                        const chosen = (edits[ph.id] ?? '').trim() === rec.value
+                        return (
+                          <li key={rec.value}>
+                            <button
+                              type="button"
+                              onClick={() => replace(ph.id, rec.value)}
+                              aria-pressed={chosen}
+                              className={cx(
+                                'flex w-full items-start gap-2 rounded-[2px] px-2 py-1.5 text-left ring-1 ring-inset transition',
+                                chosen ? 'bg-lime-400/10 ring-lime-400/50' : 'ring-white/10 hover:bg-white/[0.04]',
+                              )}
+                            >
+                              <Wand2 className={cx('mt-0.5 size-3.5 shrink-0', chosen ? 'text-lime-300' : 'text-ink-100/40')} />
+                              <span className="min-w-0 flex-1">
+                                <span className="flex flex-wrap items-center gap-x-2">
+                                  <code className="mono break-all text-xs text-white">{rec.path}</code>
+                                  {i === 0 && <span className="text-[10px] font-semibold tracking-wider text-lime-300 uppercase">Recommended</span>}
+                                </span>
+                                <span className="block text-[11px] leading-snug text-ink-100/50">{rec.why}</span>
+                              </span>
+                            </button>
+                          </li>
+                        )
+                      })}
+                      {!hostId || !hostOnline ? <li className="text-[11px] text-ink-100/45">Pick an online host on the form to get a folder that follows its layout.</li> : null}
+                    </ul>
+                  ))}
               </div>
             ))}
           </fieldset>

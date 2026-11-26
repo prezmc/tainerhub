@@ -148,6 +148,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/stacks/{sid}/rollback", s.need("operator", s.rollbackStack))
 	mux.Handle("POST /api/stacks/takeover-check", s.need("admin", s.checkTakeover))
 	mux.Handle("POST /api/stacks/preflight", s.need("admin", s.checkPreflight))
+	mux.Handle("GET /api/hosts/{id}/folders", s.need("admin", s.hostFolders))
 	mux.Handle("GET /api/stacks/takeover-source", s.need("admin", s.takeoverSource))
 	mux.Handle("GET /api/stacks/{sid}/move", s.need("admin", s.moveCheck))
 	mux.Handle("POST /api/stacks/{sid}/move", s.need("admin", s.startMove))
