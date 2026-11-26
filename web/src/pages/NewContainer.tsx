@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, BadgeCheck, ClipboardPaste, Download, Rocket, Search, Star, Undo2 } from 'lucide-react'
+import { ArrowLeft, BadgeCheck, ClipboardPaste, Download, Rocket, Search, Server, Star, Undo2 } from 'lucide-react'
 import { api, errorText, stackProblem, type NetworkRes, type StackSaveResult } from '../api'
 import { Badge, Button, Card, ErrorNote, Input, PageHeader, cx, useConfirm, useToast } from '../ui'
 import { useFleet } from '../fleet'
@@ -288,6 +288,21 @@ export function NewContainerPage() {
         hostOnline={!!hosts.find((h) => h.id === hostId)?.online}
       />
 
+      {/* ---- host: first, since the checks and folder suggestions depend on it ---- */}
+      <Card className="mb-6 flex flex-col gap-3 p-5 sm:flex-row sm:items-start sm:gap-6">
+        <div className="shrink-0 sm:w-64">
+          <h2 className="flex items-center gap-2 font-display text-lg font-bold text-white">
+            <Server className="size-4 text-lime-300" />
+            Host
+          </h2>
+          <p className="mt-1 text-xs text-ink-100/50">Where the container will run. The checks and folder suggestions below are for this host.</p>
+        </div>
+        <label className="block min-w-0 flex-1 sm:max-w-2xl">
+          <span className="sr-only">Host to install on</span>
+          <HostSelect value={hostId} onChange={changeHost} className="w-full rounded-[2px] bg-ink-950/70 px-3 py-2.5 text-sm font-medium text-white ring-1 ring-inset ring-lime-400/30 outline-none focus:ring-lime-400/60" />
+        </label>
+      </Card>
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
         {/* ---- image ---- */}
         <Card className="p-5">
@@ -402,10 +417,6 @@ export function NewContainerPage() {
               <FieldError msgs={basicErr('name')} />
             </div>
             <label className="block">
-              <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Host</span>
-              <HostSelect value={hostId} onChange={changeHost} disabled={!image} className="w-full rounded-[2px] bg-ink-950/70 px-3 py-2 text-sm text-white ring-1 ring-inset ring-white/12 outline-none focus:ring-lime-400/60" />
-            </label>
-            <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-ink-100/80">Restart</span>
               <select
                 value={restart}
@@ -513,7 +524,7 @@ export function NewContainerPage() {
           {image && hostIssue && <p className="text-xs text-amber-200">{hostIssue}</p>}
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="primary" icon={Rocket} onClick={submit} loading={deploy.isPending} disabled={!image}>
-              Deploy
+              {host ? `Deploy to ${host.name}` : 'Deploy'}
             </Button>
             <span className="text-xs text-ink-100/50">Runs as a one-service stack, so you can edit, redeploy or update it later from Stacks.</span>
           </div>

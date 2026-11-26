@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { recommendPaths, type BindMount, type PathRecommendation } from '../hostpaths'
-import { AlertTriangle, ClipboardPaste, Dices, Info, Layers, LoaderCircle, Wand2, X } from 'lucide-react'
+import { AlertTriangle, ClipboardPaste, Dices, Info, Layers, LoaderCircle, Server, Wand2, X } from 'lucide-react'
 import { Button, ErrorNote, IconButton, Modal, cx } from '../ui'
 import { CodeEditor } from '../stacks'
 import type { Change, Imported, Note } from '../composeimport'
@@ -110,6 +110,17 @@ export function ComposeImportDialog({
         <p className="text-sm text-ink-100/70">
           Many projects publish a <code className="mono text-lime-300">docker-compose.yml</code> in their README. Paste it here to fill in the form; you can check and change everything before
           you deploy.
+        </p>
+        <p className="flex items-center gap-1.5 text-xs text-ink-100/60">
+          <Server className="size-3.5 shrink-0 text-lime-300" />
+          {hostName ? (
+            <span>
+              Installing on <strong className="font-medium text-white">{hostName}</strong>
+              {hostOnline ? '' : ' (offline)'}. To use another host, close this and change it at the top of the page.
+            </span>
+          ) : (
+            <span>No host picked yet: pick one at the top of the page to get folders that follow its layout.</span>
+          )}
         </p>
         <ErrorNote error={loadError} />
         <CodeEditor label="Compose file to import" value={text} onChange={setText} rows={10} placeholder={EXAMPLE} />

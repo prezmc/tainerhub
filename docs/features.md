@@ -192,13 +192,14 @@ Only admins can open terminals, because a shell in a container sees everything i
 
 ### New container
 
-<img src="images/new-container.png" width="900" alt="The New container page: Docker Hub search results on the left, settings on the right with the host nas marked as suggested">
+<img src="images/new-container.png" width="900" alt="The New container page: the Host row at the top with nas marked as suggested, Docker Hub search results for uptime-kuma on the left and settings on the right">
 
 Admins can click **New container** on the Containers page to run an image from Docker Hub without writing a compose file:
 
-1. **Image.** Search Docker Hub, for example `nginx`, `plex` or `uptime-kuma`, or type an image name such as `ghcr.io/home-assistant/home-assistant`. Then pick a **Version (tag)**, or include it in the name you type (`...:stable`). Images from private registries work once their login is saved under Settings → Container registries.
-2. **Settings.** Pick the **Host**, a **Name** and a **Restart** policy (`unless-stopped` by default). Hosts are listed with their recent CPU and memory use, and the one with the most room is marked **★ suggested** and chosen for you. Add **Ports** (host port, container port, tcp or udp), **Environment variables** and **Volumes**. A volume source can be a volume name like `data`, a host folder like `/srv/app`, or `./config` inside the stack's folder.
-3. **Advanced** (optional, collapsed until you need it):
+1. **Host.** The row at the top of the page shows where the container will run. Hosts are listed with their recent CPU and memory use, and the one with the most room is marked **★ suggested** and chosen for you. Pick the host first: the checks and the folder suggestions when you paste a compose file are for this host, and **Deploy** says which host it deploys to.
+2. **Image.** Search Docker Hub, for example `nginx`, `plex` or `uptime-kuma`, or type an image name such as `ghcr.io/home-assistant/home-assistant`. Then pick a **Version (tag)**, or include it in the name you type (`...:stable`). Images from private registries work once their login is saved under Settings → Container registries.
+3. **Settings.** Pick a **Name** and a **Restart** policy (`unless-stopped` by default). Add **Ports** (host port, container port, tcp or udp), **Environment variables** and **Volumes**. A volume source can be a volume name like `data`, a host folder like `/srv/app`, or `./config` inside the stack's folder.
+4. **Advanced** (optional, collapsed until you need it):
    - **Networking:** network mode (default, host or none), join existing networks on the host or create a new one, hostname, extra hosts (`host-gateway` reaches the Docker host) and DNS servers.
    - **Labels:** for example Traefik's `traefik.enable=true` and router rules.
    - **Command & runtime:** command and entrypoint overrides (quotes are respected), working directory, user (`1000:1000`), an init process, a read-only root filesystem, a stop grace period and the time zone.
@@ -207,10 +208,10 @@ Admins can click **New container** on the Containers page to run an image from D
    - **Security:** add or drop Linux capabilities, no-new-privileges, and privileged mode (full root access to the host; it asks you to confirm).
    - **Logging:** cap the log size, for example 10 MB × 3 files.
    - **Env file:** paste `KEY=value` lines; they're saved as the stack's `.env`.
-4. Check the **Compose file** preview: it's exactly what will be deployed.
-5. Read the **Checks on** *host* panel (see [Checks before deploying](#checks-before-deploying)), then click **Deploy**.
+5. Check the **Compose file** preview: it's exactly what will be deployed.
+6. Read the **Checks on** *host* panel (see [Checks before deploying](#checks-before-deploying)), then click **Deploy to** *host*.
 
-<img src="images/new-container-advanced.png" width="900" alt="The New container page with the Networking and Resources sections open and the compose preview">
+<img src="images/new-container-advanced.png" width="900" alt="The New container page with the Networking and Resources sections open: hostname homeassistant, a 2 GB memory limit and 2 CPUs">
 
 The container runs as a one-service stack with the name you chose. You can edit, redeploy or update it later from **Stacks**.
 
@@ -226,7 +227,7 @@ Many projects publish a `docker-compose.yml` snippet in their README (Uptime Kum
   - **Following the host's layout:** TainerHub looks at the folders the host's other containers use. If `sonarr` keeps `/config` in `/srv/appdata/sonarr/config` and `radarr` in `/srv/appdata/radarr/config`, Prowlarr's recommended folder is `/srv/appdata/prowlarr/config`. A folder another container already uses is never recommended.
   - **The stack's own folder**, such as `/opt/tainerhub/stacks/prowlarr/config` (written `./config` in the compose file). TainerHub creates it, and it moves with the stack. This is the recommendation when the host has no pattern to follow, and always offered as the other choice.
 
-  Each choice says why it's suggested, and you can click the other one or type your own folder. Recommendations come from the host picked on the form, so pick the host first. For a password, secret, token or key, **Generate** fills in a random 32-character value. Anything you leave as it was stays flagged.
+  Each choice says why it's suggested, and you can click the other one or type your own folder. The dialog says which host it is using: the one picked at the top of the page, so pick the host first. For a password, secret, token or key, **Generate** fills in a random 32-character value. Anything you leave as it was stays flagged.
 - **Several services.** A container runs one service, so you pick which one. Or click **Deploy all as a stack**: the stack editor opens with the file exactly as you pasted it, a suggested name (the file's `name:`, else its first service) and a `.env` with the values you typed.
 - **What it fills in.** The image and tag, name (`container_name`, else the service name), restart policy, ports (including udp, ranges and the long syntax), volumes and binds (`:ro` is kept), environment, networks (`external: true` ones are joined, one other is created), labels, command and entrypoint, hostname, extra hosts, DNS, user, working directory, init, read-only, stop grace period, memory, CPU and shared-memory limits, devices, NVIDIA GPUs (`deploy.resources.reservations`, `gpus:` or `runtime: nvidia`), health check, `cap_add`/`cap_drop`, privileged, no-new-privileges and json-file log limits. Advanced sections that got values open by themselves.
 - **What it can't.** Anything the form has no field for is listed as a warning, never dropped silently: `depends_on`, `build:`, other services, `env_file` (paste its lines under **Env file**), external volumes, ports published on one address only (like `127.0.0.1:9000:9000`), capabilities outside the form's list, Swarm `deploy` settings and other keys. If those matter, deploy the whole file as a stack instead.
