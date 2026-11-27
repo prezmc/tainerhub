@@ -381,7 +381,8 @@ func (d *SocketDocker) inspect(ctx context.Context, id string) (wire.ContainerDe
 		Mounts: []wire.DetailMount{}, Networks: []wire.DetailNetwork{}, Ports: []wire.DetailPort{},
 	}
 	if h := r.State.Health; h != nil {
-		dh := &wire.DetailHealth{Status: h.Status, FailingStreak: h.FailingStreak}
+		// No probes yet right after a (re)start: an empty list, not null.
+		dh := &wire.DetailHealth{Status: h.Status, FailingStreak: h.FailingStreak, Log: []wire.HealthProbe{}}
 		for _, l := range h.Log {
 			out := l.Output
 			if len(out) > 2000 {

@@ -147,3 +147,29 @@ func TestTakeoverReportMergedFile(t *testing.T) {
 		t.Error("a file TainerHub merged from them shouldn't be")
 	}
 }
+
+func TestStartedElsewhere(t *testing.T) {
+	hello := &wire.Hello{Stacks: &wire.StackSupport{Dir: "/opt/tainerhub/stacks"}}
+	c := func(project, wd string) wire.Container {
+		return wire.Container{Project: project, Labels: map[string]string{"com.docker.compose.project.working_dir": wd}}
+	}
+	for _, tc := range []struct {
+		name  string
+		cs    []wire.Container
+		hello *wire.Hello
+		want  bool
+	}{
+		{"nothing running", nil, hello, false},
+		{"another project", []wire.Container{c("other", "/srv/other")}, hello, false},
+		// a first deploy that created the containers and then failed
+		{"TainerHub's own folder", []wire.Container{c("media", "/opt/tainerhub/stacks/media"), c("media", "/opt/tainerhub/stacks/media/")}, hello, false},
+		{"started elsewhere", []wire.Container{c("media", "/home/me/media")}, hello, true},
+		{"one container elsewhere", []wire.Container{c("media", "/opt/tainerhub/stacks/media"), c("media", "/home/me/media")}, hello, true},
+		{"no label", []wire.Container{{Project: "media"}}, hello, true},
+		{"stacks folder unknown", []wire.Container{c("media", "/opt/tainerhub/stacks/media")}, nil, true},
+	} {
+		if got := startedElsewhere(tc.cs, tc.hello, "media"); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

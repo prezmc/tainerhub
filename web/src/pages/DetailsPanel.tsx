@@ -164,7 +164,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                 <Section icon={HeartPulse} title="Health check" right={<Badge tone={d.state.health.status === 'healthy' ? 'good' : d.state.health.status === 'starting' ? 'warn' : 'bad'}>{d.state.health.status}</Badge>}>
                   {d.state.health.failingStreak > 0 && <p className="mb-2 text-sm text-rose-300">Failed {d.state.health.failingStreak} times in a row.</p>}
                   <ul className="space-y-2">
-                    {[...d.state.health.log].reverse().map((p, i) => (
+                    {[...(d.state.health.log ?? [])].reverse().map((p, i) => (
                       <li key={i} className="rounded-[3px] bg-black/30 p-3 ring-1 ring-white/[0.07]">
                         <div className="flex items-center justify-between text-xs">
                           <span className={p.exitCode === 0 ? 'text-emerald-300' : 'text-rose-300'}>{p.exitCode === 0 ? 'passed' : `failed (exit ${p.exitCode})`}</span>

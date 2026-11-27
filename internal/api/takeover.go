@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -257,12 +258,31 @@ func (s *Server) isTakeover(hostID, name string, deployed bool) bool {
 	if a == nil {
 		return false
 	}
-	for _, c := range a.Status().Containers {
-		if c.Project == name {
+	st := a.Status()
+	return startedElsewhere(st.Containers, st.Hello, name)
+}
+
+// startedElsewhere reports whether the host runs a compose project called
+// name that wasn't started from TainerHub's own folder for that stack. A
+// first deploy that created the containers and then failed (a container
+// that never got healthy, say) leaves them behind without a successful
+// deploy on record; they're TainerHub's, not a project to take over.
+func startedElsewhere(cs []wire.Container, hello *wire.Hello, name string) bool {
+	own := ""
+	if hello != nil && hello.Stacks != nil && hello.Stacks.Dir != "" {
+		own = path.Join(hello.Stacks.Dir, name)
+	}
+	found := false
+	for _, c := range cs {
+		if c.Project != name {
+			continue
+		}
+		found = true
+		if wd := c.Labels["com.docker.compose.project.working_dir"]; own == "" || wd == "" || path.Clean(wd) != own {
 			return true
 		}
 	}
-	return false
+	return found && own == ""
 }
 
 var errTakeoverUnconfirmed = errors.New("check the takeover first")

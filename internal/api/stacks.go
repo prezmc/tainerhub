@@ -210,7 +210,10 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 	} else if !errors.Is(err, store.ErrNotFound) {
 		s.Log.Warn("latest rollback point", "stack", st.Name, "err", err)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"stack": st, "summary": sum, "filesVisible": canView, "moves": moves, "rollbackPoint": point})
+	// takeover: the next deploy is TainerHub's first of a project started
+	// elsewhere, and goes through the takeover check.
+	writeJSON(w, http.StatusOK, map[string]any{"stack": st, "summary": sum, "filesVisible": canView, "moves": moves, "rollbackPoint": point,
+		"takeover": s.isTakeover(st.HostID, st.Name, st.DeployedAt != nil)})
 }
 
 type stackInput struct {

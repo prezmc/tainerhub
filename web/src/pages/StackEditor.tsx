@@ -283,7 +283,8 @@ export function StackPage() {
   const s = live ?? d.summary
   // Saved while taking over a running project, not deployed by TainerHub yet:
   // the first deploy goes through the takeover check.
-  const takeover = !d.stack.deployedAt && s.containers > 0 && s.online
+  // Containers left by TainerHub's own first deploy that failed aren't one.
+  const takeover = (d.takeover ?? true) && !d.stack.deployedAt && s.containers > 0 && s.online
   return (
     <div>
       <BackLink />
@@ -296,7 +297,7 @@ export function StackPage() {
             {s.pending && d.stack.deployedAt && <Badge tone="warn">changes not deployed</Badge>}
             {s.autoUpdate && <Badge tone="info">auto updates</Badge>}
             {d.stack.rolledBackTo && <Badge tone="warn">rolled back</Badge>}
-            <span className="text-ink-100/50">{d.stack.deployedAt ? `Deployed ${timeAgo(d.stack.deployedAt)}` : 'Never deployed'}</span>
+            <span className="text-ink-100/50">{d.stack.deployedAt ? `Deployed ${timeAgo(d.stack.deployedAt)}` : s.containers > 0 && !takeover ? 'First deploy failed' : 'Never deployed'}</span>
           </span>
         }
       >

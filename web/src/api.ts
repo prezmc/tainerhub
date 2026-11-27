@@ -458,6 +458,11 @@ export interface StackDetail {
   moves: StackMove[]
   /** The newest rollback point; null when there is nothing to roll back to. */
   rollbackPoint: RollbackPointSummary | null
+  /**
+   * The next deploy is TainerHub's first of a project started outside it
+   * (missing from older hubs).
+   */
+  takeover?: boolean
 }
 
 export interface StackMove {
