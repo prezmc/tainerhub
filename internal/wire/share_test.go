@@ -101,3 +101,18 @@ func TestShareDriverOpts(t *testing.T) {
 		t.Errorf("nfs4 = %+v", got)
 	}
 }
+
+func TestShareFromOptionsReadOnly(t *testing.T) {
+	ro := ShareFromOptions("local", ShareDriverOpts(&ShareVolume{Type: ShareCIFS, Server: "nas", Path: "media", Username: "u", Password: "p", ReadOnly: true}))
+	if ro == nil || !ro.ReadOnly || ShareLabel(ro) != "SMB //nas/media, read-only" {
+		t.Fatalf("%+v", ro)
+	}
+	rw := ShareFromOptions("local", ShareDriverOpts(&ShareVolume{Type: ShareCIFS, Server: "nas", Path: "media"}))
+	if rw == nil || rw.ReadOnly || ShareLabel(rw) != "SMB //nas/media" {
+		t.Fatalf("%+v", rw)
+	}
+	// "rw" and options merely containing "ro" don't count
+	if s := ShareFromOptions("local", map[string]string{"type": "nfs", "device": ":/x", "o": "addr=nas,nfsvers=4,rw,proto=tcp"}); s.ReadOnly {
+		t.Fatal("rw taken for ro")
+	}
+}

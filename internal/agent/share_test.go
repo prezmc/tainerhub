@@ -2,6 +2,8 @@ package agent
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,6 +49,57 @@ func TestShareHint(t *testing.T) {
 	} {
 		if got := shareHint(c.err, c.s); !strings.Contains(got, c.want) {
 			t.Errorf("%s %q: %q lacks %q", c.s.Type, c.err, got, c.want)
+		}
+	}
+}
+
+func TestShareCheckOutput(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"complete", "incomplete"} {
+		if err := os.Mkdir(filepath.Join(dir, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out strings.Builder
+	if err := shareCheckIn(&out, dir, true); err != nil {
+		t.Fatal(err)
+	}
+	chk := parseShareCheck(out.String())
+	if chk.entries != 2 || chk.writable == nil || !*chk.writable {
+		t.Fatalf("writable dir: %+v (%q)", chk, out.String())
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 2 {
+		t.Fatalf("test file left behind: %v", ents)
+	}
+
+	if os.Geteuid() != 0 { // root writes anywhere
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(dir, 0o755)
+		out.Reset()
+		if err := shareCheckIn(&out, dir, true); err != nil {
+			t.Fatal(err)
+		}
+		chk = parseShareCheck(out.String())
+		if chk.entries != 2 || chk.writable == nil || *chk.writable || !strings.Contains(chk.writeErr, "permission denied") {
+			t.Fatalf("read-only dir: %+v (%q)", chk, out.String())
+		}
+	}
+
+	if chk := parseShareCheck("a\nb\n"); chk.entries != 2 || chk.writable != nil {
+		t.Fatalf("no write check: %+v", chk)
+	}
+	if chk := parseShareCheck("a\nTH-WRITABLE=no read-only file system\n"); chk.writeErr != "read-only file system" {
+		t.Fatalf("%+v", chk)
+	}
+	for s, want := range map[*wire.ShareVolume]bool{
+		{Type: wire.ShareCIFS}:                 true,
+		{Type: wire.ShareCIFS, ReadOnly: true}: false,
+		{Type: wire.ShareNFS}:                  false,
+	} {
+		if checksWrite(s) != want {
+			t.Errorf("checksWrite(%+v) = %v", s, !want)
 		}
 	}
 }

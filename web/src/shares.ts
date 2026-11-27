@@ -5,7 +5,7 @@
 export type ShareType = 'cifs' | 'nfs'
 
 /** What the volume list says about a share volume (never its options). */
-export type ShareInfo = { type: ShareType; server: string; path: string }
+export type ShareInfo = { type: ShareType; server: string; path: string; readOnly?: boolean }
 
 /** The form, as sent to POST /api/hosts/{id}/volumes/share. */
 export type ShareForm = {

@@ -50,6 +50,8 @@ type ShareInfo struct {
 	Type   string `json:"type"`   // "cifs" or "nfs"
 	Server string `json:"server"` // as written in the volume's options
 	Path   string `json:"path"`   // share name (CIFS) or export path (NFS)
+	// ReadOnly: mounted with the ro option, so no container can write to it.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // ShareTools is OpHostInstallShareTools' result.
@@ -64,6 +66,10 @@ type ShareTools struct {
 type ShareCreated struct {
 	Name    string `json:"name"`
 	Entries int    `json:"entries"` // files and folders at the top of the share
+	// Writable says whether a test file could be written as the share's
+	// UID (CIFS shares not marked read-only; nil when not checked).
+	Writable   *bool  `json:"writable,omitempty"`
+	WriteError string `json:"writeError,omitempty"` // why not, e.g. "permission denied"
 }
 
 var (
@@ -266,12 +272,17 @@ func ShareDriverOpts(s *ShareVolume) map[string]string {
 	return nil
 }
 
-// ShareLabel is "SMB //server/share" or "NFS server:/export".
+// ShareLabel is "SMB //server/share" or "NFS server:/export", with
+// ", read-only" when mounted read-only.
 func ShareLabel(s *ShareInfo) string {
+	l := "SMB //" + s.Server + "/" + s.Path
 	if s.Type == ShareNFS {
-		return "NFS " + s.Server + ":" + s.Path
+		l = "NFS " + s.Server + ":" + s.Path
 	}
-	return "SMB //" + s.Server + "/" + s.Path
+	if s.ReadOnly {
+		l += ", read-only"
+	}
+	return l
 }
 
 func hostForDevice(server string) string {
@@ -289,10 +300,12 @@ func ShareFromOptions(driver string, opts map[string]string) *ShareInfo {
 	}
 	t := strings.ToLower(opts["type"])
 	dev := opts["device"]
-	addr := ""
+	addr, ro := "", false
 	for _, kv := range strings.Split(opts["o"], ",") {
 		if k, v, ok := strings.Cut(kv, "="); ok && k == "addr" {
 			addr = v
+		} else if kv == "ro" {
+			ro = true
 		}
 	}
 	switch t {
@@ -305,7 +318,7 @@ func ShareFromOptions(driver string, opts map[string]string) *ShareInfo {
 		if addr != "" && server == "" {
 			server = addr
 		}
-		return &ShareInfo{Type: ShareCIFS, Server: server, Path: path}
+		return &ShareInfo{Type: ShareCIFS, Server: server, Path: path, ReadOnly: ro}
 	case "nfs", "nfs4":
 		server, path, ok := strings.Cut(dev, ":")
 		if !ok {
@@ -314,7 +327,7 @@ func ShareFromOptions(driver string, opts map[string]string) *ShareInfo {
 		if server == "" {
 			server = addr
 		}
-		return &ShareInfo{Type: ShareNFS, Server: server, Path: path}
+		return &ShareInfo{Type: ShareNFS, Server: server, Path: path, ReadOnly: ro}
 	}
 	return nil
 }

@@ -13,6 +13,11 @@ export function ShareBadge({ share }: { share: ShareInfo }) {
       <span className="truncate" title={shareText(share)}>
         {shareText(share)}
       </span>
+      {share.readOnly && (
+        <span className="shrink-0 rounded-[2px] bg-amber-400/15 px-1 text-amber-200" title="Mounted read-only: containers can read it but not save to it">
+          read-only
+        </span>
+      )}
     </Badge>
   )
 }
@@ -54,18 +59,25 @@ export function NewShareModal({ open, onClose, hosts, defaultHost }: { open: boo
     else set(field === 'server' ? { server: v.trim() } : { path: v })
   }
   const problem = shareProblem(f)
+  // A share created but not writable as its UID: the dialog stays open to say so.
+  const [unwritable, setUnwritable] = useState<{ name: string; why: string } | null>(null)
   const close = () => {
     setF(blankShare())
     setError(null)
     setTried(false)
+    setUnwritable(null)
     onClose()
   }
 
   const create = useMutation({
-    mutationFn: () => api<{ name: string; entries: number }>(`/api/hosts/${target}/volumes/share`, { method: 'POST', body: shareBody(f) }),
+    mutationFn: () => api<{ name: string; entries: number; writable?: boolean; writeError?: string }>(`/api/hosts/${target}/volumes/share`, { method: 'POST', body: shareBody(f) }),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['res', 'volumes', target] })
-      toast('good', `${host?.name}: volume ${r.name} mounts ${shareText({ type: f.type, server: f.server.trim(), path: f.path.trim() })} (${r.entries} ${r.entries === 1 ? 'item' : 'items'} at the top)`)
+      if (r.writable === false) {
+        setUnwritable({ name: r.name, why: r.writeError || 'refused' })
+        return
+      }
+      toast('good', `${host?.name}: volume ${r.name} mounts ${shareText({ type: f.type, server: f.server.trim(), path: f.path.trim() })} (${r.entries} ${r.entries === 1 ? 'item' : 'items'} at the top${r.writable ? ', writable' : ''})`)
       close()
     },
     onError: (e) => setError(errorText(e)),
@@ -196,9 +208,29 @@ export function NewShareModal({ open, onClose, hosts, defaultHost }: { open: boo
         <label className="flex items-center gap-2 text-sm text-ink-100/80">
           <input type="checkbox" checked={f.readOnly} onChange={(e) => set({ readOnly: e.target.checked })} className="accent-lime-400" /> Read-only
         </label>
+        {f.readOnly && (
+          <p className="-mt-2 text-xs text-amber-200/90">
+            Containers can only read it. Apps that download, import or rename files (qBittorrent, Sonarr, Radarr) need it writable. Read-only can't be changed later without deleting and recreating the volume.
+          </p>
+        )}
         <Input label="Volume name" placeholder="media" value={f.name} onChange={(e) => set({ name: e.target.value.trim() })} className="mono" hint={`What containers and compose files call it: volumes: - ${f.name || 'media'}:/data`} />
 
         {tried && problem && <ErrorNote error={problem} />}
+        {unwritable && (
+          <div className="rounded-[3px] bg-amber-500/10 p-3 text-sm leading-relaxed text-amber-100 ring-1 ring-inset ring-amber-500/25" role="alert">
+            <p className="font-medium">
+              Volume <span className="mono">{unwritable.name}</span> was created and mounts, but files can't be saved to it as UID {f.uid || '0'} ({unwritable.why}).
+            </p>
+            <p className="mt-1 text-amber-100/80">
+              Apps that download, import or rename files (qBittorrent, Sonarr, Radarr) will fail on it. Usually the NAS user has read-only access to this share: give it read/write in the NAS's shared folder permissions. No change is needed here afterwards. If the UID is wrong instead, delete the volume and create it again.
+            </p>
+            <div className="mt-2 flex justify-end">
+              <Button type="button" onClick={close}>
+                Close
+              </Button>
+            </div>
+          </div>
+        )}
         <ErrorNote error={error} />
         {blamedTools && (
           <Button type="button" icon={Download} loading={install.isPending} onClick={() => install.mutate()}>
@@ -219,14 +251,16 @@ export function NewShareModal({ open, onClose, hosts, defaultHost }: { open: boo
           )}
           . Docker keeps the volume's options, including the password, in plain text on the host: anyone who can run <span className="mono">docker volume inspect</span> there can read them.
         </p>
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="ghost" onClick={close}>
-            Cancel
-          </Button>
-          <Button variant="primary" icon={PlugZap} loading={create.isPending}>
-            {create.isPending ? 'Mounting to check…' : 'Test and create'}
-          </Button>
-        </div>
+        {!unwritable && (
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={close}>
+              Cancel
+            </Button>
+            <Button variant="primary" icon={PlugZap} loading={create.isPending}>
+              {create.isPending ? 'Mounting to check…' : 'Test and create'}
+            </Button>
+          </div>
+        )}
       </form>
     </Modal>
   )

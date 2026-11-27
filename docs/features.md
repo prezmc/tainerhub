@@ -421,6 +421,8 @@ TainerHub won't let a stack take the name of the compose project it runs in itse
 
 ### Routing containers through a VPN
 
+For the whole setup with a NAS (shares, VPN key, gluetun and the *arr apps, in order, plus fixes for what usually goes wrong), follow the [download stack guide](media-stack.md).
+
 To send some containers' internet traffic through a VPN provider (NordVPN here), deploy them as **one stack** with a VPN gateway container, [gluetun](https://github.com/qdm12/gluetun), and run the apps in the gateway's network with `network_mode: "service:gluetun"`:
 
 - **Internet traffic** from the apps leaves only through the VPN tunnel. gluetun's firewall is a kill switch: if the tunnel drops, they have no internet, rather than going out unprotected.
@@ -470,6 +472,7 @@ Preflight warns while a value still looks like a placeholder.
 - **Credentials.** The NordLynx private key comes from your NordVPN account (gluetun's [NordVPN page](https://github.com/qdm12/gluetun-wiki/blob/main/setup/providers/nordvpn.md) shows how). For OpenVPN instead, set `VPN_TYPE: openvpn` with `OPENVPN_USER` and `OPENVPN_PASSWORD` set to your NordVPN *service credentials* (from the NordVPN dashboard, not your account login). Either way they live in the stack's `.env`, which only admins can read and which is stored in plain text in the hub's database (see [Security](security.md)).
 - **Ports.** Publish every app's ports on `gluetun`. An app with its own `ports:` doesn't start (Docker refuses), and preflight blocks it. On the Containers page, the apps show **via gluetun** in the Ports column; their ports appear on the gluetun row, in its details panel, and under **Ports on &lt;host&gt;** on the host card.
 - **Other subnets.** A device on another subnet, VLAN or VPN that opens the apps' web UIs needs its range in `LAN_SUBNETS` too. Otherwise gluetun sends the replies into the tunnel and the page times out.
+- **Server list.** gluetun's built-in list of VPN servers dates from when its image was built, and providers retire servers often. If gluetun connects to server after server and every health check times out (`lookup cloudflare.com: i/o timeout`), fetch a fresh list into the stack's folder and mount it: see [step 3 of the download stack guide](media-stack.md#step-3-give-gluetun-a-fresh-server-list).
 - **LAN names.** gluetun answers DNS itself (over the VPN), so it doesn't know names like `nas.lan`. Use LAN IP addresses in the apps' settings.
 - **Other containers** reach the apps through the gateway: at the host's address and the published port, or as `gluetun:<port>` from a container on the same Docker network as gluetun (add a shared network to the gluetun service for a reverse proxy, say).
 - **Your NAS.** To give the apps the same folder on your NAS (downloads that the other apps pick up, say), create a [network share volume](#network-shares-smb-and-nfs) on the host first (Resources → Volumes → **New network share**, named `media` for example), then mount it in each app and declare it external:
@@ -515,10 +518,12 @@ Images, volumes and networks across all hosts, in three tabs. Pick a host or sho
 
 - **Images**: size, created date, and **Used by** (which containers use it). The summary shows the total on disk and how much is unused. Images kept so a stack can [roll back](#rolling-back-a-stack) to them show **kept for rollback of &lt;stack&gt;**.
   - Operators can **Pull image** (for example `nginx:1.27` or `ghcr.io/org/app:tag`) onto a host, pull a tag again to update it, and remove images. An image in use can't be removed; remove its containers first. An image kept for a rollback can only be removed by an admin, after a warning (the stack can't roll back to it afterwards).
-- **Volumes**: the stack and driver of each one, and which containers use it. Unused volumes are marked **unused**. Volumes that mount a network share show where from, like **SMB //192.168.1.10/media** or **NFS nas:/volume1/media** (whoever made them: TainerHub or a compose file). Only admins can delete volumes. Deleting a volume deletes its data permanently; deleting a network share volume only forgets the share: the files stay on the NAS.
+- **Volumes**: the stack and driver of each one, and which containers use it. Unused volumes are marked **unused**. Volumes that mount a network share show where from, like **SMB //192.168.1.10/media** or **NFS nas:/volume1/media** (whoever made them: TainerHub or a compose file), and **read-only** when no container can write to them. Only admins can delete volumes. Deleting a volume deletes its data permanently; deleting a network share volume only forgets the share: the files stay on the NAS.
 - **Networks**: driver, scope, and which containers use each one. Docker's built-in networks can't be removed.
 
 ### Network shares (SMB and NFS)
+
+For a complete example (a download stack using a NAS share), see the [download stack guide](media-stack.md).
 
 Admins can mount a share from a NAS as a Docker volume, so containers read and write the NAS's files directly. Several containers can use the same volume (a download client and the apps that sort its downloads, say), and each sees the same files at the path you mount it on.
 
@@ -530,7 +535,7 @@ On the **Volumes** tab, click **New network share**:
 4. For SMB: the NAS user's **Username** and **Password** (leave both empty to connect as guest), and **Files owned by UID / GID**. The share's files appear to belong to that user inside containers, so set them to the PUID and PGID your containers run as (`1000` for most linuxserver.io images); otherwise the apps can read but not write. **File mode** and **Folder mode** are optional (`0664`, `0775`). The **SMB version** defaults to 3.0.
 5. Name the **volume** (say `media`) and click **Test and create**.
 
-TainerHub first checks the server answers on the SMB (445) or NFS (2049) port, then creates the volume with Docker's `local` driver and mounts it once in a short-lived container with no network, which lists the share. If anything fails, the volume is removed again and you see why in plain words with Docker's own message (without the password): a wrong username or password, a share name the NAS doesn't have, an SMB version the NAS doesn't speak, a server this host can't reach, or a host that can't mount shares at all.
+TainerHub first checks the server answers on the SMB (445) or NFS (2049) port, then creates the volume with Docker's `local` driver and mounts it once in a short-lived container with no network, which lists the share. For an SMB share that isn't read-only, that container also writes and removes a test file as the UID you chose, like the apps will. If that fails, the volume is kept (it mounts) but the form says files can't be saved, which usually means the NAS user only has read access to the share. If anything else fails, the volume is removed again and you see why in plain words with Docker's own message (without the password): a wrong username or password, a share name the NAS doesn't have, an SMB version the NAS doesn't speak, a server this host can't reach, or a host that can't mount shares at all.
 
 **The host needs the mount tools:** `cifs-utils` for SMB, or `nfs-common` (`nfs-utils` on Fedora and RHEL) for NFS, on the host itself, not in a container. The form can install them: click **install it on &lt;host&gt;** under the form, or, after a mount that failed because they're missing, **Install cifs-utils on &lt;host&gt; and try again**. TainerHub installs the package with the host's package manager (apt, dnf, yum or apk) through the same privileged helper as OS updates, and records it in the audit log. Or install it yourself: `sudo apt install cifs-utils`.
 

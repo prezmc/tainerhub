@@ -30,7 +30,7 @@ func main() {
 		os.Exit(0)
 	}
 	if len(os.Args) > 1 && os.Args[1] == "share-check" { // see agent.ShareCheck
-		if err := agent.ShareCheck(); err != nil {
+		if err := agent.ShareCheck(len(os.Args) > 2 && os.Args[2] == "write"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

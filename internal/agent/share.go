@@ -32,21 +32,55 @@ const shareLabel = "tainerhub.share"
 // a CIFS mount waiting for a long time.
 const shareCheckTimeout = 90 * time.Second
 
-// ShareCheck is `tainerhub-agent share-check`, run in the helper container:
-// it prints the names at the top of /th-data, one per line.
-func ShareCheck() error {
-	ents, err := os.ReadDir("/" + wire.TransferRoot)
+// writableMark starts the line ShareCheck prints about writing.
+const writableMark = "TH-WRITABLE="
+
+// ShareCheck is `tainerhub-agent share-check [write]`, run in the helper
+// container: it prints the names at the top of /th-data, one per line.
+// With write it then creates and removes a test file and prints
+// TH-WRITABLE=yes, or TH-WRITABLE=no and the reason.
+func ShareCheck(write bool) error {
+	return shareCheckIn(os.Stdout, "/"+wire.TransferRoot, write)
+}
+
+func shareCheckIn(w io.Writer, root string, write bool) error {
+	ents, err := os.ReadDir(root)
 	if err != nil {
 		return err
 	}
 	for _, e := range ents {
-		fmt.Println(e.Name())
+		fmt.Fprintln(w, e.Name())
+	}
+	if write {
+		f := fmt.Sprintf("%s/.tainerhub-write-test-%d", root, os.Getpid())
+		if err := os.WriteFile(f, []byte("ok\n"), 0o644); err != nil {
+			var pe *os.PathError
+			if errors.As(err, &pe) {
+				err = pe.Err
+			}
+			fmt.Fprintln(w, writableMark+"no "+err.Error())
+		} else {
+			_ = os.Remove(f)
+			fmt.Fprintln(w, writableMark+"yes")
+		}
 	}
 	return nil
 }
 
+// checksWrite: whether the check also writes. Only for a CIFS share meant
+// for writing: the check then runs as the UID the files belong to, as the
+// apps do. NFS permissions depend on who the app runs as on the server,
+// which TainerHub can't know.
+func checksWrite(s *wire.ShareVolume) bool {
+	return s.Type == wire.ShareCIFS && !s.ReadOnly
+}
+
 func (d *SocketDocker) createShare(ctx context.Context, s *wire.ShareVolume) (wire.ShareCreated, error) {
-	return d.createShareWith(ctx, s, d.HelperImage, []string{"/tainerhub-agent", "share-check"})
+	cmd := []string{"/tainerhub-agent", "share-check"}
+	if checksWrite(s) {
+		cmd = append(cmd, "write")
+	}
+	return d.createShareWith(ctx, s, d.HelperImage, cmd)
 }
 
 // createShareWith creates the volume and checks it with a helper made
@@ -80,14 +114,14 @@ func (d *SocketDocker) createShareWith(ctx context.Context, s *wire.ShareVolume,
 	}
 	resp.Body.Close()
 
-	n, helper, err := d.checkShare(ctx, s, image, cmd)
+	chk, helper, err := d.checkShare(ctx, s, image, cmd)
 	if cerr := d.cleanupShare(helper, s.Name, err != nil); cerr != nil && err != nil {
 		err = fmt.Errorf("%w. Docker is still busy with the mount; TainerHub removes the volume once it gives up (or remove %s under Resources → Volumes later)", err, s.Name)
 	}
 	if err != nil {
 		return res, err
 	}
-	res.Entries = n
+	res.Entries, res.Writable, res.WriteError = chk.entries, chk.writable, chk.writeErr
 	return res, nil
 }
 
@@ -174,9 +208,17 @@ func isNoSuch(err error) bool {
 
 // checkShare mounts the volume in a helper container and counts what it
 // lists. The error explains a failed mount in plain words.
-func (d *SocketDocker) checkShare(ctx context.Context, s *wire.ShareVolume, image string, cmd []string) (n int, helper string, err error) {
+// shareCheck is what the helper found.
+type shareCheck struct {
+	entries  int
+	writable *bool // nil when not checked
+	writeErr string
+}
+
+func (d *SocketDocker) checkShare(ctx context.Context, s *wire.ShareVolume, image string, cmd []string) (chk shareCheck, helper string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, shareCheckTimeout)
 	defer cancel()
+	write := checksWrite(s)
 	body := map[string]any{
 		"Image":           image,
 		"Entrypoint":      cmd,
@@ -184,20 +226,28 @@ func (d *SocketDocker) checkShare(ctx context.Context, s *wire.ShareVolume, imag
 		"NetworkDisabled": true,
 		"HostConfig": map[string]any{
 			"Mounts": []map[string]any{{
-				"Type": "volume", "Source": s.Name, "Target": "/" + wire.TransferRoot, "ReadOnly": true,
+				"Type": "volume", "Source": s.Name, "Target": "/" + wire.TransferRoot, "ReadOnly": !write,
 				"VolumeOptions": map[string]any{"NoCopy": true},
 			}},
 			"NetworkMode": "none",
 			"SecurityOpt": []string{"no-new-privileges:true"},
 		},
 	}
+	if write && s.UID != "" {
+		// Write as the owner the files appear to have, like the apps do.
+		gid := s.GID
+		if gid == "" {
+			gid = s.UID
+		}
+		body["User"] = s.UID + ":" + gid
+	}
 	resp, err := d.doBody(ctx, http.MethodPost, "/containers/create", nil, body)
 	if err != nil {
-		return 0, "", fmt.Errorf("create the check container: %s", scrubShareError(err.Error(), s))
+		return chk, "", fmt.Errorf("create the check container: %s", scrubShareError(err.Error(), s))
 	}
 	var created struct{ Id string }
 	if err := jsonDecode(resp, &created); err != nil || created.Id == "" {
-		return 0, "", fmt.Errorf("create the check container: %v", err)
+		return chk, "", fmt.Errorf("create the check container: %v", err)
 	}
 	id := created.Id
 	// Starting the container is when Docker mounts the share.
@@ -205,29 +255,29 @@ func (d *SocketDocker) checkShare(ctx context.Context, s *wire.ShareVolume, imag
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		return 0, id, explainShareError(err, s)
+		return chk, id, explainShareError(err, s)
 	} else {
 		resp.Body.Close()
 	}
 	resp, err = d.do(ctx, http.MethodPost, "/containers/"+id+"/wait", nil)
 	if err != nil {
-		return 0, id, explainShareError(err, s)
+		return chk, id, explainShareError(err, s)
 	}
 	var waited struct{ StatusCode int }
 	if err := jsonDecode(resp, &waited); err != nil {
-		return 0, id, err
+		return chk, id, err
 	}
 	out := map[string]string{}
 	for _, stream := range []string{"stdout", "stderr"} {
 		resp, err := d.do(ctx, http.MethodGet, "/containers/"+id+"/logs", url.Values{stream: {"1"}})
 		if err != nil {
-			return 0, id, err
+			return chk, id, err
 		}
 		var buf bytes.Buffer
 		err = demux(io.LimitReader(resp.Body, 1<<20), &buf)
 		resp.Body.Close()
 		if err != nil && !errors.Is(err, io.EOF) {
-			return 0, id, err
+			return chk, id, err
 		}
 		out[stream] = buf.String()
 	}
@@ -236,14 +286,32 @@ func (d *SocketDocker) checkShare(ctx context.Context, s *wire.ShareVolume, imag
 		if msg == "" {
 			msg = fmt.Sprintf("exit code %d", waited.StatusCode)
 		}
-		return 0, id, fmt.Errorf("the share mounted, but its files can't be listed: %s", scrubShareError(msg, s))
+		return chk, id, fmt.Errorf("the share mounted, but its files can't be listed: %s", scrubShareError(msg, s))
 	}
-	for _, l := range strings.Split(out["stdout"], "\n") {
-		if strings.TrimSpace(l) != "" {
-			n++
+	chk = parseShareCheck(out["stdout"])
+	return chk, id, nil
+}
+
+// parseShareCheck reads the helper's output: one name per line, and the
+// writable line when it checked writing.
+func parseShareCheck(out string) shareCheck {
+	var chk shareCheck
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		switch {
+		case l == "":
+		case strings.HasPrefix(l, writableMark):
+			v := strings.TrimPrefix(l, writableMark)
+			ok := v == "yes"
+			chk.writable = &ok
+			if !ok {
+				chk.writeErr = strings.TrimSpace(strings.TrimPrefix(v, "no"))
+			}
+		default:
+			chk.entries++
 		}
 	}
-	return n, id, nil
+	return chk
 }
 
 // scrubShareError removes the share's password and the mount options from
