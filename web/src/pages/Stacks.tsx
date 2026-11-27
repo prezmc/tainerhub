@@ -102,8 +102,9 @@ function managedActions(s: StackSummary, run: (s: StackSummary, a: StackAction) 
     deploy: true,
     pull: true,
     start: has && s.running < s.containers,
-    stop: s.running > 0,
-    restart: s.running > 0,
+    // unhealthy counts containers in a restart loop: Stop is how to end it
+    stop: s.running > 0 || s.unhealthy > 0,
+    restart: s.running > 0 || s.unhealthy > 0,
     down: has,
   }
   return (Object.keys(ACTION_LABELS) as StackAction[])

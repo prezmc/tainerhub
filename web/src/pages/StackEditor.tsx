@@ -337,8 +337,9 @@ function LifecycleButtons({ d, s, takeover }: { d: StackDetail; s: StackSummary;
   const has = s.containers > 0
   return (
     <div className="flex flex-wrap gap-2">
-      {s.running > 0 && btn('restart', 'Restart', RotateCw, 'ghost')}
-      {s.running > 0 && btn('stop', 'Stop', Square, 'ghost')}
+      {/* unhealthy counts containers in a restart loop: Stop is how to end it */}
+      {(s.running > 0 || s.unhealthy > 0) && btn('restart', 'Restart', RotateCw, 'ghost')}
+      {(s.running > 0 || s.unhealthy > 0) && btn('stop', 'Stop', Square, 'ghost')}
       {has && s.running < s.containers && btn('start', 'Start', Play, 'ghost')}
       {has && btn('down', 'Down', ArrowDownToLine, 'ghost')}
       {!takeover && <RollbackButton d={d} s={s} disabled={!!pending} />}

@@ -3,7 +3,7 @@ import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowRightLeft, Boxes, X, ChevronDown, Download, RefreshCw, SquareTerminal, ChevronsDownUp, ChevronsUpDown, Ellipsis, Info, Pause, Play, Plus, RotateCw, ScrollText, Search, Square, Trash2, WifiOff, Zap } from 'lucide-react'
 import { HostPortsButton } from './HostPorts'
-import { api, can, hostAddress, isUnhealthy, mem, publishedPort, timeAgo, type Container, type Host } from '../api'
+import { api, can, hostAddress, isStoppable, isUnhealthy, mem, publishedPort, timeAgo, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, useOpenTerminal, type Action, type SortKey } from '../fleet'
 import { Button, ErrorNote, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
 import { useMe } from './AppLayout'
@@ -326,6 +326,7 @@ const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run, v
   const bad = isUnhealthy(c)
   const running = c.state === 'running'
   const paused = c.state === 'paused'
+  const stoppable = isStoppable(c)
   const act = (a: Action) => run(c, a)
   const ports = (c.ports ?? []).filter((p) => p.includes('->'))
   const uptime = c.status.replace(/\s*\((un)?healthy\)/, '')
@@ -388,7 +389,7 @@ const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run, v
         <IconButton icon={ScrollText} label="Logs" onClick={() => openLogs(c)} />
         {operator && (
           <>
-            {running ? (
+            {stoppable ? (
               <IconButton icon={Square} label="Stop" tone="warn" loading={busy} onClick={() => act('stop')} />
             ) : (
               <IconButton icon={Play} label={paused ? 'Resume' : 'Start'} tone="good" loading={busy} onClick={() => act(paused ? 'unpause' : 'start')} />
@@ -402,7 +403,7 @@ const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run, v
                 { label: 'Terminal', icon: SquareTerminal, onClick: () => openTerminal(c), hidden: !admin || !running },
                 { label: 'Pause', icon: Pause, onClick: () => act('pause'), hidden: !running },
                 { label: 'Resume', icon: Play, onClick: () => act('unpause'), hidden: !paused },
-                { label: 'Kill', icon: Zap, onClick: () => act('kill'), danger: true, hidden: !running },
+                { label: 'Kill', icon: Zap, onClick: () => act('kill'), danger: true, hidden: !stoppable },
                 { label: 'Pull & recreate', icon: Download, onClick: () => act('recreate'), hidden: !!c.project || c.name.startsWith('tainerhub') },
                 {
                   label: 'Update via its stack',

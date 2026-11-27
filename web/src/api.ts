@@ -277,6 +277,12 @@ export function mem(n?: number): string {
   return `${Math.round(n / 1024 ** 2)} MB`
 }
 
+/**
+ * Running, or in a restart loop (Docker's "restarting" state between
+ * attempts): either way Stop is what stops it, and Start does nothing.
+ */
+export const isStoppable = (c: Pick<Container, 'state'>) => c.state === 'running' || c.state === 'restarting'
+
 export const isUnhealthy = (c: Container) =>
   c.status.includes('(unhealthy)') || c.state === 'restarting' || c.state === 'dead' || (c.state === 'exited' && /Exited \((?!0\))\d+\)/.test(c.status))
 

@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowRightLeft, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, Plug, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
-import { can, errorText, mem, timeAgo, type Container, type ContainerDetail, type Host } from '../api'
+import { can, errorText, isStoppable, mem, timeAgo, type Container, type ContainerDetail, type Host } from '../api'
 import { addressText, loopback, portMappings } from '../ports'
 import { PublishedLink } from './HostPorts'
 import { useContainerAction, useContainerDetail, useOpenLogs, useOpenTerminal } from '../fleet'
@@ -71,7 +71,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
               </Button>
             )}
             {operator &&
-              (running ? (
+              (isStoppable(container) ? (
                 <Button icon={Square} loading={pendingId === container.id} onClick={() => run(container, 'stop')}>
                   Stop
                 </Button>
