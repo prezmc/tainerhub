@@ -48,11 +48,11 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 	case wire.OpHostInstallShareTools:
 		return d.installShareTools(ctx, op.Arg)
 	case wire.OpVolumesPrune:
-		var f map[string][]string
 		if op.Arg == "all" {
-			f = map[string][]string{"all": {"true"}} // named volumes too, not just anonymous ones
+			return d.pruneAllVolumes(ctx)
 		}
-		return d.prune(ctx, "/volumes/prune", f, "VolumesDeleted")
+		// Anonymous volumes only: a network share volume always has a name.
+		return d.prune(ctx, "/volumes/prune", nil, "VolumesDeleted")
 	case wire.OpNetworksList:
 		return d.networks(ctx)
 	case wire.OpBindsList:
@@ -717,4 +717,68 @@ func shortImageID(id string) string {
 		id = id[:12]
 	}
 	return id
+}
+
+// pruneAllVolumes removes every volume no container uses, except those that
+// mount a network share: they hold only the share's address and login, so
+// pruning them saves no space and means typing the password again. Docker's
+// prune can only skip volumes by label, and shares made by compose files
+// carry none of TainerHub's, so with any unused share around the others are
+// removed one by one. Docker refuses any that came into use meanwhile.
+func (d *SocketDocker) pruneAllVolumes(ctx context.Context) (wire.PruneResult, error) {
+	vols, err := d.volumes(ctx)
+	if err != nil {
+		return wire.PruneResult{}, err
+	}
+	var res wire.PruneResult
+	var remove []string
+	for _, v := range vols {
+		if len(v.UsedBy) > 0 {
+			continue
+		}
+		if v.Share != nil {
+			res.Kept = append(res.Kept, wire.KeptItem{Name: v.Name, Reason: "network share (" + wire.ShareLabel(v.Share) + "): delete it on its own if you no longer need it"})
+			continue
+		}
+		remove = append(remove, v.Name)
+	}
+	if len(res.Kept) == 0 {
+		return d.prune(ctx, "/volumes/prune", map[string][]string{"all": {"true"}}, "VolumesDeleted")
+	}
+	sizes := d.volumeSizes(ctx)
+	for _, n := range remove {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := d.remove(ctx, "/volumes/"+url.PathEscape(n)); err != nil {
+			res.Kept = append(res.Kept, wire.KeptItem{Name: n, Reason: strings.TrimPrefix(err.Error(), "docker: ")})
+			continue
+		}
+		res.Deleted++
+		if s := sizes[n]; s > 0 {
+			res.Reclaimed += s
+		}
+	}
+	return res, nil
+}
+
+// volumeSizes maps volume names to their size on disk, where Docker knows
+// it (best effort: an empty map otherwise).
+func (d *SocketDocker) volumeSizes(ctx context.Context) map[string]int64 {
+	var df struct {
+		Volumes []struct {
+			Name      string
+			UsageData *struct{ Size int64 }
+		}
+	}
+	out := map[string]int64{}
+	if err := d.getJSON(ctx, "/system/df", url.Values{"type": {"volume"}}, &df); err != nil {
+		return out
+	}
+	for _, v := range df.Volumes {
+		if v.UsageData != nil {
+			out[v.Name] = v.UsageData.Size
+		}
+	}
+	return out
 }

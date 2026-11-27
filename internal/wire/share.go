@@ -266,6 +266,14 @@ func ShareDriverOpts(s *ShareVolume) map[string]string {
 	return nil
 }
 
+// ShareLabel is "SMB //server/share" or "NFS server:/export".
+func ShareLabel(s *ShareInfo) string {
+	if s.Type == ShareNFS {
+		return "NFS " + s.Server + ":" + s.Path
+	}
+	return "SMB //" + s.Server + "/" + s.Path
+}
+
 func hostForDevice(server string) string {
 	if ip := net.ParseIP(server); ip != nil && ip.To4() == nil {
 		return "[" + server + "]"

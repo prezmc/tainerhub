@@ -295,7 +295,7 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 | POST | `/api/hosts/{id}/images/prune` | operator | yes | Dangling images; `?all=1` for every unused image. |
 | POST | `/api/hosts/{id}/networks/prune` | operator | yes | Unused networks. |
 | DELETE | `/api/hosts/{id}/volumes/{rid}` | admin | yes | Remove a volume (its data is gone). |
-| POST | `/api/hosts/{id}/volumes/prune` | admin | yes | Unused anonymous volumes; `?all=1` for named ones too. |
+| POST | `/api/hosts/{id}/volumes/prune` | admin | yes | Unused anonymous volumes; `?all=1` for named ones too, except network share volumes (listed under `kept`). |
 | POST | `/api/hosts/{id}/volumes/share` | admin | yes | Create a [network share volume](features.md#network-shares-smb-and-nfs), checked by mounting it once (below). |
 | POST | `/api/hosts/{id}/share-tools` | admin | yes | Install the host's package for mounting shares. Body: `{"type": "cifs"\|"nfs"}` (`cifs-utils`, or `nfs-common` / `nfs-utils`). Returns `{"manager", "package", "already"?}`. |
 

@@ -555,10 +555,12 @@ The **Prune** menu cleans up one host at a time. You confirm each prune first.
 | Tab | Light option | Full option | Who |
 | --- | --- | --- | --- |
 | Images | **dangling**: untagged layers | **all unused**: every image not used by a container | operators and admins |
-| Volumes | **anonymous**: unused anonymous volumes | **all unused**: every unused volume, including named ones | admins only |
+| Volumes | **anonymous**: unused anonymous volumes | **all unused**: every unused volume, including named ones, except [network shares](#network-shares-smb-and-nfs) | admins only |
 | Networks | **unused**: unused networks | — | operators and admins |
 
 The result tells you how many items were removed and how much space was freed.
+
+Volumes that mount a network share are never pruned, even when no container uses them: they take no space on the host, and pruning one would only mean entering its address and password again. Delete one from its row when you no longer need it (the files on the NAS stay either way).
 
 **All unused** images means the images marked **unused** in the list, except those kept for a stack's rollback (the result lists them as kept). Docker's own prune runs first, unless there are images kept for a rollback: it can't be told to spare them, so then only the one-by-one pass below runs. Some Docker setups prune nothing without saying why, so TainerHub then removes each unused image that's still there one by one, never forcing. If Docker refuses one, the result names it and gives Docker's reason.
 

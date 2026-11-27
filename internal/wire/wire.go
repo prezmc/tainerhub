@@ -1482,7 +1482,8 @@ type PruneResult struct {
 	Deleted   int   `json:"deleted"`
 	Reclaimed int64 `json:"reclaimed"`
 	// Kept lists unused items Docker refused to remove, with its reason
-	// (pruning every unused image only).
+	// (pruning every unused image, and network share volumes a full volume
+	// prune leaves alone).
 	Kept []KeptItem `json:"kept,omitempty"`
 }
 

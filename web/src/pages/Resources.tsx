@@ -464,19 +464,27 @@ function PruneMenu({ tab, hosts }: { tab: Tab; hosts: Host[] }) {
   if (!allowed || hosts.length === 0) return null
   const copy = {
     images: { light: 'dangling images (untagged layers)', all: 'every image not used by a container' },
-    volumes: { light: 'unused anonymous volumes', all: 'every unused volume, including named ones' },
+    volumes: { light: 'unused anonymous volumes', all: 'every unused volume, including named ones, but not network shares' },
     networks: { light: 'unused networks', all: 'unused networks' },
   }[tab]
   const go = async (h: Host, all: boolean) => {
     // Named volumes TainerHub itself uses that nothing runs with right now
     // (say, while the hub is being recreated): a full prune would delete them.
-    const ownUnused =
-      tab === 'volumes' && all ? (qc.getQueryData<VolumeRes[]>(['res', 'volumes', h.id]) ?? []).filter((v) => v.usedBy.length === 0 && ownResource(v, h.hello?.own_project)).map((v) => v.name) : []
+    const unusedVols = tab === 'volumes' && all ? (qc.getQueryData<VolumeRes[]>(['res', 'volumes', h.id]) ?? []).filter((v) => v.usedBy.length === 0) : []
+    const ownUnused = unusedVols.filter((v) => !v.share && ownResource(v, h.hello?.own_project)).map((v) => v.name)
+    // Network share volumes are never pruned (the agent skips them): they
+    // only hold the share's address and login.
+    const sharesKept = unusedVols.filter((v) => v.share).map((v) => v.name)
     const ok = await confirm({
       title: `Prune ${tab} on ${h.name}?`,
       body: (
         <>
           Removes {all ? copy.all : copy.light}.{tab === 'volumes' && <b> Data in those volumes is deleted permanently.</b>}
+          {sharesKept.length > 0 && (
+            <span className="mt-2 block">
+              Unused network share {sharesKept.length === 1 ? 'volume' : 'volumes'} <span className="mono">{sharesKept.join(', ')}</span> {sharesKept.length === 1 ? 'stays' : 'stay'}: delete {sharesKept.length === 1 ? 'it' : 'them'} on {sharesKept.length === 1 ? 'its' : 'their'} own if you no longer need {sharesKept.length === 1 ? 'it' : 'them'}.
+            </span>
+          )}
           {ownUnused.length > 0 && (
             <OwnNote>
               That includes TainerHub's own {ownUnused.length === 1 ? 'volume' : 'volumes'} <span className="mono">{ownUnused.join(', ')}</span>, which no container uses right now. {OWN_VOLUME_TEXT}
@@ -494,8 +502,11 @@ function PruneMenu({ tab, hosts }: { tab: Tab; hosts: Host[] }) {
       method: 'POST',
       done: (r) => {
         const p = r as PruneResult
-        const kept = p.kept?.length ? `. Kept ${p.kept.length}: ${p.kept[0].name} (${p.kept[0].reason})${p.kept.length > 1 ? ` and ${p.kept.length - 1} more` : ''}` : ''
-        return `${h.name}: removed ${p.deleted} ${tab}${p.reclaimed ? `, freed ${size(p.reclaimed)}` : ''}${kept}`
+        const shares = (p.kept ?? []).filter((k) => k.reason.startsWith('network share'))
+        const other = (p.kept ?? []).filter((k) => !k.reason.startsWith('network share'))
+        const keptShares = shares.length ? `. Kept ${shares.length} network ${shares.length === 1 ? 'share' : 'shares'}` : ''
+        const kept = other.length ? `. Kept ${other.length}: ${other[0].name} (${other[0].reason})${other.length > 1 ? ` and ${other.length - 1} more` : ''}` : ''
+        return `${h.name}: removed ${p.deleted} ${tab}${p.reclaimed ? `, freed ${size(p.reclaimed)}` : ''}${keptShares}${kept}`
       },
     })
   }
