@@ -210,6 +210,12 @@ Back up the hub's `/data` volume. Losing it means re-enrolling every agent. Leak
 
 Protect database backups like the `/data` volume: they hold your stacks' `.env` files.
 
+### Network share passwords
+
+A [network share volume](features.md#network-shares-smb-and-nfs) needs the NAS user's password to mount. TainerHub passes it to the host's agent for the one command that creates the volume and stores it nowhere: not in the database, not in the audit log (which records the server, share and username, with the password shown as `•••`), and not in error messages. The volume list never shows a volume's options.
+
+Docker, though, keeps a volume's options on the host in **plain text**, password included, as it does for volumes you define in a compose file. Anyone who can use Docker on that host can read it with `docker volume inspect`, and root can read it from `/var/lib/docker/volumes/`. Since Docker access is root on the host anyway, the practical advice is: give the share its own NAS user, with access to just the shares the containers need, and not a password you use anywhere else.
+
 ### The database password
 
 - Postgres is on an internal Docker network (`internal: true`). Nothing outside the hub's compose project can reach it.

@@ -701,6 +701,8 @@ type Operation struct {
 	Arg    string `json:"arg,omitempty"`    // image reference for pulls, "all" for prunes
 	// Create is OpContainerCreate's container (and the networks it needs).
 	Create *ContainerCreate `json:"create,omitempty"`
+	// Share is OpVolumeCreateShare's volume, with the share's login.
+	Share *ShareVolume `json:"share,omitempty"`
 	// Files are a compose file and .env to check (OpStackPreview only).
 	Files *StackFiles `json:"files,omitempty"`
 	// Auth are logins for the registries this operation pulls from (only
@@ -725,9 +727,13 @@ const (
 	OpVolumesList    = "volumes.list"
 	OpVolumeRemove   = "volume.remove"
 	OpVolumesPrune   = "volumes.prune"
-	OpNetworksList   = "networks.list"
-	OpNetworkRemove  = "network.remove"
-	OpNetworksPrune  = "networks.prune"
+	// OpVolumeCreateShare creates a volume that mounts a network share
+	// (Share), checks that it mounts, and removes it again if it doesn't.
+	// Result: ShareCreated.
+	OpVolumeCreateShare = "volume.create_share"
+	OpNetworksList      = "networks.list"
+	OpNetworkRemove     = "network.remove"
+	OpNetworksPrune     = "networks.prune"
 	// OpContainerRemoveVolumes removes a container (even if running) with its
 	// anonymous volumes, then deletes the named volumes listed in Arg
 	// (comma-separated) that it mounted and nothing else uses.
@@ -1197,10 +1203,11 @@ var OpKinds = map[string]bool{
 	OpDockerPlan: false, OpDockerUpgrade: true, OpHostOSStatus: false, OpHostOSUpgrade: true,
 	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false, OpStackRead: true,
 	OpContainerExport: false, OpContainerCreate: true,
-	OpRegistryLogin:  false,
-	OpStackImages:    true, // with StackImagesProtect it tags images
-	OpStackPreflight: false,
-	OpBindsList:      false,
+	OpRegistryLogin:     false,
+	OpStackImages:       true, // with StackImagesProtect it tags images
+	OpStackPreflight:    false,
+	OpBindsList:         false,
+	OpVolumeCreateShare: true,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -1279,10 +1286,21 @@ func ValidOperation(op Operation) error {
 			return errors.New("invalid prune mode")
 		}
 	case OpContainerCreate:
+		if op.Share != nil {
+			return errors.New("only volume.create_share takes a share")
+		}
 		return ValidContainerCreate(op.Create)
+	case OpVolumeCreateShare:
+		if op.Create != nil {
+			return errors.New("only container.create takes a container")
+		}
+		return ValidShareVolume(op.Share)
 	}
 	if op.Create != nil {
 		return errors.New("only container.create takes a container")
+	}
+	if op.Share != nil {
+		return errors.New("only volume.create_share takes a share")
 	}
 	return nil
 }
@@ -1423,6 +1441,9 @@ type Volume struct {
 	Created    string   `json:"created"`
 	Project    string   `json:"project,omitempty"`
 	UsedBy     []string `json:"usedBy"`
+	// Share is set when the volume mounts a network share (never with
+	// its options, which can hold the share's password).
+	Share *ShareInfo `json:"share,omitempty"`
 }
 
 type Network struct {

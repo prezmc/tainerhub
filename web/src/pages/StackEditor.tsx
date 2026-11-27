@@ -14,6 +14,7 @@ import { RollbackButton, RolledBackBanner } from '../rollbackui'
 import { clearStackDraft, peekStackDraft } from '../stackdraft'
 import { PreflightPanel, usePreflight } from '../preflight'
 import { SourceNote, TakeoverPanel, takeoverReady, useTakeoverCheck, useTakeoverSource } from '../takeover'
+import { StackShareHelper } from '../sharestack'
 import {
   composeBuilds,
   composeBuildsFromGit,
@@ -172,6 +173,7 @@ export function NewStackPage() {
               onChange={setCompose}
               placeholder={adopting ? (source.isFetching ? `Reading ${search.name}'s compose files from the host…` : `Paste the compose file that ${search.name} was started with.`) : undefined}
             />
+            <StackShareHelper hostId={hostId} online={!!host?.online} compose={compose} setCompose={setCompose} />
           </Card>
           <Card className="space-y-3 p-5">
             <h2 className="font-display text-lg font-bold text-white">.env</h2>
@@ -430,6 +432,7 @@ function FilesLocked() {
 
 function FilesEditor({ d }: { d: StackDetail }) {
   const qc = useQueryClient()
+  const { hosts } = useFleet()
   const toast = useToast()
   const openJob = useOpenJob()
   // 'compose', 'env', or file:<path> for an extra file.
@@ -538,7 +541,10 @@ function FilesEditor({ d }: { d: StackDetail }) {
         ) : tab === 'env' ? (
           <CodeEditor label=".env" value={env} onChange={setEnv} rows={10} placeholder="DB_PASSWORD=change-me" />
         ) : (
-          <CodeEditor label="compose.yaml" value={compose} onChange={setCompose} />
+          <>
+            <CodeEditor label="compose.yaml" value={compose} onChange={setCompose} />
+            <StackShareHelper hostId={d.stack.hostId} online={!!hosts.find((h) => h.id === d.stack.hostId)?.online} compose={compose} setCompose={setCompose} />
+          </>
         )}
         <FilesHelp name={d.stack.name} />
         {(files.length > 0 || composeBuilds(compose)) && <BuildHelp />}

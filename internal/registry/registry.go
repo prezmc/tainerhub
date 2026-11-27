@@ -522,6 +522,8 @@ func (a *Agent) Operate(ctx context.Context, op wire.Operation) (_ json.RawMessa
 	switch op.Kind {
 	case wire.OpImagePull, wire.OpImagesPrune, wire.OpContainerRecreate, wire.OpImagesCheckUpdates, wire.OpDockerPlan, wire.OpDockerUpgrade, wire.OpHostOSStatus, wire.OpHostOSUpgrade, wire.OpStackDirRemove:
 		timeout = 16 * time.Minute // the agent gives up after 15
+	case wire.OpVolumeCreateShare:
+		timeout = 3 * time.Minute // the agent gives the mount 90 seconds
 	}
 	cmd := wire.Command{Op: &op}
 	a.addAuth(ctx, &cmd)

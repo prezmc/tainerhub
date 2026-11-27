@@ -14,6 +14,7 @@ import type { Change, Imported, Note } from '../composeimport'
 import { setStackDraft, type StackDraft } from '../stackdraft'
 import { PreflightPanel, useFreshPreflight, usePreflight, type PreflightFix } from '../preflight'
 import { generateSecret } from '../placeholder'
+import { ShareBadge, useShareVolumes } from '../sharesui'
 import { isUtcLike, localTimeZone, portConflicts, usedHostPorts } from '../recommend'
 
 type Repo = { name: string; description: string; stars: number; pulls: number; official: boolean }
@@ -126,9 +127,13 @@ export function NewContainerPage() {
   // "nginx:1.27-alpine" doesn't become "nginx:1.27-alpine:latest".
   const typedTag = image.includes('@') || (image.split('/').pop() ?? '').includes(':')
   const fullImage = image ? (typedTag ? image : `${image}:${tag || 'latest'}`) : ''
-  const spec = { name, image: fullImage, restart, ports, env, vols, adv }
-  const compose = useMemo(() => (image ? composeFor(spec) : ''), [image, tag, name, restart, ports, env, vols, adv]) // eslint-disable-line react-hooks/exhaustive-deps
   const host = hosts.find((h) => h.id === hostId)
+  // Network share volumes on the host: a container mounts the existing
+  // volume (external) rather than the stack making its own empty one.
+  const shares = useShareVolumes(hostId, !!image && !!host?.online)
+  const shareNames = shares.map((s) => s.name)
+  const spec = { name, image: fullImage, restart, ports, env, vols, adv, externalVols: shareNames }
+  const compose = useMemo(() => (image ? composeFor(spec) : ''), [image, tag, name, restart, ports, env, vols, adv, shareNames.join()]) // eslint-disable-line react-hooks/exhaustive-deps
   const networks = useQuery({
     queryKey: ['host-networks', hostId],
     queryFn: () => api<NetworkRes[]>(`/api/hosts/${hostId}/networks`),
@@ -524,13 +529,42 @@ export function NewContainerPage() {
             error={basicErr('vols')}
             render={(v, set) => (
               <>
-                <input aria-label="Source" placeholder="data or /srv/app" value={v.source} onChange={(e) => set({ ...v, source: e.target.value.trim() })} className={field + ' min-w-0 flex-1'} />
+                <input aria-label="Source" placeholder="data or /srv/app" list="share-volumes" value={v.source} onChange={(e) => set({ ...v, source: e.target.value.trim() })} className={field + ' min-w-0 flex-1'} />
                 <span className="text-ink-100/40">→</span>
                 <input aria-label="Path in container" placeholder="/data" value={v.target} onChange={(e) => set({ ...v, target: e.target.value.trim() })} className={field + ' min-w-0 flex-1'} />
               </>
             )}
           />
 
+          {image && shares.length > 0 && (
+            <div className="-mt-3 flex flex-wrap items-center gap-2 text-xs text-ink-100/60">
+              <span>Network shares on {host?.name}:</span>
+              {shares.map((sv) => (
+                <button
+                  key={sv.name}
+                  type="button"
+                  disabled={vols.some((v) => v.source === sv.name)}
+                  title={`Mount ${sv.name} in this container`}
+                  className="inline-flex items-center gap-1.5 rounded-[2px] px-2 py-1 ring-1 ring-inset ring-line transition hover:ring-lime-400/50 disabled:opacity-40"
+                  onClick={() =>
+                    setVols((old) => {
+                      const empty = old.findIndex((v) => !v.source && !v.target)
+                      const row = { source: sv.name, target: old.some((v) => v.target === '/data') ? '' : '/data' }
+                      return empty >= 0 ? old.map((v, i) => (i === empty ? row : v)) : [...old, row]
+                    })
+                  }
+                >
+                  <span className="mono text-white">{sv.name}</span>
+                  <ShareBadge share={sv.share} />
+                </button>
+              ))}
+              <datalist id="share-volumes">
+                {shares.map((sv) => (
+                  <option key={sv.name} value={sv.name} />
+                ))}
+              </datalist>
+            </div>
+          )}
           {image && (
             <AdvancedOptions
               adv={adv}

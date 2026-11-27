@@ -472,6 +472,19 @@ Preflight warns while a value still looks like a placeholder.
 - **Other subnets.** A device on another subnet, VLAN or VPN that opens the apps' web UIs needs its range in `LAN_SUBNETS` too. Otherwise gluetun sends the replies into the tunnel and the page times out.
 - **LAN names.** gluetun answers DNS itself (over the VPN), so it doesn't know names like `nas.lan`. Use LAN IP addresses in the apps' settings.
 - **Other containers** reach the apps through the gateway: at the host's address and the published port, or as `gluetun:<port>` from a container on the same Docker network as gluetun (add a shared network to the gluetun service for a reverse proxy, say).
+- **Your NAS.** To give the apps the same folder on your NAS (downloads that the other apps pick up, say), create a [network share volume](#network-shares-smb-and-nfs) on the host first (Resources → Volumes → **New network share**, named `media` for example), then mount it in each app and declare it external:
+
+  ```yaml
+  services:
+    app:
+      volumes:
+        - media:/data
+  volumes:
+    media:
+      external: true
+  ```
+
+  The host mounts the share, not the container, so it's reached over your LAN directly and never through the VPN. Use the same path (`/data`) in every app, so a path one app hands another means the same file.
 - **Check it.** Open a **Terminal** in an app and look up its public address (for example `wget -qO- https://ipinfo.io/ip`, if the image has `wget`): it should be a NordVPN address, while a LAN address (say your router) still answers.
 
 Keep the gateway and the apps in one stack. **Pull & redeploy**, automatic updates, rollback and moving the stack then recreate the apps whenever gluetun is recreated. On its own, restarting gluetun (from the Containers page or because it updated) cuts the apps off until they're restarted too, which is why TainerHub warns first.
@@ -502,8 +515,38 @@ Images, volumes and networks across all hosts, in three tabs. Pick a host or sho
 
 - **Images**: size, created date, and **Used by** (which containers use it). The summary shows the total on disk and how much is unused. Images kept so a stack can [roll back](#rolling-back-a-stack) to them show **kept for rollback of &lt;stack&gt;**.
   - Operators can **Pull image** (for example `nginx:1.27` or `ghcr.io/org/app:tag`) onto a host, pull a tag again to update it, and remove images. An image in use can't be removed; remove its containers first. An image kept for a rollback can only be removed by an admin, after a warning (the stack can't roll back to it afterwards).
-- **Volumes**: the stack and driver of each one, and which containers use it. Unused volumes are marked **unused**. Only admins can delete volumes. Deleting a volume deletes its data permanently.
+- **Volumes**: the stack and driver of each one, and which containers use it. Unused volumes are marked **unused**. Volumes that mount a network share show where from, like **SMB //192.168.1.10/media** or **NFS nas:/volume1/media** (whoever made them: TainerHub or a compose file). Only admins can delete volumes. Deleting a volume deletes its data permanently; deleting a network share volume only forgets the share: the files stay on the NAS.
 - **Networks**: driver, scope, and which containers use each one. Docker's built-in networks can't be removed.
+
+### Network shares (SMB and NFS)
+
+Admins can mount a share from a NAS as a Docker volume, so containers read and write the NAS's files directly. Several containers can use the same volume (a download client and the apps that sort its downloads, say), and each sees the same files at the path you mount it on.
+
+On the **Volumes** tab, click **New network share**:
+
+1. Pick the **host** (only hosts you may use are listed). The volume lives on that host; make one per host that needs the share.
+2. Pick **SMB / CIFS** (Windows shares, Synology, QNAP, TrueNAS, Unraid) or **NFS**.
+3. Fill in the **Server** (an IP address is safest) and the **Share** name as the NAS shows it (`media`, or a folder in it: `media/movies`), or the NFS **Export path** (`/volume1/media`).
+4. For SMB: the NAS user's **Username** and **Password** (leave both empty to connect as guest), and **Files owned by UID / GID**. The share's files appear to belong to that user inside containers, so set them to the PUID and PGID your containers run as (`1000` for most linuxserver.io images); otherwise the apps can read but not write. **File mode** and **Folder mode** are optional (`0664`, `0775`). The **SMB version** defaults to 3.0.
+5. Name the **volume** (say `media`) and click **Test and create**.
+
+TainerHub first checks the server answers on the SMB (445) or NFS (2049) port, then creates the volume with Docker's `local` driver and mounts it once in a short-lived container with no network, which lists the share. If anything fails, the volume is removed again and you see why in plain words with Docker's own message (without the password): a wrong username or password, a share name the NAS doesn't have, an SMB version the NAS doesn't speak, a server this host can't reach, or a host that can't mount shares at all.
+
+**The host needs the mount tools.** Install `cifs-utils` for SMB, or `nfs-common` (`nfs-utils` on Fedora and RHEL) for NFS, on the host itself, not in a container: for example `sudo apt install cifs-utils`.
+
+**Using it.** In **New container**, the host's share volumes are listed under **Volumes**: click one to mount it (at `/data`, or change the path). In a stack, use it as an external volume; the stack editor lists the host's share volumes under the compose file, and clicking one adds the `volumes:` entry for you:
+
+```yaml
+services:
+  app:
+    volumes:
+      - media:/data
+volumes:
+  media:
+    external: true
+```
+
+**Limits.** Values go into Docker's comma-separated mount options, so the username, share and password can't contain commas or quotes (a password may contain `=` and other symbols). An NFS v3 share is mounted with `nolock`. Moving a container or stack to another host doesn't copy a share volume: create the same share volume on the new host first. The password isn't stored by TainerHub, but Docker keeps it on the host: see [Security](security.md#network-share-passwords).
 
 ### Prune
 
@@ -642,6 +685,7 @@ There are four roles. Each one can do everything the role below it can.
 | Move stacks and standalone containers to another host | | | ✓ | ✓ |
 | New container from Docker Hub | | | ✓ | ✓ |
 | Delete volumes; prune volumes; remove a container together with its volumes | | | ✓ | ✓ |
+| Create [network share volumes](#network-shares-smb-and-nfs) | | | ✓ | ✓ |
 | Open a terminal in a container | | | ✓ | ✓ |
 | Add, rename and remove hosts; create join tokens | | | ✓ | ✓ |
 | Update TainerHub, Docker Engine and OS packages; switch container stats source | | | ✓ | ✓ |

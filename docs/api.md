@@ -287,7 +287,7 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 | Method | Path | Role | Token | Notes |
 | --- | --- | --- | --- | --- |
 | GET | `/api/hosts/{id}/images` | viewer | yes | `[{"id", "tags", "size", "created", "usedBy", "keptFor"?}]`; `keptFor` names the stacks the image is kept for, to roll back to. |
-| GET | `/api/hosts/{id}/volumes` | viewer | yes | `[{"name", "driver", "mountpoint", "created", "project", "usedBy"}]` |
+| GET | `/api/hosts/{id}/volumes` | viewer | yes | `[{"name", "driver", "mountpoint", "created", "project", "usedBy", "share"?}]`; `share` is `{"type": "cifs"\|"nfs", "server", "path"}` for a volume that mounts a network share (never its options). |
 | GET | `/api/hosts/{id}/networks` | viewer | yes | `[{"id", "name", "driver", "scope", "internal", "builtin", "project", "usedBy"}]` |
 | POST | `/api/hosts/{id}/images/pull` | operator | yes | Body: `ref` (`nginx:1.27`, `ghcr.io/org/app:tag`). |
 | DELETE | `/api/hosts/{id}/images/{rid}` | operator | yes | Remove an image. One kept for a stack's rollback is refused (`502` with the reason) unless `?force=1`, which needs an admin. |
@@ -296,6 +296,9 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 | POST | `/api/hosts/{id}/networks/prune` | operator | yes | Unused networks. |
 | DELETE | `/api/hosts/{id}/volumes/{rid}` | admin | yes | Remove a volume (its data is gone). |
 | POST | `/api/hosts/{id}/volumes/prune` | admin | yes | Unused anonymous volumes; `?all=1` for named ones too. |
+| POST | `/api/hosts/{id}/volumes/share` | admin | yes | Create a [network share volume](features.md#network-shares-smb-and-nfs), checked by mounting it once (below). |
+
+- `volumes/share` body: `{"name", "type": "cifs"|"nfs", "server", "path", "username"?, "password"?, "domain"?, "uid"?, "gid"?, "fileMode"?, "dirMode"?, "version"?, "readOnly"?}`. `path` is the share name for CIFS (`media`) and the export path for NFS (`/volume1/media`); the login, owner and modes are CIFS only. Returns `201 {"name", "entries"}` (what the share's top folder holds). A mount that fails answers `502` with the reason, and the volume is removed again. The password is passed to the host and kept by Docker there, never by the hub.
 
 Prune returns `{"deleted", "reclaimed" (bytes), "kept": [{"name", "reason"}]}`. Removes answer `204`. Neither prune removes images kept for a stack's rollback (tagged `tainerhub-rollback/…`).
 

@@ -1,4 +1,5 @@
 import type { PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
+import type { ShareInfo } from './shares'
 import type { StackFile } from './stackfiles'
 import type { DetailPort, PortBinding } from './ports'
 
@@ -342,6 +343,8 @@ export interface VolumeRes {
   created: string
   project?: string
   usedBy: string[]
+  /** Set when the volume mounts a network share (SMB/NFS); never its options. */
+  share?: ShareInfo
 }
 export interface NetworkRes {
   id: string

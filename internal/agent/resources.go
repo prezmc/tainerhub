@@ -43,6 +43,8 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return d.volumes(ctx)
 	case wire.OpVolumeRemove:
 		return nil, d.remove(ctx, "/volumes/"+url.PathEscape(op.Target))
+	case wire.OpVolumeCreateShare:
+		return d.createShare(ctx, op.Share)
 	case wire.OpVolumesPrune:
 		var f map[string][]string
 		if op.Arg == "all" {
@@ -253,6 +255,7 @@ func (d *SocketDocker) volumes(ctx context.Context) ([]wire.Volume, error) {
 			Mountpoint string
 			CreatedAt  string
 			Labels     map[string]string
+			Options    map[string]string // may hold a share's password: never sent on
 		}
 	}
 	if err := d.getJSON(ctx, "/volumes", nil, &raw); err != nil {
@@ -261,7 +264,8 @@ func (d *SocketDocker) volumes(ctx context.Context) ([]wire.Volume, error) {
 	out := make([]wire.Volume, 0, len(raw.Volumes))
 	for _, v := range raw.Volumes {
 		out = append(out, wire.Volume{Name: v.Name, Driver: v.Driver, Mountpoint: v.Mountpoint, Created: v.CreatedAt,
-			Project: v.Labels["com.docker.compose.project"], UsedBy: nonNil(u.volumes[v.Name])})
+			Project: v.Labels["com.docker.compose.project"], UsedBy: nonNil(u.volumes[v.Name]),
+			Share: wire.ShareFromOptions(v.Driver, v.Options)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

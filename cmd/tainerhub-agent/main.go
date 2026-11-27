@@ -29,6 +29,13 @@ func main() {
 		}
 		os.Exit(0)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "share-check" { // see agent.ShareCheck
+		if err := agent.ShareCheck(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		if agent.Healthy(envOr("TAINERHUB_DATA_DIR", "/data"), 2*time.Minute) {
 			os.Exit(0)

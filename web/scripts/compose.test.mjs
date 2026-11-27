@@ -171,3 +171,11 @@ test('set counts', () => {
   assert.equal(c.security, 3)
   assert.equal(c.runtime, 1)
 })
+
+test('a network share volume on the host is used as external', () => {
+  const spec = { ...base(), vols: [{ source: 'media', target: '/data' }, { source: 'config', target: '/config' }], externalVols: ['media', 'other'] }
+  const y = composeFor(spec)
+  wellFormed(y)
+  assert.match(y, /\nvolumes:\n {2}"media":\n {4}external: true\n {2}"config": \{\}\n$/)
+  assert.ok(!y.includes('other'), 'only volumes the container mounts')
+})

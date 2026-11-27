@@ -167,6 +167,8 @@ func (s *Server) routes() []route {
 		// volumes hold data: removing them is admin-only
 		rt("DELETE /api/hosts/{id}/volumes/{rid}", "admin", scopeHost, s.removeResource(wire.OpVolumeRemove)),
 		rt("POST /api/hosts/{id}/volumes/prune", "admin", scopeHost, s.prune(wire.OpVolumesPrune)),
+		// network share volumes carry the share's login (see sharevolume.go)
+		rt("POST /api/hosts/{id}/volumes/share", "admin", scopeHost, s.createShareVolume),
 		rt("POST /api/hosts/{id}/containers/{cid}/remove-with-volumes", "admin", scopeHost, s.removeWithVolumes),
 		// stack lifecycle on definitions an admin has saved
 		rt("POST /api/stacks/{sid}/{action}", "operator", scopeStack, s.stackAction),

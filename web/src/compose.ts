@@ -98,7 +98,17 @@ export const blankAdvanced = (): Advanced => ({
   envFile: '',
 })
 
-export type Spec = { name: string; image: string; restart: string; ports: Port[]; env: Env[]; vols: Vol[]; adv?: Advanced }
+export type Spec = {
+  name: string
+  image: string
+  restart: string
+  ports: Port[]
+  env: Env[]
+  vols: Vol[]
+  adv?: Advanced
+  /** Volumes that already exist on the host (network shares): used as external, not created per stack. */
+  externalVols?: string[]
+}
 
 /**
  * Quotes any user value as a YAML double-quoted scalar. JSON escapes quotes,
@@ -303,7 +313,10 @@ export function composeFor(o: Spec) {
   const named = [...new Set(vols.map((v) => v.source).filter(isNamedVolume))]
   if (named.length) {
     lines.push('volumes:')
-    for (const n of named) lines.push(`  ${q(n)}: {}`)
+    for (const n of named) {
+      if (o.externalVols?.includes(n)) lines.push(`  ${q(n)}:`, '    external: true')
+      else lines.push(`  ${q(n)}: {}`)
+    }
   }
   return lines.join('\n') + '\n'
 }

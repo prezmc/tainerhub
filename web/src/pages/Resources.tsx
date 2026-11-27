@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Boxes, Download, Eraser, HardDrive, Layers, Network, RefreshCw, Search, Trash2, WifiOff, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Boxes, Download, Eraser, FolderSymlink, HardDrive, Layers, Network, RefreshCw, Search, Trash2, WifiOff, type LucideIcon } from 'lucide-react'
 import { api, can, errorText, pullErrorText, size, timeAgo, type Host, type ImageRes, type NetworkRes, type PruneResult, type VolumeRes } from '../api'
 import { loadPref, savePref, useFleet } from '../fleet'
 import { Button, Card, EmptyState, ErrorNote, IconButton, Input, Menu, Modal, cx, useConfirm, useToast } from '../ui'
@@ -8,6 +8,8 @@ import { useMe } from './AppLayout'
 import { RegistryAuthHint } from '../registries'
 import { displayTag, isRollbackTag } from '../rollback'
 import { ownResource } from '../own'
+import { NewShareModal, ShareBadge } from '../sharesui'
+import { shareText } from '../shares'
 
 type Tab = 'images' | 'volumes' | 'networks'
 type Row<T> = T & { host: Host }
@@ -26,6 +28,7 @@ export function ResourcesPage() {
   const [hostFilter, setHostFilter] = useState<string>('all')
   const [q, setQ] = useState('')
   const [pulling, setPulling] = useState(false)
+  const [sharing, setSharing] = useState(false)
 
   const results = useQueries({
     queries: online.map((h) => ({
@@ -80,6 +83,11 @@ export function ResourcesPage() {
               Pull image
             </Button>
           )}
+          {tab === 'volumes' && can(me.user, 'admin') && (
+            <Button variant="primary" icon={FolderSymlink} onClick={() => setSharing(true)} disabled={online.length === 0}>
+              New network share
+            </Button>
+          )}
           <PruneMenu tab={tab} hosts={online} />
         </div>
       </div>
@@ -121,6 +129,7 @@ export function ResourcesPage() {
         <NetworksTable rows={rows as Row<NetworkRes>[]} q={q} loading={loading} />
       )}
 
+      <NewShareModal open={sharing} onClose={() => setSharing(false)} hosts={online} defaultHost={hostFilter === 'all' ? online[0]?.id : hostFilter} />
       <PullModal open={pulling} onClose={() => setPulling(false)} hosts={online} defaultHost={hostFilter === 'all' ? online[0]?.id : hostFilter} />
     </div>
   )
@@ -291,7 +300,7 @@ function VolumesTable({ rows, q, loading }: { rows: Row<VolumeRes>[]; q: string;
   const me = useMe()
   const confirm = useConfirm()
   const m = useResourceMutation()
-  const list = rows.filter((r) => match(q, r.host.name, r.name, r.project))
+  const list = rows.filter((r) => match(q, r.host.name, r.name, r.project, r.share && shareText(r.share)))
   const admin = can(me.user, 'admin')
   return (
     <>
@@ -318,7 +327,7 @@ function VolumesTable({ rows, q, loading }: { rows: Row<VolumeRes>[]; q: string;
                 <span className="text-ink-100/40">–</span>
               )}
             </td>
-            <td className="px-5 py-3 text-ink-100/60">{r.driver}</td>
+            <td className="px-5 py-3 text-ink-100/60">{r.share ? <ShareBadge share={r.share} /> : r.driver}</td>
             <td className="px-5 py-3">
               <UsedBy names={r.usedBy} />
             </td>
