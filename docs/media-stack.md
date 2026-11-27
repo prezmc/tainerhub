@@ -1,6 +1,6 @@
 # Guide: a download stack on your NAS, behind a VPN
 
-This walks through a common homelab setup from start to finish: **qBittorrent, Prowlarr, Sonarr and Radarr** (and FlareSolverr if your indexers need it), with all their internet traffic going through a VPN through [gluetun](https://github.com/qdm12/gluetun), and the files on your NAS over SMB. The VPN steps use NordVPN as the example; gluetun supports many other providers, and only steps 2 and 3 and the `VPN_…`/`SERVER_…` settings differ (see gluetun's wiki for yours).
+This walks through a common homelab setup from start to finish: **qBittorrent, Prowlarr, Sonarr and Radarr** (and FlareSolverr if your indexers need it), with all their internet traffic going through a VPN provider by way of [gluetun](https://github.com/qdm12/gluetun), and the files on your NAS over SMB. It works with any provider gluetun supports (Mullvad, ProtonVPN, NordVPN, Surfshark, Private Internet Access, Windscribe and [many more](https://github.com/qdm12/gluetun-wiki/tree/main/setup/providers)); only the credentials in step 2 depend on which one you use.
 
 Each piece is simple. What makes it hard is doing them in the wrong order, or one small setting being off. So the steps below are in the order that works, with a check after each one. Don't skip the checks: every problem in the [table at the end](#when-something-goes-wrong) was found by one.
 
@@ -9,7 +9,7 @@ The examples use a NAS at `192.168.10.20` on the LAN `192.168.10.0/24`, and UID/
 - [What you'll end up with](#what-youll-end-up-with)
 - [Before you start](#before-you-start)
 - [Step 1: mount the NAS shares](#step-1-mount-the-nas-shares)
-- [Step 2: get the VPN key](#step-2-get-the-vpn-key)
+- [Step 2: get the VPN credentials](#step-2-get-the-vpn-credentials)
 - [Step 3: give gluetun a fresh server list](#step-3-give-gluetun-a-fresh-server-list)
 - [Step 4: create the stack](#step-4-create-the-stack)
 - [Step 5: deploy and check the VPN](#step-5-deploy-and-check-the-vpn)
@@ -47,7 +47,7 @@ Check these first. Each one has stopped this setup before.
 | **A NAS user for the apps, with read/write** on the share(s) | the apps download, import and rename files | in your NAS's shared folder permissions. Give it its own password: Docker keeps it in plain text on the host (see [Security](security.md#network-share-passwords)). |
 | **One share for downloads and media**, if you can | Sonarr and Radarr then *move* finished files instantly, instead of copying them | a share (say `data`) with `downloads` and `media` folders in it. Two separate shares work too, but every import is a full copy and takes twice the space until the torrent is removed. |
 | **The ports are free** on the host | a port in use stops the stack | the host card on Hosts lists every port in use. This guide uses 8080, 9696, 8989 and 7878. |
-| **Your VPN account** | for the key in step 2 | NordVPN: you'll make an access token in your account (Advanced settings → Access token). |
+| **A VPN provider that gluetun supports** | for the credentials in step 2 | check [gluetun's provider list](https://github.com/qdm12/gluetun-wiki/tree/main/setup/providers); its page for your provider says exactly which settings it needs |
 
 ## Step 1: mount the NAS shares
 
@@ -65,32 +65,38 @@ In TainerHub: **Resources → Volumes → New network share**.
 
 In the volume list the share shows as **SMB //192.168.10.20/data**. If it also says **read-only**, delete it and create it again without Read-only.
 
-## Step 2: get the VPN key
+## Step 2: get the VPN credentials
 
-gluetun connects to NordVPN with WireGuard, which needs your **NordLynx private key**. It is not the access token, and not your NordVPN password: you use the access token once, to fetch the key.
+gluetun connects with **WireGuard** (faster; use it if your provider offers it) or **OpenVPN**. What it needs is different from your account login:
 
-1. In your NordVPN account: **Advanced settings → Access token → Generate new token**. Copy it right away; it's shown only once.
-2. On the Docker host (any Linux or Mac shell works), run this. It asks for the token without showing it and prints only the key:
+| Type | What gluetun needs | Where it usually comes from |
+| --- | --- | --- |
+| WireGuard | a **private key** (about 44 characters, ending in `=`) and, for most providers, the tunnel **address** that goes with it (like `10.64.12.34/32`) | your provider's site: generate or download a WireGuard configuration (for Linux or a router), then copy its `PrivateKey =` and `Address =` lines |
+| OpenVPN | a **username and password for OpenVPN** | many providers issue separate "service" or "manual setup" credentials for this, not your account login |
 
-   ```bash
-   read -rs -p "NordVPN access token: " T; echo; curl -s -u "token:$T" https://api.nordvpn.com/v1/users/services/credentials | grep -o '"nordlynx_private_key": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/'; unset T
-   ```
+[gluetun's page for your provider](https://github.com/qdm12/gluetun-wiki/tree/main/setup/providers) lists exactly which of these it needs.
 
-   On a Mac's default shell (zsh), replace `read -rs -p "NordVPN access token: " T` with `printf "NordVPN access token: "; read -rs T`.
+**Example, NordVPN (WireGuard):** NordVPN doesn't offer a config file to download, but it gives the key through its API, and it needs no address. Make an access token in your account (**Advanced settings → Access token → Generate new token**; it's shown only once), then on the Docker host run:
 
-**Check:** it prints one line of about 44 characters ending in `=`. That's the key for `.env` in step 4. If it prints nothing, run it without everything after `credentials` to see NordVPN's answer: an error means the token was mistyped or revoked.
+```bash
+read -rs -p "Access token: " T; echo; curl -s -u "token:$T" https://api.nordvpn.com/v1/users/services/credentials | grep -o '"nordlynx_private_key": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/'; unset T
+```
 
-Treat the key like a password: don't paste it into chats, issues or screenshots. Once the VPN works, revoke the access token.
+It asks for the token without showing it and prints only the key. On a Mac's default shell (zsh), replace `read -rs -p "Access token: " T` with `printf "Access token: "; read -rs T`. If it prints nothing, drop everything after `credentials` to see the API's answer.
+
+**Check:** you have a key of about 44 characters ending in `=` (plus an address if your provider needs one), or an OpenVPN username and password. A token, API key or account password in their place is the most common reason gluetun won't connect.
+
+Treat these like passwords: don't paste them into chats, issues or screenshots. If you made an access token just to fetch a key, revoke it once the VPN works.
 
 ## Step 3: give gluetun a fresh server list
 
-gluetun ships with a built-in list of NordVPN servers from when its image was built. NordVPN retires and renumbers servers often, so after a few months many entries point at addresses that no longer answer, and gluetun keeps cycling through dead servers. Fetch the current list once, into the stack's folder (`media` is the stack name you'll use in step 4):
+gluetun ships with a built-in list of each provider's servers from when its image was built. Providers retire and renumber servers often, so after a few months many entries can point at addresses that no longer answer, and gluetun keeps cycling through dead servers. Fetch the current list for your provider once, into the stack's folder (`media` is the stack name you'll use in step 4; use your provider's name as gluetun spells it, such as `mullvad`, `protonvpn` or `nordvpn`):
 
 ```bash
-mkdir -p /opt/tainerhub/stacks/media/gluetun && docker run --rm -v /opt/tainerhub/stacks/media/gluetun:/gluetun qmcgaw/gluetun:v3 update -enduser -providers nordvpn
+mkdir -p /opt/tainerhub/stacks/media/gluetun && docker run --rm -v /opt/tainerhub/stacks/media/gluetun:/gluetun qmcgaw/gluetun:v3 update -enduser -providers <your provider>
 ```
 
-Warnings like `no region found for server …` are harmless.
+Warnings like `no region found for server …` are harmless. A few providers' lists can't be fetched this way (gluetun says so); skip this step for them.
 
 **Check:** `ls -l /opt/tainerhub/stacks/media/gluetun` shows a `servers.json` of several MB. The compose file mounts this folder, so gluetun uses it. Run the command again whenever gluetun starts timing out on every server.
 
@@ -108,11 +114,14 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     environment:
-      VPN_SERVICE_PROVIDER: nordvpn
-      VPN_TYPE: wireguard
-      WIREGUARD_PRIVATE_KEY: ${NORDVPN_PRIVATE_KEY}
-      SERVER_COUNTRIES: ${NORDVPN_COUNTRY}
-      SERVER_CITIES: ${NORDVPN_CITY}
+      VPN_SERVICE_PROVIDER: ${VPN_PROVIDER}
+      VPN_TYPE: ${VPN_TYPE}
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES}
+      OPENVPN_USER: ${OPENVPN_USER}
+      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD}
+      SERVER_COUNTRIES: ${VPN_COUNTRY}
+      SERVER_CITIES: ${VPN_CITY}
       FIREWALL_OUTBOUND_SUBNETS: ${LAN_SUBNETS}
       TZ: ${TZ}
     volumes:
@@ -205,12 +214,25 @@ volumes:
 `.env`:
 
 ```dotenv
-# The NordLynx private key from step 2 (~44 characters, ending in =). Not the access token.
-NORDVPN_PRIVATE_KEY=<your NordLynx private key>
-# Full names, as gluetun lists them (e.g. "United States", not "USA").
-# Remove the city line, and SERVER_CITIES in compose.yaml, to use any server in the country.
-NORDVPN_COUNTRY=<a country, e.g. Netherlands>
-NORDVPN_CITY=<a city in it, e.g. Amsterdam>
+# Your provider as gluetun spells it: mullvad, protonvpn, nordvpn, surfshark,
+# private internet access, ... (see gluetun's provider list)
+VPN_PROVIDER=<your provider>
+# wireguard or openvpn
+VPN_TYPE=wireguard
+
+# WireGuard, from step 2: the private key (~44 characters, ending in =),
+# and the address that goes with it if your provider needs one (most do).
+WIREGUARD_PRIVATE_KEY=<your WireGuard private key>
+WIREGUARD_ADDRESSES=
+
+# OpenVPN instead (VPN_TYPE=openvpn): the OpenVPN username and password from step 2.
+OPENVPN_USER=
+OPENVPN_PASSWORD=
+
+# Where to connect. Names as gluetun lists them for your provider
+# (e.g. "United States", not "USA"). An empty city means any server in the country.
+VPN_COUNTRY=<a country, e.g. Netherlands>
+VPN_CITY=
 # Your LAN, and any other range that opens the web UIs (another VLAN, Tailscale's 100.64.0.0/10)
 LAN_SUBNETS=192.168.10.0/24
 TZ=<your time zone, e.g. Europe/Amsterdam>
@@ -289,8 +311,8 @@ If you change a security setting and the pages start missing pictures (blank pos
 | Deploy: `external volume "data" not found` | the share volume is missing on this host, or named differently (capitals count) | `docker volume ls` on the host; create it on the right host with the exact name |
 | Deploy: `dependency failed to start: container …gluetun… is unhealthy` | gluetun couldn't build the tunnel; its log says why | read gluetun's log and find the line in the rows below |
 | gluetun log: `the value "USA" is not one of the possible choices` | country or city name not as gluetun spells it | use the full name, e.g. `United States`; the error lists the valid ones |
-| gluetun log: key errors, `illegal base64` | the access token (or a typo) instead of the NordLynx key | redo [step 2](#step-2-get-the-vpn-key); the key is about 44 characters ending in `=` |
-| gluetun log: `Connecting to …:51820`, then `lookup cloudflare.com: i/o timeout`, over and over with different servers | gluetun's built-in server list is out of date (dead servers) | [step 3](#step-3-give-gluetun-a-fresh-server-list), then deploy again |
+| gluetun log: key or credential errors (`illegal base64`, `AUTH_FAILED`) | a token, API key or account password where the WireGuard key or OpenVPN login belongs, or a missing `WIREGUARD_ADDRESSES` | redo [step 2](#step-2-get-the-vpn-credentials); check your provider's page in gluetun's wiki for which settings it needs |
+| gluetun log: `Connecting to …:51820`, then `lookup cloudflare.com: i/o timeout`, over and over with different servers | gluetun's built-in server list is out of date (dead servers), or the WireGuard credentials don't match | [step 3](#step-3-give-gluetun-a-fresh-server-list), then deploy again; if it still fails, check the credentials from step 2 |
 | gluetun log (OpenVPN): `connect to …:443 failed: Host is unreachable` | same: a server that no longer exists | step 3 |
 | Still timing out with a fresh list | something blocks the VPN on the way out | `docker run --rm alpine traceroute -n 1.2.3.4` with a server address from the log shows where it stops: your router (a "block VPN" or threat-protection feature), or a firewall on the hypervisor |
 | The check before deploying: *gluetun uses /dev/net/tun* | a reminder; TainerHub can't see host devices | `ls -l /dev/net/tun` on the host; on LXC pass it through (see [Before you start](#before-you-start)) |

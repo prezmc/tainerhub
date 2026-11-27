@@ -162,7 +162,7 @@ To add more servers, go to **Hosts → Add host** and paste the command it gives
 | [Getting started](docs/getting-started.md) | Requirements, installing the hub (one line or by hand), first sign-in, adding servers, ports, updating, lighter stats, uninstalling. |
 | [Features](docs/features.md) | A tour of every page: Overview, Containers, Stacks, Resources, Hosts, Users and roles, Audit, Settings, Account and API tokens, the command palette, the phone layout. |
 | [HTTPS and passkeys](docs/https-and-passkeys.md) | Putting TainerHub behind Nginx Proxy Manager from the Settings page, keeping it LAN-only, and fixing test failures. |
-| [Download stack on a NAS, behind a VPN](docs/media-stack.md) | Step by step: NAS shares, a NordVPN key, gluetun, then qBittorrent, Prowlarr, Sonarr and Radarr in the order that works, with a table of what goes wrong and how to fix it. |
+| [Download stack on a NAS, behind a VPN](docs/media-stack.md) | Step by step: NAS shares, VPN credentials for any provider gluetun supports, gluetun, then qBittorrent, Prowlarr, Sonarr and Radarr in the order that works, with a table of what goes wrong and how to fix it. |
 | [Security](docs/security.md) | The security model, API tokens, what TainerHub can't protect against, and a hardening checklist. |
 | [API](docs/api.md) | API tokens, calling the JSON API with curl, live event streams, every endpoint with its role, recipes and security notes. |
 | [Troubleshooting](docs/troubleshooting.md) | Agent offline, expired join tokens, "Stacks unavailable", passkeys, "Sign in again" prompts, API errors, update errors, high CPU, lost access, logs and profiling. |

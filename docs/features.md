@@ -423,7 +423,7 @@ TainerHub won't let a stack take the name of the compose project it runs in itse
 
 For the whole setup with a NAS (shares, VPN key, gluetun and the *arr apps, in order, plus fixes for what usually goes wrong), follow the [download stack guide](media-stack.md).
 
-To send some containers' internet traffic through a VPN provider (NordVPN here), deploy them as **one stack** with a VPN gateway container, [gluetun](https://github.com/qdm12/gluetun), and run the apps in the gateway's network with `network_mode: "service:gluetun"`:
+To send some containers' internet traffic through a VPN provider (NordVPN in this example; any [provider gluetun supports](https://github.com/qdm12/gluetun-wiki/tree/main/setup/providers) works the same way, with its own credentials), deploy them as **one stack** with a VPN gateway container, [gluetun](https://github.com/qdm12/gluetun), and run the apps in the gateway's network with `network_mode: "service:gluetun"`:
 
 - **Internet traffic** from the apps leaves only through the VPN tunnel. gluetun's firewall is a kill switch: if the tunnel drops, they have no internet, rather than going out unprotected.
 - **LAN access stays.** The apps' web UIs are published on the gluetun service, so LAN devices reach them at the host's address as before. `FIREWALL_OUTBOUND_SUBNETS` lets the apps reach your LAN (a NAS, a media server) directly, outside the tunnel.
