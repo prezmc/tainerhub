@@ -52,3 +52,14 @@ test('adds an external volume to a compose file', () => {
   assert.equal(addExternalVolume('services: [', 'media'), null)
   assert.equal(addExternalVolume('volumes: [a]\n', 'media'), null)
 })
+
+test('splits a pasted share address', async () => {
+  const { parseShareAddress } = await import('../src/shares.ts')
+  assert.deepEqual(parseShareAddress('\\\\192.0.2.10\\media'), { type: 'cifs', server: '192.0.2.10', path: 'media' })
+  assert.deepEqual(parseShareAddress('\\\\nas\\media\\movies\\'), { type: 'cifs', server: 'nas', path: 'media/movies' })
+  assert.deepEqual(parseShareAddress('//nas/media'), { type: 'cifs', server: 'nas', path: 'media' })
+  assert.deepEqual(parseShareAddress('smb://nas.lan/media'), { type: 'cifs', server: 'nas.lan', path: 'media' })
+  assert.deepEqual(parseShareAddress('nas:/volume1/media'), { type: 'nfs', server: 'nas', path: '/volume1/media' })
+  assert.deepEqual(parseShareAddress('nfs://10.0.0.5/export/x'), { type: 'nfs', server: '10.0.0.5', path: '/export/x' })
+  for (const s of ['media', 'media/movies', '192.0.2.10', '/volume1/media', '']) assert.equal(parseShareAddress(s), null, s)
+})

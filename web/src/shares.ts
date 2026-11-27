@@ -31,6 +31,22 @@ export function blankShare(type: ShareType = 'cifs'): ShareForm {
   return { name: '', type, server: '', path: '', username: '', password: '', domain: '', uid: '1000', gid: '1000', fileMode: '', dirMode: '', version: type === 'cifs' ? '3.0' : '4', readOnly: false }
 }
 
+/**
+ * Splits a whole share address someone pasted, as Windows, macOS and NAS
+ * pages write them: \\nas\media, //nas/media, smb://nas/media (SMB) or
+ * nas:/volume1/media, nfs://nas/volume1/media (NFS). Null when it isn't one.
+ */
+export function parseShareAddress(raw: string): { type: ShareType; server: string; path: string } | null {
+  const s = raw.trim()
+  let m = /^(?:smb:|cifs:)?(?:\\\\|\/\/)([^\\/]+)[\\/]+(.*)$/i.exec(s)
+  if (m) return { type: 'cifs', server: m[1], path: m[2].replace(/\\/g, '/').replace(/\/+$/, '') }
+  m = /^nfs:\/\/([^/]+)(\/.*)$/i.exec(s)
+  if (m) return { type: 'nfs', server: m[1], path: m[2] }
+  m = /^([A-Za-z0-9.-]+):(\/.*)$/.exec(s)
+  if (m) return { type: 'nfs', server: m[1], path: m[2] }
+  return null
+}
+
 /** "SMB //nas/media" or "NFS nas:/volume1/media". */
 export function shareText(s: ShareInfo): string {
   return s.type === 'nfs' ? `NFS ${s.server}:${s.path}` : `SMB //${s.server}/${s.path}`

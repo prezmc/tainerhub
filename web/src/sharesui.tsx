@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FolderSymlink, PlugZap } from 'lucide-react'
 import { api, errorText, type Host, type VolumeRes } from './api'
 import { Badge, Button, ErrorNote, Input, Modal, cx, useToast } from './ui'
-import { CIFS_VERSIONS, NFS_VERSIONS, blankShare, shareBody, shareProblem, shareText, type ShareForm, type ShareInfo, type ShareType } from './shares'
+import { CIFS_VERSIONS, NFS_VERSIONS, blankShare, parseShareAddress, shareBody, shareProblem, shareText, type ShareForm, type ShareInfo, type ShareType } from './shares'
 
 /** "SMB //nas/media" next to a volume that mounts a network share. */
 export function ShareBadge({ share }: { share: ShareInfo }) {
@@ -46,6 +46,13 @@ export function NewShareModal({ open, onClose, hosts, defaultHost }: { open: boo
   const host = hosts.find((h) => h.id === target)
   const set = (p: Partial<ShareForm>) => setF((old) => ({ ...old, ...p }))
   const setType = (type: ShareType) => setF((old) => ({ ...old, type, version: type === 'cifs' ? '3.0' : '4', path: old.type === type ? old.path : '' }))
+  // Pasting a whole address (\\nas\media, smb://…, nas:/export) into
+  // either field fills in the server, the share and the right tab.
+  const typed = (field: 'server' | 'path', v: string) => {
+    const a = parseShareAddress(v)
+    if (a) setF((old) => ({ ...old, type: a.type, server: a.server, path: a.path, version: a.type === old.type ? old.version : a.type === 'cifs' ? '3.0' : '4' }))
+    else set(field === 'server' ? { server: v.trim() } : { path: v })
+  }
   const problem = shareProblem(f)
   const close = () => {
     setF(blankShare())
@@ -117,11 +124,26 @@ export function NewShareModal({ open, onClose, hosts, defaultHost }: { open: boo
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <Input label="Server" placeholder="192.168.1.10 or nas.lan" value={f.server} onChange={(e) => set({ server: e.target.value.trim() })} className="mono" autoFocus hint="IP address or host name. An IP address is safest: the host has to find the name itself." />
+          <Input
+            label="Server"
+            placeholder="192.168.1.10 or nas.lan"
+            value={f.server}
+            onChange={(e) => typed('server', e.target.value)}
+            className="mono"
+            autoFocus
+            hint="IP address or host name (an IP address is safest). Or paste the whole address, like \\192.168.1.10\media."
+          />
           {f.type === 'cifs' ? (
-            <Input label="Share" placeholder="media" value={f.path} onChange={(e) => set({ path: e.target.value })} className="mono" hint={f.server ? `Mounts //${f.server}/${f.path.replace(/^\/+/, '') || 'share'}` : 'The share name, as the NAS shows it. A folder in it works too: media/movies'} />
+            <PrefixInput
+              label="Share name"
+              prefix={`//${f.server || 'server'}/`}
+              placeholder="media"
+              value={f.path}
+              onChange={(v) => typed('path', v)}
+              hint="Just the name the NAS gives the share. A folder in it works too: media/movies"
+            />
           ) : (
-            <Input label="Export path" placeholder="/volume1/media" value={f.path} onChange={(e) => set({ path: e.target.value.trim() })} className="mono" hint={f.server ? `Mounts ${f.server}:${f.path || '/export'}` : 'The exported folder on the server.'} />
+            <PrefixInput label="Export path" prefix={`${f.server || 'server'}:`} placeholder="/volume1/media" value={f.path} onChange={(v) => typed('path', v.trim())} hint="The exported folder on the server." />
           )}
         </div>
 
@@ -176,5 +198,24 @@ export function NewShareModal({ open, onClose, hosts, defaultHost }: { open: boo
         </div>
       </form>
     </Modal>
+  )
+}
+
+/** A text field with a fixed, greyed start (the part already filled in above). */
+function PrefixInput({ label, prefix, hint, value, onChange, placeholder }: { label: string; prefix: string; hint: string; value: string; onChange: (v: string) => void; placeholder: string }) {
+  const id = useId()
+  return (
+    <label className="block" htmlFor={id}>
+      <span className="mb-1.5 block text-sm font-medium text-ink-100/80">{label}</span>
+      <span className="mono flex items-center rounded-[2px] bg-ink-950/70 text-sm ring-1 ring-inset ring-white/12 transition focus-within:shadow-[inset_3px_0_0] focus-within:shadow-lime-400 focus-within:ring-lime-400/60">
+        <span className="max-w-[55%] shrink-0 truncate py-2 pl-3 text-ink-100/45" title={prefix} aria-hidden>
+          {prefix}
+        </span>
+        <input id={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-describedby={`${id}-hint`} className="min-w-0 flex-1 bg-transparent py-2 pr-3 text-white outline-none placeholder:text-ink-100/35" />
+      </span>
+      <span className="mt-1.5 block text-xs text-ink-100/50" id={`${id}-hint`}>
+        {hint}
+      </span>
+    </label>
   )
 }
