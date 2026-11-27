@@ -27,7 +27,9 @@ export function usePreflight(input: PreflightInput, enabled: boolean) {
   const q = useQuery({
     queryKey: key(d),
     queryFn: () => fetchReport(d),
-    enabled: enabled && !!d.hostId && !!d.name && d.compose.trim() !== '',
+    // Only the settled input: a stale one (the name half typed) would show
+    // its error after the form is already fine.
+    enabled: enabled && settled && !!d.hostId && /^[a-z0-9][a-z0-9_-]{0,62}$/.test(d.name) && d.compose.trim() !== '',
     staleTime: 30_000,
     retry: false,
   })
@@ -82,8 +84,8 @@ export function PreflightPanel({
         </Button>
       </div>
       {waiting && <p className="text-ink-100/50">{waiting}</p>}
-      {!waiting && !rep && !check.isError && <p className="text-ink-100/50">Checking the image, ports, networks and limits against {hostName || 'the host'}…</p>}
-      {!waiting && check.isError && <p className="text-amber-200">Couldn't check: {errorText(check.error)}. You can still deploy.</p>}
+      {!waiting && !rep && !(check.isError && check.settled) && <p className="text-ink-100/50">Checking the image, ports, networks and limits against {hostName || 'the host'}…</p>}
+      {!waiting && check.isError && check.settled && <p className="text-amber-200">Couldn't check: {errorText(check.error)}. You can still deploy.</p>}
       {!waiting && rep && (
         <>
           {problems.length > 0 && (

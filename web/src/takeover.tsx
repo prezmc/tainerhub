@@ -23,12 +23,18 @@ export interface TakeoverReport {
   running: number
 }
 
+/**
+ * value, once it has stopped changing for ms. Compared by content: callers
+ * pass a fresh object every render, and the page re-renders whenever live
+ * stats arrive, which would otherwise restart the wait forever.
+ */
 export function useDebounced<T>(value: T, ms: number) {
   const [v, setV] = useState(value)
+  const json = JSON.stringify(value)
   useEffect(() => {
-    const t = setTimeout(() => setV(value), ms)
+    const t = setTimeout(() => setV(JSON.parse(json) as T), ms)
     return () => clearTimeout(t)
-  }, [value, ms])
+  }, [json, ms])
   return v
 }
 
