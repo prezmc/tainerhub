@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, can, errorText, pullErrorText, type Activity, type Container, type DetailResponse, type Host, type Me, type VolumeRes } from './api'
 import { cx, useConfirm, useToast } from './ui'
 import { ownConsequence, ownContainer, ownServerCommands, type OwnContainer } from './own'
+import { networkUsers, sharedNetConsequence } from './sharednet'
 
 /** Actions that leave a container down (the agent's self-guard covers these, plus recreate). */
 const takesDown = (a: Action) => a === 'stop' || a === 'kill' || a === 'pause' || a === 'remove' || a === 'recreate'
@@ -204,6 +205,23 @@ export function useContainerAction() {
         await confirm(refusedDialog(c, action, own))
         return false
       }
+      // Containers in this one's network (a VPN gateway's apps) lose it
+      // when it goes down, and can't follow it to a replacement.
+      const netAction = action === 'stop' || action === 'kill' || action === 'restart' || action === 'remove' ? action : null
+      const users = netAction || action === 'recreate' ? networkUsers(c, qc.getQueryData<Container[]>(['containers']) ?? []) : []
+      if (users.length > 0 && action === 'recreate' && !c.project) {
+        await confirm({
+          title: `Recreate ${c.name} together with ${users.length === 1 ? users[0] : 'the containers in its network'}`,
+          body: (
+            <>
+              {users.join(', ')} {users.length === 1 ? 'runs' : 'run'} in {c.name}'s network. A new {c.name} would get a new network, and Docker can't move {users.length === 1 ? 'it' : 'them'} over, so the agent won't replace it on its own.
+              <p className="mt-3">Put them in one compose stack (the gateway with <span className="mono">network_mode: "service:{c.name}"</span> on the others) and use the stack's Pull & redeploy, which recreates them together.</p>
+            </>
+          ),
+          confirm: null,
+        })
+        return false
+      }
       const fromStack = c.project && !own ? ` It belongs to the ${c.project} stack, so redeploying that stack recreates it.` : ''
       const destructive: Partial<Record<Action, { title: string; body: string; confirm: string }>> = {
         stop: { title: `Stop ${c.name}?`, body: `It stays stopped on ${c.hostName} until you start it again.`, confirm: 'Stop' },
@@ -220,16 +238,21 @@ export function useContainerAction() {
         },
         // Pausing only asks for TainerHub's own containers (below).
         ...(own ? { pause: { title: `Pause ${c.name}?`, body: 'Its processes are frozen until you resume it.', confirm: 'Pause' } } : {}),
+        // Restarting only asks when other containers use its network (below).
+        ...(users.length > 0 ? { restart: { title: `Restart ${c.name}?`, body: `It stops and starts again on ${c.hostName}.`, confirm: 'Restart' } } : {}),
       }
       const d = destructive[action]
       if (d) {
         // TainerHub's own containers the agent would let through (it can't
         // tell they're TainerHub's): say what breaks, and ask to tick a box.
-        const warn = own && (
+        const warn = (own || (netAction && users.length > 0)) && (
           <OwnWarning>
-            <p>
-              This is {own.what}. {ownConsequence(own, c.hostName, action === 'remove')}
-            </p>
+            {own && (
+              <p>
+                This is {own.what}. {ownConsequence(own, c.hostName, action === 'remove')}
+              </p>
+            )}
+            {netAction && users.length > 0 && <p>{sharedNetConsequence(users, netAction)}</p>}
           </OwnWarning>
         )
         const ack = own ? (own.kind === 'agent' ? `I understand this cuts ${c.hostName} off from TainerHub.` : 'I understand this can take TainerHub down for everyone.') : undefined

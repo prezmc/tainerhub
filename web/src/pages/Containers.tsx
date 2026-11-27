@@ -10,6 +10,7 @@ import { useMe } from './AppLayout'
 import { StackLink } from '../stacks'
 import { MoveContainerDialog, movable } from './MoveContainer'
 import { ownContainer } from '../own'
+import { networkOwner } from '../sharednet'
 
 const routeApi = getRouteApi('/app/containers')
 
@@ -120,6 +121,12 @@ export function ContainersPage() {
     savePref('th.csort', k)
   }
   const hostById = useMemo(() => new Map(hosts.map((h) => [h.id, h])), [hosts])
+  // For containers in another container's network (a VPN gateway's apps): that container's name.
+  const viaOf = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of containers) if (c.networkOf) m.set(c.hostId + c.id, networkOwner(c, containers)?.name ?? c.networkOf.slice(0, 12))
+    return m
+  }, [containers])
 
   return (
     <div className="animate-[rise_300ms_ease-out]">
@@ -252,7 +259,7 @@ export function ContainersPage() {
               <div className="border-b border-line px-4 py-4 text-sm text-ink-100/50">No containers{q || view !== 'all' ? ' match' : ''}.</div>
             ) : (
               s.items.map((c) => (
-                <Row key={c.hostId + c.id} c={c} host={hostById.get(c.hostId)} operator={operator} admin={admin} showHost={group !== 'host'} busy={pendingId === c.id} run={run} />
+                <Row key={c.hostId + c.id} c={c} host={hostById.get(c.hostId)} operator={operator} admin={admin} showHost={group !== 'host'} busy={pendingId === c.id} run={run} via={viaOf.get(c.hostId + c.id)} />
               ))
             )}
           </section>
@@ -287,6 +294,8 @@ type RowProps = {
   showHost: boolean
   busy: boolean
   run: (c: Container, a: Action) => Promise<boolean>
+  /** The container whose network it runs in, whose ports it's reached on. */
+  via?: string
 }
 
 // The live stream replaces every container and host object on each tick, so
@@ -306,9 +315,9 @@ const sameContainer = (a: Container, b: Container) =>
   (a.ports ?? []).join() === (b.ports ?? []).join()
 const sameHost = (a?: Host, b?: Host) => a === b || (!!a && !!b && a.id === b.id && a.online === b.online && hostAddress(a) === hostAddress(b))
 const sameRow = (a: RowProps, b: RowProps) =>
-  a.operator === b.operator && a.admin === b.admin && a.showHost === b.showHost && a.busy === b.busy && a.run === b.run && sameHost(a.host, b.host) && sameContainer(a.c, b.c)
+  a.operator === b.operator && a.admin === b.admin && a.showHost === b.showHost && a.busy === b.busy && a.run === b.run && a.via === b.via && sameHost(a.host, b.host) && sameContainer(a.c, b.c)
 
-const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run }: RowProps) {
+const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run, via }: RowProps) {
   const navigate = useNavigate()
   const openLogs = useOpenLogs()
   const openTerminal = useOpenTerminal()
@@ -351,7 +360,11 @@ const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run }:
         )}
       </div>
       <div className="mono hidden truncate text-xs text-ink-100/70 md:block" title={ports.join(', ')}>
-        {ports.length === 0 ? (
+        {ports.length === 0 && via ? (
+          <span className="font-sans text-ink-100/50" title={`It runs in ${via}'s network: its ports are published on ${via}.`}>
+            via {via}
+          </span>
+        ) : ports.length === 0 ? (
           <span className="text-ink-100/30">–</span>
         ) : (
           <>

@@ -107,8 +107,10 @@ func TestPlanContainer(t *testing.T) {
 		{ID: "4", Name: "app-1", Image: "app:1", Project: "app"},
 		{ID: "5", Name: "agent", Image: "x:1", Project: "tainerhub"},
 		{ID: "6", Name: "cached", Image: "cache:1", UpdateAvailable: true},
+		{ID: "7777777777777777", Name: "vpn", Image: "gluetun:3"},
+		{ID: "8", Name: "torrent", Image: "qbit:1", NetworkOf: "7777777777777777"},
 	}}
-	upd := wire.ImageUpdates{Images: map[string]bool{"nginx:1": true, "postgres:16": false, "app:1": true}}
+	upd := wire.ImageUpdates{Images: map[string]bool{"nginx:1": true, "postgres:16": false, "app:1": true, "gluetun:3": true, "qbit:1": true}}
 	for _, tc := range []struct {
 		name, skip string
 	}{
@@ -120,6 +122,8 @@ func TestPlanContainer(t *testing.T) {
 		{"tainerhub-agent", "TainerHub's own"},
 		{"gone", "no container"},
 		{"cached", ""}, // the check couldn't tell this time: the host's last answer counts
+		{"vpn", "torrent uses its network"},
+		{"torrent", ""}, // the one using the network can be recreated
 	} {
 		c, refs, skip := planContainer(tc.name, st, upd)
 		if tc.skip == "" && (skip != "" || c == nil || len(refs) != 1) {

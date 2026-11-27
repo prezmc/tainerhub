@@ -193,6 +193,9 @@ func TestCheckContainerMoveBlockers(t *testing.T) {
 		}, "--volumes-from"},
 		{"exported project", "web", hostB, func(f *fakeCtrEnv) { f.exp.Project = "x" }, "compose project x"},
 		{"no room", "web", hostB, func(f *fakeCtrEnv) { f.disk[hostB] = 1 << 20 }, "doesn't have the room"},
+		{"network used by others", "web", hostB, func(f *fakeCtrEnv) {
+			f.ctrs[hostA] = append(f.ctrs[hostA], wire.Container{ID: "y", Name: "torrent", NetworkOf: "web"})
+		}, "torrent uses this container's network"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

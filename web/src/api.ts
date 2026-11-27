@@ -172,6 +172,8 @@ export interface Container {
   published?: PortBinding[]
   /** Uses the host's network: it can listen on any host port without publishing it. */
   hostNetwork?: boolean
+  /** Runs in another container's network (network_mode container:<x>): that container's name or ID. Its ports are published there. */
+  networkOf?: string
   hostId: string
   hostName: string
   /** A newer image is available for this container's tag. */

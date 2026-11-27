@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -156,6 +157,11 @@ type Container struct {
 	// HostNetwork: it uses the host's network, so it can listen on any host
 	// port without publishing it.
 	HostNetwork bool `json:"hostNetwork,omitempty"`
+	// NetworkOf: it uses another container's network (network_mode
+	// container:<x> or compose's service:<x>), the name or ID Docker gives
+	// for that container. Its ports are published on that container, and
+	// it loses its network when that container stops or is replaced.
+	NetworkOf string `json:"networkOf,omitempty"`
 
 	// Live resource use, refreshed about every 10 s for running containers.
 	// CPU is a percentage of one core (like `docker stats`), so it can exceed 100.
@@ -840,18 +846,21 @@ type StackPreflight struct {
 }
 
 type PreflightService struct {
-	Name          string          `json:"name"`
-	ContainerName string          `json:"container_name,omitempty"`
-	Image         string          `json:"image,omitempty"`
-	Build         bool            `json:"build,omitempty"`
-	HostNetwork   bool            `json:"host_network,omitempty"`
-	Ports         []PreflightPort `json:"ports,omitempty"`
-	CPUs          float64         `json:"cpus,omitempty"`
-	Memory        int64           `json:"memory,omitempty"` // bytes
-	GPU           bool            `json:"gpu,omitempty"`
-	Devices       []string        `json:"devices,omitempty"` // host paths
-	Binds         []StackBind     `json:"binds,omitempty"`
-	ImageCheck    *ImageCheck     `json:"image_check,omitempty"`
+	Name          string `json:"name"`
+	ContainerName string `json:"container_name,omitempty"`
+	Image         string `json:"image,omitempty"`
+	Build         bool   `json:"build,omitempty"`
+	HostNetwork   bool   `json:"host_network,omitempty"`
+	// NetworkOf is the service or container whose network it uses
+	// (network_mode: service:<x> or container:<x>).
+	NetworkOf  string          `json:"network_of,omitempty"`
+	Ports      []PreflightPort `json:"ports,omitempty"`
+	CPUs       float64         `json:"cpus,omitempty"`
+	Memory     int64           `json:"memory,omitempty"` // bytes
+	GPU        bool            `json:"gpu,omitempty"`
+	Devices    []string        `json:"devices,omitempty"` // host paths
+	Binds      []StackBind     `json:"binds,omitempty"`
+	ImageCheck *ImageCheck     `json:"image_check,omitempty"`
 	// PlaceholderEnv names the environment variables whose values look like
 	// examples from the docs ("changeme", "<your-domain>"; see
 	// LooksLikePlaceholder). Their values aren't sent.
@@ -1454,4 +1463,38 @@ type KeptItem struct {
 
 type PullResult struct {
 	Status string `json:"status"`
+}
+
+// SharedNetworkTarget is the container (or compose service) a network mode
+// joins: "gluetun" for "container:gluetun" or "service:gluetun", "" for
+// any other mode.
+func SharedNetworkTarget(mode string) string {
+	for _, p := range []string{"container:", "service:"} {
+		if t, ok := strings.CutPrefix(mode, p); ok {
+			return t
+		}
+	}
+	return ""
+}
+
+// UsesNetworkOf says whether dep runs in gw's network (dep.NetworkOf names
+// gw by name or by ID, which Docker may give in full or shortened).
+func UsesNetworkOf(dep, gw Container) bool {
+	t := dep.NetworkOf
+	if t == "" || dep.ID == gw.ID {
+		return false
+	}
+	return t == gw.Name || (len(t) >= 12 && strings.HasPrefix(gw.ID, t))
+}
+
+// NetworkUsers are the containers in cs that run in gw's network, by name.
+func NetworkUsers(gw Container, cs []Container) []string {
+	var out []string
+	for _, c := range cs {
+		if UsesNetworkOf(c, gw) {
+			out = append(out, c.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

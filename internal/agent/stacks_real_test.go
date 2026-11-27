@@ -3,6 +3,9 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -243,4 +246,55 @@ func TestRecreateRealDocker(t *testing.T) {
 	if res, err := d.recreate(ctx, name, nil); err != nil || res.Status != "current" {
 		t.Fatalf("second recreate should be a no-op: %+v %v", res, err)
 	}
+}
+
+// TestRecreateSharedNetworkRealDocker: a container in another container's
+// network can be recreated, and the container whose network it uses can't.
+//
+//	TAINERHUB_REAL_DOCKER=1 go test ./internal/agent -run SharedNetworkReal -v
+func TestRecreateSharedNetworkRealDocker(t *testing.T) {
+	if os.Getenv("TAINERHUB_REAL_DOCKER") != "1" {
+		t.Skip("set TAINERHUB_REAL_DOCKER=1 to run against a real Docker daemon")
+	}
+	socket := os.Getenv("DOCKER_SOCKET")
+	if socket == "" {
+		socket = "/var/run/docker.sock"
+	}
+	const gw, dep = "thgw-test", "thdep-test"
+	cleanup := func() { _ = exec.Command("docker", "rm", "-f", dep, gw).Run() }
+	cleanup()
+	defer cleanup()
+	for _, args := range [][]string{
+		{"run", "-d", "--name", gw, "alpine:3", "sleep", "3600"},
+		{"run", "-d", "--name", dep, "--network", "container:" + gw, "alpine:3", "sleep", "3600"},
+		{"tag", "alpine:3", "thdep-old:1"},
+	} {
+		if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
+			t.Fatalf("docker %v: %v %s", args, err, out)
+		}
+	}
+	defer exec.Command("docker", "rmi", "thdep-old:1").Run()
+	d := NewSocketDocker(socket)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if _, err := d.recreate(ctx, gw, nil); err == nil || !strings.Contains(err.Error(), dep+" uses this container's network") {
+		t.Fatalf("recreating the gateway should be refused, got %v", err)
+	}
+
+	// The spec for the dependant must be one Docker accepts.
+	var insp map[string]json.RawMessage
+	if err := d.getJSON(ctx, "/containers/"+dep+"/json", nil, &insp); err != nil {
+		t.Fatal(err)
+	}
+	var meta containerMeta
+	b, _ := json.Marshal(insp)
+	_ = json.Unmarshal(b, &meta)
+	body := d.createSpec(ctx, insp, meta, "alpine:3")
+	resp, err := d.doBody(ctx, http.MethodPost, "/containers/create", url.Values{"name": {dep + "-new"}}, body)
+	if err != nil {
+		t.Fatalf("create from the spec: %v", err)
+	}
+	resp.Body.Close()
+	_ = exec.Command("docker", "rm", "-f", dep+"-new").Run()
 }

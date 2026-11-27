@@ -234,6 +234,15 @@ func (d *SocketDocker) recreate(ctx context.Context, id string, auths []wire.Reg
 	if strings.HasPrefix(name, "tainerhub") {
 		return res, errors.New("TainerHub's own containers are updated from Hosts → Updates")
 	}
+	if users, err := d.networkUsers(ctx, meta.ID, name); err != nil {
+		return res, err
+	} else if len(users) > 0 {
+		verb, them := "use", "them"
+		if len(users) == 1 {
+			verb, them = "uses", "it"
+		}
+		return res, fmt.Errorf("%s %s this container's network, so replacing it would cut %s off for good. Put them in one compose stack and use the stack's Pull & redeploy, which recreates them together", strings.Join(users, ", "), verb, them)
+	}
 	ref := meta.Config.Image
 	if !updateable(ref) {
 		return res, errors.New("this container uses a pinned image (by digest or ID), so there's nothing newer to pull")
@@ -346,6 +355,15 @@ func (d *SocketDocker) createSpec(ctx context.Context, insp map[string]json.RawM
 	if len(meta.ID) >= 12 && meta.Config.Hostname == meta.ID[:12] {
 		delete(cfg, "Hostname") // Docker's default (the old ID): let it pick the new one
 	}
+	var hc struct{ NetworkMode string }
+	_ = json.Unmarshal(insp["HostConfig"], &hc)
+	if strings.HasPrefix(hc.NetworkMode, "container:") {
+		// It runs in another container's network: these come from that
+		// container, and Docker refuses to create one that sets them.
+		for _, k := range []string{"Hostname", "Domainname", "ExposedPorts", "MacAddress"} {
+			delete(cfg, k)
+		}
+	}
 	cfg["Image"], _ = json.Marshal(ref)
 	endpoints := map[string]any{}
 	for net, ep := range meta.NetworkSettings.Networks {
@@ -375,6 +393,30 @@ func (d *SocketDocker) createSpec(ctx context.Context, insp map[string]json.RawM
 	body["HostConfig"] = insp["HostConfig"]
 	body["NetworkingConfig"] = map[string]any{"EndpointsConfig": endpoints}
 	return body
+}
+
+// networkUsers names the other containers (running or not) that run in the
+// network of the container with this ID and name (network_mode
+// container:<id or name>).
+func (d *SocketDocker) networkUsers(ctx context.Context, id, name string) ([]string, error) {
+	var raw []struct {
+		ID         string `json:"Id"`
+		Names      []string
+		HostConfig struct{ NetworkMode string }
+	}
+	if err := d.getJSON(ctx, "/containers/json", url.Values{"all": {"1"}}, &raw); err != nil {
+		return nil, err
+	}
+	gw := wire.Container{ID: id, Name: name}
+	var cs []wire.Container
+	for _, r := range raw {
+		c := wire.Container{ID: r.ID, NetworkOf: wire.SharedNetworkTarget(r.HostConfig.NetworkMode)}
+		if len(r.Names) > 0 {
+			c.Name = strings.TrimPrefix(r.Names[0], "/")
+		}
+		cs = append(cs, c)
+	}
+	return wire.NetworkUsers(gw, cs), nil
 }
 
 // restore undoes a half-done recreate: give the old container its name back

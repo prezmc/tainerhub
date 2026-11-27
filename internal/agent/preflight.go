@@ -115,6 +115,7 @@ func parsePreflight(b []byte, dir string, out *wire.StackPreflight) error {
 			Name: n, ContainerName: s.ContainerName, Image: s.Image,
 			Build:       len(s.Build) > 0 && string(s.Build) != "null",
 			HostNetwork: s.NetworkMode == "host",
+			NetworkOf:   wire.SharedNetworkTarget(s.NetworkMode),
 			CPUs:        rawFloat(s.CPUs),
 			Memory:      rawBytes(s.MemLimit),
 		}

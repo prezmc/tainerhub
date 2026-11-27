@@ -211,3 +211,21 @@ func TestPreflightPlaceholders(t *testing.T) {
 		t.Error(suggestSource("/var/lib/App Data:ro"))
 	}
 }
+
+func TestPreflightPortsOnSharedNetwork(t *testing.T) {
+	p := wire.StackPreflight{Services: []wire.PreflightService{
+		{Name: "gluetun", Image: "qmcgaw/gluetun", Ports: []wire.PreflightPort{{Published: "8080", Target: "8080", Protocol: "tcp"}}},
+		{Name: "app", Image: "example/app", NetworkOf: "gluetun", Ports: []wire.PreflightPort{{Published: "9090", Target: "9090", Protocol: "tcp"}}},
+		{Name: "quiet", Image: "example/quiet", NetworkOf: "gluetun"},
+	}}
+	rep := buildPreflightReport(p, pfHostWith(), "vpn")
+	if it := pfItem(rep, "shared-net-ports:app"); it == nil || it.Level != levelBlock || !strings.Contains(it.Title, "network of gluetun") {
+		t.Fatalf("app publishing ports in gluetun's network should block: %+v", it)
+	}
+	if pfItem(rep, "shared-net-ports:quiet") != nil || pfItem(rep, "shared-net-ports:gluetun") != nil {
+		t.Errorf("only app is wrong: %+v", rep.Items)
+	}
+	if it := pfItem(rep, "ports"); it == nil || !strings.Contains(it.Title, "8080/tcp") || strings.Contains(it.Title, "9090") {
+		t.Errorf("gluetun's port is checked as usual: %+v", it)
+	}
+}

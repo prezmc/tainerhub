@@ -297,6 +297,7 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			Ports:           ports,
 			Published:       published,
 			HostNetwork:     r.HostConfig.NetworkMode == "host",
+			NetworkOf:       wire.SharedNetworkTarget(r.HostConfig.NetworkMode),
 			Labels:          r.Labels,
 		})
 	}

@@ -134,6 +134,10 @@ func checkContainerMove(ctx context.Context, env ctrMoveEnv, from, ref, to strin
 		block("TainerHub's own containers can't be moved.")
 		return rep
 	}
+	if users := wire.NetworkUsers(c, env.containers(from)); len(users) > 0 {
+		block("%s %s this container's network (network_mode container:%s), so %s would lose %s network. Move them together as one compose stack instead.", strings.Join(users, ", "), plural(len(users), "uses", "use"), c.Name, plural(len(users), "it", "they"), plural(len(users), "its", "their"))
+		return rep
+	}
 
 	raw, err := env.operate(ctx, from, wire.Operation{Kind: wire.OpContainerExport, Target: c.ID})
 	if err != nil {

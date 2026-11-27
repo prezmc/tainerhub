@@ -184,6 +184,11 @@ func buildPreflightReport(p wire.StackPreflight, h preflightHost, name string) p
 		if s.HostNetwork {
 			hostNet = append(hostNet, s.Name)
 		}
+		if s.NetworkOf != "" && len(s.Ports) > 0 {
+			rep.add("shared-net-ports:"+s.Name, levelBlock, fmt.Sprintf("%s uses the network of %s, so it can't publish ports", s.Name, s.NetworkOf),
+				"Move its ports: entries to "+s.NetworkOf+": the app is reached through that container's ports (Docker refuses to start it otherwise).")
+			continue
+		}
 		for _, port := range s.Ports {
 			if port.Published == "" {
 				continue // a random host port

@@ -57,6 +57,8 @@ Stop, Kill, Remove and Pull & recreate ask you to confirm first.
 
 **TainerHub's own containers** (the hub, its database and the agents) get an extra warning. Where the agent refuses the action (Stop, Kill, Pause, Remove, or Pull & recreate on anything in the compose project it runs in, which on the hub's server includes the hub and its database), the dialog says so up front, explains what would break, and gives the commands to do it on purpose on the server (for example `docker stop tainerhub`, and `docker compose -p tainerhub up -d` to bring it back). Where it would go through, the dialog says what breaks and you have to tick a box first: removing an agent cuts its host off from TainerHub until the agent runs again (or, without its volume, is reinstalled with a new join token), and stopping or removing the hub or its database takes TainerHub down for every host. Deleting or pruning a volume, or removing a network, that belongs to TainerHub asks the same way. TainerHub's own containers can't be moved to another host.
 
+**Containers in another container's network** (`network_mode: "service:x"` or `--network container:x`, as with a [VPN gateway](#routing-containers-through-a-vpn)) show **via x** in the Ports column, and their ports are listed on x. Stopping, killing, restarting or removing x warns first, because the containers in its network lose all networking until they're restarted (or, once x is removed, until they're recreated). TainerHub won't **Pull & recreate** or move x on its own while other containers use its network: Docker can't move them to the new container's network. Put them in one compose stack instead, and **Pull & redeploy** recreates them together.
+
 **Removing a container** deletes it even if it's running. Its image is kept. For operators, its named volumes are kept too. Admins get an extra checkbox to remove the container's volumes at the same time. Volumes that other containers still use are kept, and TainerHub tells you which ones and why.
 
 If a container belongs to a stack, removing it doesn't stop it coming back: redeploying the stack recreates it.
@@ -84,7 +86,7 @@ Details:
 - **Networks**: Docker's own (`bridge`, `host`, `none`) are used as they are. Other networks the new host already has are joined. A missing bridge network is created with the same settings (and the same address range only if the container has a fixed IP). Other missing networks (overlay, macvlan) block the move: create them on the new host first.
 - **The image tag** is pulled again on the new host. If the tag now points to a newer version, the moved container runs that one.
 
-A move can't start when the new host already has a container or volume of that name, a port the container publishes is taken there, or it lacks the disk space. Containers that use another container's network, volumes (`--volumes-from`) or legacy links, or an image without a name, can't be moved. Both hosts need an agent from this version or later. Moves are written to the audit log.
+A move can't start when the new host already has a container or volume of that name, a port the container publishes is taken there, or it lacks the disk space. Containers that use another container's network, volumes (`--volumes-from`) or legacy links, or an image without a name, can't be moved, and neither can a container whose network others use (a VPN gateway): move them together as a stack. Both hosts need an agent from this version or later. Moves are written to the audit log.
 
 ### Image updates
 
@@ -134,7 +136,7 @@ Hosts are worked through in parallel, at most 4 at a time; the targets on one ho
 
 - Nothing is updated unless an admin opted it in. Turning a target on or off, changing the window and **Run now** need a recent sign-in, and API tokens can't do them. Each is audited.
 - TainerHub's own containers and compose project (the hub, its database, the agents, anything named `tainerhub…`) are never updated automatically: use the update card on the Hosts page.
-- A target is skipped, not forced, when its host is offline, a job is already running for it (a deploy, a move), or (for stacks) it has saved changes that haven't been deployed, since Pull & redeploy would deploy those too. Stacks never deployed by TainerHub are skipped as well, and so are stacks that run a rollback (someone, or a failed update, went back to older images on purpose).
+- A target is skipped, not forced, when its host is offline, a job is already running for it (a deploy, a move), or (for stacks) it has saved changes that haven't been deployed, since Pull & redeploy would deploy those too. Stacks never deployed by TainerHub are skipped as well, and so are stacks that run a rollback (someone, or a failed update, went back to older images on purpose). A standalone container whose network other containers use (a VPN gateway) is skipped too: replacing it would cut them off. Put them in one stack to update them together.
 - Images pinned by digest never have a newer version, so such containers can't be opted in.
 
 **Stacks that build images.** A service with `build:` makes its own image, which has no registry digest to compare, so TainerHub can't tell whether its base image changed. A stack that builds is updated only when one of its pulled images has a newer version (Pull & redeploy then also rebuilds with `--pull`, refreshing the base images). Otherwise it's skipped as "builds". Redeploy it yourself when you know a base image changed.
@@ -416,6 +418,63 @@ You can't create a new stack with the name of a project that is already running 
 ### TainerHub protects its own project
 
 TainerHub won't let a stack take the name of the compose project it runs in itself (on the hub's server, that's the project holding the hub, its database and the agent). A stack with that name could remove them. Such projects aren't offered for takeover either.
+
+### Routing containers through a VPN
+
+To send some containers' internet traffic through a VPN provider (NordVPN here), deploy them as **one stack** with a VPN gateway container, [gluetun](https://github.com/qdm12/gluetun), and run the apps in the gateway's network with `network_mode: "service:gluetun"`:
+
+- **Internet traffic** from the apps leaves only through the VPN tunnel. gluetun's firewall is a kill switch: if the tunnel drops, they have no internet, rather than going out unprotected.
+- **LAN access stays.** The apps' web UIs are published on the gluetun service, so LAN devices reach them at the host's address as before. `FIREWALL_OUTBOUND_SUBNETS` lets the apps reach your LAN (a NAS, a media server) directly, outside the tunnel.
+
+Create a stack with this `compose.yaml` (swap `app` for your own containers, one service each, all with the same `network_mode`):
+
+```yaml
+services:
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: nordvpn
+      VPN_TYPE: wireguard                   # NordLynx
+      WIREGUARD_PRIVATE_KEY: ${NORDVPN_PRIVATE_KEY}
+      SERVER_COUNTRIES: ${NORDVPN_COUNTRY}
+      FIREWALL_OUTBOUND_SUBNETS: ${LAN_SUBNETS}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "8080:8080"   # app's web UI: every app's ports go here, on the gateway
+    restart: unless-stopped
+
+  app:
+    image: example/app:latest
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy   # start once the tunnel is up
+    restart: unless-stopped
+```
+
+and this `.env` (fill in your own values):
+
+```dotenv
+NORDVPN_PRIVATE_KEY=<your NordLynx private key>
+NORDVPN_COUNTRY=<a country, e.g. Netherlands>
+# Your LAN range(s) in CIDR form, comma-separated: the apps can reach these
+# directly, and devices on them can open the apps' web UIs.
+LAN_SUBNETS=<your LAN range, e.g. 192.168.x.0/24>
+```
+
+Preflight warns while a value still looks like a placeholder.
+
+- **Credentials.** The NordLynx private key comes from your NordVPN account (gluetun's [NordVPN page](https://github.com/qdm12/gluetun-wiki/blob/main/setup/providers/nordvpn.md) shows how). For OpenVPN instead, set `VPN_TYPE: openvpn` with `OPENVPN_USER` and `OPENVPN_PASSWORD` set to your NordVPN *service credentials* (from the NordVPN dashboard, not your account login). Either way they live in the stack's `.env`, which only admins can read and which is stored in plain text in the hub's database (see [Security](security.md)).
+- **Ports.** Publish every app's ports on `gluetun`. An app with its own `ports:` doesn't start (Docker refuses), and preflight blocks it. On the Containers page, the apps show **via gluetun** in the Ports column; their ports appear on the gluetun row, in its details panel, and under **Ports on &lt;host&gt;** on the host card.
+- **Other subnets.** A device on another subnet, VLAN or VPN that opens the apps' web UIs needs its range in `LAN_SUBNETS` too. Otherwise gluetun sends the replies into the tunnel and the page times out.
+- **LAN names.** gluetun answers DNS itself (over the VPN), so it doesn't know names like `nas.lan`. Use LAN IP addresses in the apps' settings.
+- **Other containers** reach the apps through the gateway: at the host's address and the published port, or as `gluetun:<port>` from a container on the same Docker network as gluetun (add a shared network to the gluetun service for a reverse proxy, say).
+- **Check it.** Open a **Terminal** in an app and look up its public address (for example `wget -qO- https://ipinfo.io/ip`, if the image has `wget`): it should be a NordVPN address, while a LAN address (say your router) still answers.
+
+Keep the gateway and the apps in one stack. **Pull & redeploy**, automatic updates, rollback and moving the stack then recreate the apps whenever gluetun is recreated. On its own, restarting gluetun (from the Containers page or because it updated) cuts the apps off until they're restarted too, which is why TainerHub warns first.
 
 ### Stack limits
 

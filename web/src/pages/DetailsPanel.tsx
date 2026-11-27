@@ -7,6 +7,7 @@ import { PublishedLink } from './HostPorts'
 import { useContainerAction, useContainerDetail, useOpenLogs, useOpenTerminal } from '../fleet'
 import { StackLink } from '../stacks'
 import { useFleet } from '../fleet'
+import { networkOwner, networkUsers } from '../sharednet'
 import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf, useLayer } from '../ui'
 import { useMe } from './AppLayout'
 import { ContainerMoveNotes, MoveContainerDialog, movable } from './MoveContainer'
@@ -17,7 +18,9 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
   const me = useMe()
   const openLogs = useOpenLogs()
   const { run, pendingId } = useContainerAction()
-  const host = useFleet().hosts.find((h) => h.id === container.hostId)
+  const fleet = useFleet()
+  const host = fleet.hosts.find((h) => h.id === container.hostId)
+  const shared = { owner: container.networkOf ? (networkOwner(container, fleet.containers)?.name ?? container.networkOf.slice(0, 12)) : undefined, users: networkUsers(container, fleet.containers) }
   const q = useContainerDetail(container, 15000)
 
   const layer = useRef<HTMLDivElement>(null)
@@ -174,7 +177,7 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                 </Section>
               )}
 
-              <PortsSection d={d} host={host} running={running} />
+              <PortsSection d={d} host={host} running={running} shared={shared} />
 
               <Section icon={Network} title="Networking" right={<span className="text-xs text-ink-100/50">{d.networkMode}</span>}>
                 {d.networks.map((n) => (
@@ -268,13 +271,23 @@ function Section({ icon: Icon, title, right, children, collapsible }: { icon: Lu
 }
 
 /** The container's published ports (host address and port → its port) and the ones it only exposes. */
-function PortsSection({ d, host, running }: { d: ContainerDetail; host?: Host; running: boolean }) {
+function PortsSection({ d, host, running, shared }: { d: ContainerDetail; host?: Host; running: boolean; shared: { owner?: string; users: string[] } }) {
   const all = portMappings(d.ports)
   const published = all.filter((m) => m.hostPort)
   const exposed = all.filter((m) => !m.hostPort)
   return (
     <Section icon={Plug} title="Ports" right={published.length > 0 && <span className="text-xs text-ink-100/50">{published.length} published</span>}>
       {d.networkMode === 'host' && <p className="mb-2 text-sm text-ink-100/60">It uses the host's network, so it listens on the host's ports directly, without publishing them.</p>}
+      {shared.owner && (
+        <p className="mb-2 text-sm text-ink-100/60">
+          It runs in <span className="text-white">{shared.owner}</span>'s network, so it's reached on the ports published on {shared.owner} and its traffic goes wherever {shared.owner} sends it (a VPN, say).
+        </p>
+      )}
+      {shared.users.length > 0 && (
+        <p className="mb-2 text-sm text-ink-100/60">
+          {shared.users.join(', ')} {shared.users.length === 1 ? 'runs' : 'run'} in this container's network: {shared.users.length === 1 ? 'its' : 'their'} ports are published here.
+        </p>
+      )}
       {published.length > 0 && (
         <ul className="divide-y divide-white/[0.05]">
           {published.map((m) => (
@@ -295,7 +308,7 @@ function PortsSection({ d, host, running }: { d: ContainerDetail; host?: Host; r
           <span className="mono">{exposed.map((m) => m.container).join(', ')}</span>
         </p>
       )}
-      {all.length === 0 && d.networkMode !== 'host' && <p className="text-sm text-ink-100/50">No published ports.</p>}
+      {all.length === 0 && d.networkMode !== 'host' && !shared.owner && <p className="text-sm text-ink-100/50">No published ports.</p>}
     </Section>
   )
 }

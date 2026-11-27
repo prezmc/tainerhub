@@ -592,6 +592,9 @@ func planContainer(name string, st registry.Status, upd wire.ImageUpdates) (*wir
 	case !containerNewer(*c, upd):
 		return nil, nil, "already up to date"
 	}
+	if users := wire.NetworkUsers(*c, st.Containers); len(users) > 0 {
+		return nil, nil, strings.Join(users, ", ") + " " + plural(len(users), "uses", "use") + " its network; put them in one compose stack to update them together"
+	}
 	return c, []string{c.Image}, ""
 }
 
