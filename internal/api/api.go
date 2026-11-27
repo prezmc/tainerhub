@@ -169,6 +169,8 @@ func (s *Server) routes() []route {
 		rt("POST /api/hosts/{id}/volumes/prune", "admin", scopeHost, s.prune(wire.OpVolumesPrune)),
 		// network share volumes carry the share's login (see sharevolume.go)
 		rt("POST /api/hosts/{id}/volumes/share", "admin", scopeHost, s.createShareVolume),
+		// installs cifs-utils / nfs-common on the host (root there, like OS updates)
+		rt("POST /api/hosts/{id}/share-tools", "admin", scopeHost, s.installShareTools),
 		rt("POST /api/hosts/{id}/containers/{cid}/remove-with-volumes", "admin", scopeHost, s.removeWithVolumes),
 		// stack lifecycle on definitions an admin has saved
 		rt("POST /api/stacks/{sid}/{action}", "operator", scopeStack, s.stackAction),

@@ -45,6 +45,8 @@ func (d *SocketDocker) Operate(ctx context.Context, op wire.Operation) (any, err
 		return nil, d.remove(ctx, "/volumes/"+url.PathEscape(op.Target))
 	case wire.OpVolumeCreateShare:
 		return d.createShare(ctx, op.Share)
+	case wire.OpHostInstallShareTools:
+		return d.installShareTools(ctx, op.Arg)
 	case wire.OpVolumesPrune:
 		var f map[string][]string
 		if op.Arg == "all" {

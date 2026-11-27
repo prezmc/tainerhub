@@ -532,7 +532,7 @@ On the **Volumes** tab, click **New network share**:
 
 TainerHub first checks the server answers on the SMB (445) or NFS (2049) port, then creates the volume with Docker's `local` driver and mounts it once in a short-lived container with no network, which lists the share. If anything fails, the volume is removed again and you see why in plain words with Docker's own message (without the password): a wrong username or password, a share name the NAS doesn't have, an SMB version the NAS doesn't speak, a server this host can't reach, or a host that can't mount shares at all.
 
-**The host needs the mount tools.** Install `cifs-utils` for SMB, or `nfs-common` (`nfs-utils` on Fedora and RHEL) for NFS, on the host itself, not in a container: for example `sudo apt install cifs-utils`.
+**The host needs the mount tools:** `cifs-utils` for SMB, or `nfs-common` (`nfs-utils` on Fedora and RHEL) for NFS, on the host itself, not in a container. The form can install them: click **install it on &lt;host&gt;** under the form, or, after a mount that failed because they're missing, **Install cifs-utils on &lt;host&gt; and try again**. TainerHub installs the package with the host's package manager (apt, dnf, yum or apk) through the same privileged helper as OS updates, and records it in the audit log. Or install it yourself: `sudo apt install cifs-utils`.
 
 **Using it.** In **New container**, the host's share volumes are listed under **Volumes**: click one to mount it (at `/data`, or change the path). In a stack, use it as an external volume; the stack editor lists the host's share volumes under the compose file, and clicking one adds the `volumes:` entry for you:
 
@@ -685,7 +685,7 @@ There are four roles. Each one can do everything the role below it can.
 | Move stacks and standalone containers to another host | | | ✓ | ✓ |
 | New container from Docker Hub | | | ✓ | ✓ |
 | Delete volumes; prune volumes; remove a container together with its volumes | | | ✓ | ✓ |
-| Create [network share volumes](#network-shares-smb-and-nfs) | | | ✓ | ✓ |
+| Create [network share volumes](#network-shares-smb-and-nfs) and install the host's mount tools | | | ✓ | ✓ |
 | Open a terminal in a container | | | ✓ | ✓ |
 | Add, rename and remove hosts; create join tokens | | | ✓ | ✓ |
 | Update TainerHub, Docker Engine and OS packages; switch container stats source | | | ✓ | ✓ |

@@ -524,6 +524,8 @@ func (a *Agent) Operate(ctx context.Context, op wire.Operation) (_ json.RawMessa
 		timeout = 16 * time.Minute // the agent gives up after 15
 	case wire.OpVolumeCreateShare:
 		timeout = 3 * time.Minute // the agent gives the mount 90 seconds
+	case wire.OpHostInstallShareTools:
+		timeout = 6 * time.Minute // the agent gives the install 5
 	}
 	cmd := wire.Command{Op: &op}
 	a.addAuth(ctx, &cmd)

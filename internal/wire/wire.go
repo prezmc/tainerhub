@@ -731,9 +731,13 @@ const (
 	// (Share), checks that it mounts, and removes it again if it doesn't.
 	// Result: ShareCreated.
 	OpVolumeCreateShare = "volume.create_share"
-	OpNetworksList      = "networks.list"
-	OpNetworkRemove     = "network.remove"
-	OpNetworksPrune     = "networks.prune"
+	// OpHostInstallShareTools installs the host's package for mounting
+	// network shares: cifs-utils for Arg ShareCIFS, nfs-common (nfs-utils)
+	// for ShareNFS. Result: ShareTools.
+	OpHostInstallShareTools = "host.install_share_tools"
+	OpNetworksList          = "networks.list"
+	OpNetworkRemove         = "network.remove"
+	OpNetworksPrune         = "networks.prune"
 	// OpContainerRemoveVolumes removes a container (even if running) with its
 	// anonymous volumes, then deletes the named volumes listed in Arg
 	// (comma-separated) that it mounted and nothing else uses.
@@ -1203,11 +1207,12 @@ var OpKinds = map[string]bool{
 	OpDockerPlan: false, OpDockerUpgrade: true, OpHostOSStatus: false, OpHostOSUpgrade: true,
 	OpStackInspect: false, OpStackDirRemove: true, OpStackPreview: false, OpStackRead: true,
 	OpContainerExport: false, OpContainerCreate: true,
-	OpRegistryLogin:     false,
-	OpStackImages:       true, // with StackImagesProtect it tags images
-	OpStackPreflight:    false,
-	OpBindsList:         false,
-	OpVolumeCreateShare: true,
+	OpRegistryLogin:         false,
+	OpStackImages:           true, // with StackImagesProtect it tags images
+	OpStackPreflight:        false,
+	OpBindsList:             false,
+	OpVolumeCreateShare:     true,
+	OpHostInstallShareTools: true,
 }
 
 // ValidOperation checks the kind and the shape of its target / argument.
@@ -1290,6 +1295,10 @@ func ValidOperation(op Operation) error {
 			return errors.New("only volume.create_share takes a share")
 		}
 		return ValidContainerCreate(op.Create)
+	case OpHostInstallShareTools:
+		if op.Arg != ShareCIFS && op.Arg != ShareNFS {
+			return errors.New("install tools for cifs or nfs")
+		}
 	case OpVolumeCreateShare:
 		if op.Create != nil {
 			return errors.New("only container.create takes a container")

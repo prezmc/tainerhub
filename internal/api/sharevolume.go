@@ -83,3 +83,13 @@ func hidePassword(msg, pw string) string {
 	}
 	return strings.ReplaceAll(msg, pw, hiddenValue)
 }
+
+// installShareTools installs the host's package for mounting SMB (cifs-utils)
+// or NFS (nfs-common / nfs-utils) shares. Body: {"type": "cifs"|"nfs"}.
+func (s *Server) installShareTools(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Type string }
+	if !readJSON(w, r, &in) {
+		return
+	}
+	s.runOp(w, r, wire.Operation{Kind: wire.OpHostInstallShareTools, Arg: in.Type}, "share tools")
+}

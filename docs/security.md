@@ -228,7 +228,7 @@ Docker, though, keeps a volume's options on the host in **plain text**, password
 Be clear-eyed about this:
 
 - **The agent holds the Docker socket, which is root on that server.** The agent container itself runs as root (with all Linux capabilities dropped, a read-only filesystem and `no-new-privileges`), but control of the Docker socket means control of the host.
-- **Admins effectively have root on every managed server.** A compose file can mount `/`, run privileged containers or use the host's network. Admins can also open terminals, and upgrading Docker runs a privileged helper on the host. This is why only admins can write stacks.
+- **Admins effectively have root on every managed server.** A compose file can mount `/`, run privileged containers or use the host's network. Admins can also open terminals, and upgrading Docker, installing OS updates or installing the tools for network shares runs a privileged helper on the host. This is why only admins can write stacks.
 - **Operators have a lot of power too.** They can stop, remove and recreate any container (except TainerHub's own) and redeploy saved stacks. They can't write new compose files or open terminals.
 - **Whoever controls the hub controls every agent.** A compromised hub, or a stolen admin session, can deploy a compose file to any host. Keep the hub patched, keep the number of admins small, and add passkeys.
 - **Plain HTTP is for your LAN only.** Until you set up HTTPS, passwords and session cookies cross the network unencrypted.

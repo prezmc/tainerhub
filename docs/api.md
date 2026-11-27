@@ -297,6 +297,7 @@ Public `POST`s still need `X-TainerHub: 1`. Sign-in endpoints are rate limited (
 | DELETE | `/api/hosts/{id}/volumes/{rid}` | admin | yes | Remove a volume (its data is gone). |
 | POST | `/api/hosts/{id}/volumes/prune` | admin | yes | Unused anonymous volumes; `?all=1` for named ones too. |
 | POST | `/api/hosts/{id}/volumes/share` | admin | yes | Create a [network share volume](features.md#network-shares-smb-and-nfs), checked by mounting it once (below). |
+| POST | `/api/hosts/{id}/share-tools` | admin | yes | Install the host's package for mounting shares. Body: `{"type": "cifs"\|"nfs"}` (`cifs-utils`, or `nfs-common` / `nfs-utils`). Returns `{"manager", "package", "already"?}`. |
 
 - `volumes/share` body: `{"name", "type": "cifs"|"nfs", "server", "path", "username"?, "password"?, "domain"?, "uid"?, "gid"?, "fileMode"?, "dirMode"?, "version"?, "readOnly"?}`. `path` is the share name for CIFS (`media`) and the export path for NFS (`/volume1/media`); the login, owner and modes are CIFS only. Returns `201 {"name", "entries"}` (what the share's top folder holds). A mount that fails answers `502` with the reason, and the volume is removed again. The password is passed to the host and kept by Docker there, never by the hub.
 

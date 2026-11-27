@@ -1,6 +1,6 @@
 import { useId, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FolderSymlink, PlugZap } from 'lucide-react'
+import { Download, FolderSymlink, PlugZap } from 'lucide-react'
 import { api, errorText, type Host, type VolumeRes } from './api'
 import { Badge, Button, ErrorNote, Input, Modal, cx, useToast } from './ui'
 import { CIFS_VERSIONS, NFS_VERSIONS, blankShare, parseShareAddress, shareBody, shareProblem, shareText, type ShareForm, type ShareInfo, type ShareType } from './shares'
@@ -70,6 +70,21 @@ export function NewShareModal({ open, onClose, hosts, defaultHost }: { open: boo
     },
     onError: (e) => setError(errorText(e)),
   })
+
+  // The host's package for mounting shares, installed through the agent
+  // (like OS updates). After a failed mount that blamed it, the share is
+  // tried again straight away.
+  const pkg = f.type === 'cifs' ? 'cifs-utils' : 'nfs-common'
+  const install = useMutation({
+    mutationFn: () => api<{ manager: string; package: string; already?: boolean }>(`/api/hosts/${target}/share-tools`, { method: 'POST', body: { type: f.type } }),
+    onSuccess: (r) => {
+      toast('good', r.already ? `${host?.name}: ${r.package} was already installed` : `${host?.name}: installed ${r.package} (${r.manager})`)
+      setError(null)
+      if (blamedTools && !problem) create.mutate()
+    },
+    onError: (e) => setError(`Couldn't install ${pkg} on ${host?.name}: ${errorText(e)}`),
+  })
+  const blamedTools = !!error && /cifs-utils|nfs-common/.test(error) && !error.startsWith("Couldn't install")
 
   return (
     <Modal open={open} onClose={close} title="New network share" wide>
@@ -185,8 +200,24 @@ export function NewShareModal({ open, onClose, hosts, defaultHost }: { open: boo
 
         {tried && problem && <ErrorNote error={problem} />}
         <ErrorNote error={error} />
+        {blamedTools && (
+          <Button type="button" icon={Download} loading={install.isPending} onClick={() => install.mutate()}>
+            {install.isPending ? `Installing ${pkg}…` : `Install ${pkg} on ${host?.name} and try again`}
+          </Button>
+        )}
         <p className="text-xs leading-relaxed text-ink-100/50">
-          The host needs {f.type === 'cifs' ? <span className="mono">cifs-utils</span> : <span className="mono">nfs-common</span>} installed. Docker keeps the volume's options, including the password, in plain text on the host: anyone who can run <span className="mono">docker volume inspect</span> there can read them.
+          The host needs <span className="mono">{pkg}</span> installed
+          {!blamedTools && host && (
+            <>
+              {' '}
+              (
+              <button type="button" className="text-lime-300 underline-offset-2 hover:underline disabled:opacity-50" disabled={install.isPending} onClick={() => install.mutate()}>
+                {install.isPending ? 'installing…' : `install it on ${host.name}`}
+              </button>
+              )
+            </>
+          )}
+          . Docker keeps the volume's options, including the password, in plain text on the host: anyone who can run <span className="mono">docker volume inspect</span> there can read them.
         </p>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={close}>

@@ -52,6 +52,14 @@ type ShareInfo struct {
 	Path   string `json:"path"`   // share name (CIFS) or export path (NFS)
 }
 
+// ShareTools is OpHostInstallShareTools' result.
+type ShareTools struct {
+	Manager string `json:"manager"` // apt, dnf, yum or apk
+	Package string `json:"package"`
+	// Already is true when the package was installed before.
+	Already bool `json:"already,omitempty"`
+}
+
 // ShareCreated is OpVolumeCreateShare's result.
 type ShareCreated struct {
 	Name    string `json:"name"`
