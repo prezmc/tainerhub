@@ -550,7 +550,7 @@ volumes:
 
 ### Prune
 
-The **Prune** menu cleans up one host at a time. You confirm each prune first.
+The **Prune** menu cleans up one host at a time: options are grouped under each host, and each one says what it removes and what stays. You confirm each prune first.
 
 | Tab | Light option | Full option | Who |
 | --- | --- | --- | --- |

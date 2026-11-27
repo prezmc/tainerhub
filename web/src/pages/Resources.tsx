@@ -455,6 +455,21 @@ function Summary({ items }: { items: string[] }) {
 
 // ---------------- prune & pull ----------------
 
+/** What each prune option removes, and what it leaves, as the menu says it. */
+const PRUNE_OPTIONS: Record<Tab, { light: { label: string; description: string }; all?: { label: string; description: string } }> = {
+  images: {
+    light: { label: 'Dangling images', description: 'Untagged leftovers from rebuilds and newer pulls.' },
+    all: { label: 'All unused images', description: "Every image no container uses, except those kept for rollback. They're pulled again when needed." },
+  },
+  volumes: {
+    light: { label: 'Anonymous volumes', description: 'Unnamed volumes no container uses, left behind by removed containers. Named volumes and network shares stay.' },
+    all: { label: 'All unused volumes', description: 'Every volume no container uses, named ones too: their data is deleted. Network shares stay.' },
+  },
+  networks: {
+    light: { label: 'Unused networks', description: "Networks no container is attached to. Docker's built-in ones stay." },
+  },
+}
+
 function PruneMenu({ tab, hosts }: { tab: Tab; hosts: Host[] }) {
   const me = useMe()
   const qc = useQueryClient()
@@ -517,10 +532,13 @@ function PruneMenu({ tab, hosts }: { tab: Tab; hosts: Host[] }) {
           Prune
         </Button>
       )}
-      items={hosts.flatMap((h) => [
-        { label: `${h.name}: ${tab === 'networks' ? 'unused' : tab === 'images' ? 'dangling' : 'anonymous'}`, icon: Eraser, onClick: () => go(h, false) },
-        ...(tab !== 'networks' ? [{ label: `${h.name}: all unused`, icon: Trash2, danger: true, onClick: () => go(h, true) }] : []),
-      ])}
+      items={hosts.flatMap((h) => {
+        const o = PRUNE_OPTIONS[tab]
+        return [
+          { group: `On ${h.name}`, label: o.light.label, description: o.light.description, icon: Eraser, onClick: () => go(h, false) },
+          ...(o.all ? [{ group: `On ${h.name}`, label: o.all.label, description: o.all.description, icon: Trash2, danger: true, onClick: () => go(h, true) }] : []),
+        ]
+      })}
     />
   )
 }

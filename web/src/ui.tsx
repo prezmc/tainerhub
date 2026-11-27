@@ -576,7 +576,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 // ---------------- dropdown menu ----------------
 
-export type MenuItem = { label: string; icon: LucideIcon; onClick: () => void; danger?: boolean; hidden?: boolean }
+export type MenuItem = {
+  label: string
+  icon: LucideIcon
+  onClick: () => void
+  danger?: boolean
+  hidden?: boolean
+  /** A second, smaller line saying what the item does. */
+  description?: string
+  /** Items with a group get a heading whenever the group changes. */
+  group?: string
+}
 /** Spread onto the menu's trigger button. */
 export type MenuTriggerProps = { 'aria-haspopup': 'menu'; 'aria-expanded': boolean; 'aria-controls'?: string }
 
@@ -620,13 +630,23 @@ export function Menu({ trigger, items }: { trigger: (toggle: () => void, props: 
           id={id}
           role="menu"
           onKeyDown={onKey}
-          className="absolute right-0 top-9 z-40 min-w-44 overflow-hidden rounded-[3px] bg-panel p-1 shadow-2xl shadow-black/50 ring-1 ring-line animate-[pop_120ms_ease-out]"
+          className={cx(
+            'absolute right-0 top-9 z-40 max-h-[70vh] overflow-y-auto rounded-[3px] bg-panel p-1 shadow-2xl shadow-black/50 ring-1 ring-line animate-[pop_120ms_ease-out]',
+            items.some((i) => i.description) ? 'w-80 max-w-[calc(100vw-2rem)]' : 'min-w-44',
+          )}
         >
           {items
             .filter((i) => !i.hidden)
-            .map((i) => (
+            .flatMap((i, n, shown) => [
+              ...(i.group && i.group !== shown[n - 1]?.group
+                ? [
+                    <div key={`g:${i.group}`} role="presentation" className={cx('px-3 pb-1 pt-2 font-display text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-100/45', n > 0 && 'mt-1 border-t border-line')}>
+                      {i.group}
+                    </div>,
+                  ]
+                : []),
               <button
-                key={i.label}
+                key={`${i.group ?? ''}:${i.label}`}
                 role="menuitem"
                 tabIndex={-1}
                 onClick={() => {
@@ -640,10 +660,17 @@ export function Menu({ trigger, items }: { trigger: (toggle: () => void, props: 
                     : 'text-ink-50 hover:border-lime-400 hover:bg-white/[0.05] focus:border-lime-400 focus:bg-white/[0.05]',
                 )}
               >
-                <i.icon className="size-4 opacity-80" />
-                {i.label}
-              </button>
-            ))}
+                <i.icon className={cx('size-4 shrink-0 opacity-80', i.description && 'self-start mt-0.5')} />
+                {i.description ? (
+                  <span className="min-w-0">
+                    <span className="block">{i.label}</span>
+                    <span className={cx('mt-0.5 block text-xs leading-snug', i.danger ? 'text-rose-200/60' : 'text-ink-100/55')}>{i.description}</span>
+                  </span>
+                ) : (
+                  i.label
+                )}
+              </button>,
+            ])}
         </div>
       )}
     </div>
