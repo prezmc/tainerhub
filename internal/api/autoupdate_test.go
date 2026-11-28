@@ -109,8 +109,11 @@ func TestPlanContainer(t *testing.T) {
 		{ID: "6", Name: "cached", Image: "cache:1", UpdateAvailable: true},
 		{ID: "7777777777777777", Name: "vpn", Image: "gluetun:3"},
 		{ID: "8", Name: "torrent", Image: "qbit:1", NetworkOf: "7777777777777777"},
+		// compose projects of one container: alone unless TainerHub manages it
+		{ID: "9", Name: "solo-1", Image: "solo:1", Project: "solo", Solo: true},
+		{ID: "10", Name: "managed-1", Image: "solo:1", Project: "Managed", Solo: true},
 	}}
-	upd := wire.ImageUpdates{Images: map[string]bool{"nginx:1": true, "postgres:16": false, "app:1": true, "gluetun:3": true, "qbit:1": true}}
+	upd := wire.ImageUpdates{Images: map[string]bool{"nginx:1": true, "postgres:16": false, "app:1": true, "gluetun:3": true, "qbit:1": true, "solo:1": true}}
 	for _, tc := range []struct {
 		name, skip string
 	}{
@@ -124,8 +127,10 @@ func TestPlanContainer(t *testing.T) {
 		{"cached", ""}, // the check couldn't tell this time: the host's last answer counts
 		{"vpn", "torrent uses its network"},
 		{"torrent", ""}, // the one using the network can be recreated
+		{"solo-1", ""},
+		{"managed-1", "compose project Managed"},
 	} {
-		c, refs, skip := planContainer(tc.name, st, upd)
+		c, refs, skip := planContainer(tc.name, st, upd, map[string]bool{"managed": true})
 		if tc.skip == "" && (skip != "" || c == nil || len(refs) != 1) {
 			t.Errorf("%s: skipped (%q), want an update", tc.name, skip)
 		}

@@ -301,8 +301,23 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			Labels:          r.Labels,
 		})
 	}
+	markSolo(out)
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// markSolo sets Solo on each container that's the only one of its compose
+// project (stopped containers count too).
+func markSolo(cs []wire.Container) {
+	n := map[string]int{}
+	for _, c := range cs {
+		if c.Project != "" {
+			n[c.Project]++
+		}
+	}
+	for i := range cs {
+		cs[i].Solo = cs[i].Project != "" && n[cs[i].Project] == 1
+	}
 }
 
 func (d *SocketDocker) Events(ctx context.Context, fn func(wire.DockerEvent)) error {

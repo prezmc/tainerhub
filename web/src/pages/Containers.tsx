@@ -7,7 +7,7 @@ import { api, can, hostAddress, isStoppable, isUnhealthy, mem, publishedPort, ti
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, useOpenTerminal, type Action, type SortKey } from '../fleet'
 import { Button, ErrorNote, IconButton, Menu, StatusDot, cx, toneOf, useToast } from '../ui'
 import { useMe } from './AppLayout'
-import { StackLink } from '../stacks'
+import { StackLink, useUpdatesAlone } from '../stacks'
 import { MoveContainerDialog, movable } from './MoveContainer'
 import { ownContainer } from '../own'
 import { networkOwner } from '../sharednet'
@@ -328,6 +328,7 @@ const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run, v
   const paused = c.state === 'paused'
   const stoppable = isStoppable(c)
   const act = (a: Action) => run(c, a)
+  const alone = useUpdatesAlone(c)
   const ports = (c.ports ?? []).filter((p) => p.includes('->'))
   const uptime = c.status.replace(/\s*\((un)?healthy\)/, '')
 
@@ -404,12 +405,12 @@ const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run, v
                 { label: 'Pause', icon: Pause, onClick: () => act('pause'), hidden: !running },
                 { label: 'Resume', icon: Play, onClick: () => act('unpause'), hidden: !paused },
                 { label: 'Kill', icon: Zap, onClick: () => act('kill'), danger: true, hidden: !stoppable },
-                { label: 'Pull & recreate', icon: Download, onClick: () => act('recreate'), hidden: !!c.project || c.name.startsWith('tainerhub') },
+                { label: 'Pull & recreate', icon: Download, onClick: () => act('recreate'), hidden: !alone || c.name.startsWith('tainerhub') },
                 {
                   label: 'Update via its stack',
                   icon: Boxes,
                   onClick: () => navigate({ to: '/stacks', search: { q: c.project } }),
-                  hidden: !c.project || c.name.startsWith('tainerhub'),
+                  hidden: alone || c.name.startsWith('tainerhub'),
                 },
                 { label: 'Move to another host…', icon: ArrowRightLeft, onClick: () => setMoving(true), hidden: !admin || !movable(c) || !host?.online },
                 {

@@ -158,6 +158,14 @@ func (s *Server) routes() []route {
 		}),
 		rt("POST /api/hosts/{id}/containers/{cid}/recreate", "operator", scopeHost, func(w http.ResponseWriter, r *http.Request) {
 			cid := r.PathValue("cid")
+			// The agent refuses a container that shares its compose
+			// project; only the hub knows which projects are its stacks.
+			if c, ok := s.findContainer(r.PathValue("id"), cid); ok && c.Project != "" {
+				if status, msg := s.aloneRefusal(r.Context(), r.PathValue("id"), c); msg != "" {
+					jsonErr(w, status, msg)
+					return
+				}
+			}
 			s.runOp(w, r, wire.Operation{Kind: wire.OpContainerRecreate, Target: cid}, s.containerName(r.PathValue("id"), cid))
 		}),
 		rt("DELETE /api/hosts/{id}/images/{rid}", "operator", scopeHost, s.removeResource(wire.OpImageRemove)),
@@ -1407,6 +1415,19 @@ func (s *Server) removeWithVolumes(w http.ResponseWriter, r *http.Request) {
 }
 
 // containerName is a container's name on a connected host, else its ID.
+// findContainer looks a container up in the host's last status, by ID, name
+// or ID prefix (as the API accepts them).
+func (s *Server) findContainer(hostID, cid string) (wire.Container, bool) {
+	if a := s.Reg.Get(hostID); a != nil {
+		for _, c := range a.Status().Containers {
+			if c.ID == cid || c.Name == cid || (len(cid) >= 12 && strings.HasPrefix(c.ID, cid)) {
+				return c, true
+			}
+		}
+	}
+	return wire.Container{}, false
+}
+
 func (s *Server) containerName(hostID, cid string) string {
 	if a := s.Reg.Get(hostID); a != nil {
 		for _, c := range a.Status().Containers {

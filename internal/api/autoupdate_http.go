@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -257,7 +258,7 @@ func (s *Server) containerAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	u := userFrom(r)
 	if on {
-		if status, msg := s.containerAutoRefusal(hostID, name); msg != "" {
+		if status, msg := s.containerAutoRefusal(r.Context(), hostID, name); msg != "" {
 			jsonErr(w, status, msg)
 			return
 		}
@@ -273,9 +274,26 @@ func (s *Server) containerAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": on})
 }
 
+// aloneRefusal is why container c, of a compose project, can't be updated
+// by itself (status and message, "" if it can): it shares its project with
+// other containers, or TainerHub manages the project as a stack.
+func (s *Server) aloneRefusal(ctx context.Context, hostID string, c wire.Container) (int, string) {
+	managed, err := s.managedProjects(ctx, hostID)
+	if err != nil {
+		return http.StatusInternalServerError, "couldn't read the stacks: " + err.Error()
+	}
+	switch {
+	case managed[strings.ToLower(c.Project)]:
+		return http.StatusConflict, c.Name + " belongs to the " + c.Project + " stack, which TainerHub manages: it updates with the stack's Pull & redeploy"
+	case !wire.UpdatesAlone(c, false):
+		return http.StatusConflict, c.Name + " is one of several containers in the compose project " + c.Project + ": they update together as a stack (a project started outside TainerHub has to be taken over first)"
+	}
+	return 0, ""
+}
+
 // containerAutoRefusal is why a container can't be opted in (status and
 // message; "" if it can).
-func (s *Server) containerAutoRefusal(hostID, name string) (int, string) {
+func (s *Server) containerAutoRefusal(ctx context.Context, hostID, name string) (int, string) {
 	if strings.HasPrefix(name, "tainerhub") {
 		return http.StatusConflict, "TainerHub's own containers can't be updated automatically: update TainerHub from Hosts → Updates"
 	}
@@ -292,7 +310,9 @@ func (s *Server) containerAutoRefusal(hostID, name string) (int, string) {
 		case ownContainer(c, ownProjectOf(st)):
 			return http.StatusConflict, "TainerHub's own containers can't be updated automatically: update TainerHub from Hosts → Updates"
 		case c.Project != "":
-			return http.StatusConflict, name + " belongs to the compose project " + c.Project + ": containers in a stack update together, so turn on automatic updates for the stack instead (a project started outside TainerHub has to be taken over first)"
+			if status, msg := s.aloneRefusal(ctx, hostID, c); msg != "" {
+				return status, msg + ", so turn on automatic updates for the stack instead"
+			}
 		case !updateableRef(c.Image):
 			return http.StatusBadRequest, name + " uses a pinned image (by digest or ID), so there's never a newer one to update to"
 		}

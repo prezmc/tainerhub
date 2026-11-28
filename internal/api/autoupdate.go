@@ -406,7 +406,11 @@ func (s *Server) autoTarget(ctx context.Context, a *registry.Agent, t store.Auto
 		if _, moving := s.jobs.running()["container:"+t.HostID+"/"+t.ContainerName]; moving {
 			return autoOutcome{Result: autoSkipped, Reason: "a job is running for this container"}
 		}
-		c, refs, skip := planContainer(t.ContainerName, st, upd)
+		managed, err := s.managedProjects(ctx, t.HostID)
+		if err != nil {
+			return autoOutcome{Result: autoFailed, Reason: "couldn't read the stacks: " + err.Error()}
+		}
+		c, refs, skip := planContainer(t.ContainerName, st, upd, managed)
 		if skip != "" {
 			return autoOutcome{Result: autoSkipped, Reason: skip}
 		}
@@ -516,6 +520,23 @@ func (s *Server) autoRollback(ctx context.Context, a *registry.Agent, stack stor
 	}
 }
 
+// managedProjects names (lower-case) the compose projects on a host that
+// TainerHub manages as stacks: their containers update with the stack, even
+// a stack with a single service.
+func (s *Server) managedProjects(ctx context.Context, hostID string) (map[string]bool, error) {
+	stacks, err := s.aus().ListStacks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, st := range stacks {
+		if st.HostID == hostID {
+			out[strings.ToLower(st.Name)] = true
+		}
+	}
+	return out, nil
+}
+
 // ownContainer: TainerHub's own containers (the hub, its database, agents)
 // are updated from Hosts → Updates, never automatically, and can't be
 // moved. They're found by name (as in the install files), by image (a
@@ -572,7 +593,9 @@ func updateableRef(ref string) bool {
 
 // planContainer finds a standalone container by name and says whether it
 // has a newer image (refs) or why it's skipped.
-func planContainer(name string, st registry.Status, upd wire.ImageUpdates) (*wire.Container, []string, string) {
+// managed holds the (lower-case) names of the compose projects TainerHub
+// manages as stacks on the host (see managedProjects).
+func planContainer(name string, st registry.Status, upd wire.ImageUpdates, managed map[string]bool) (*wire.Container, []string, string) {
 	own := ownProjectOf(st)
 	var c *wire.Container
 	for i := range st.Containers {
@@ -585,7 +608,7 @@ func planContainer(name string, st registry.Status, upd wire.ImageUpdates) (*wir
 		return nil, nil, "TainerHub's own containers are updated from Hosts → Updates"
 	case c == nil:
 		return nil, nil, "no container with this name on the host"
-	case c.Project != "":
+	case !wire.UpdatesAlone(*c, managed[strings.ToLower(c.Project)]):
 		return nil, nil, "it now belongs to the compose project " + c.Project + ", which updates as a stack"
 	case !updateableRef(c.Image):
 		return nil, nil, "it uses a pinned image (by digest or ID)"

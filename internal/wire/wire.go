@@ -162,6 +162,10 @@ type Container struct {
 	// for that container. Its ports are published on that container, and
 	// it loses its network when that container stops or is replaced.
 	NetworkOf string `json:"networkOf,omitempty"`
+	// Solo: it's the only container of its compose project (Project set).
+	// Unless TainerHub manages that project as a stack, it then updates on
+	// its own like a docker run container (see UpdatesAlone).
+	Solo bool `json:"solo,omitempty"`
 
 	// Live resource use, refreshed about every 10 s for running containers.
 	// CPU is a percentage of one core (like `docker stats`), so it can exceed 100.
@@ -1519,6 +1523,14 @@ func UsesNetworkOf(dep, gw Container) bool {
 }
 
 // NetworkUsers are the containers in cs that run in gw's network, by name.
+// UpdatesAlone says whether c can be updated by itself (pull and recreate)
+// rather than with its stack: it's not in a compose project, or it's the
+// only container of one. A project TainerHub manages as a stack still
+// updates with Pull & redeploy; callers check that (managed).
+func UpdatesAlone(c Container, managed bool) bool {
+	return c.Project == "" || (c.Solo && !managed)
+}
+
 func NetworkUsers(gw Container, cs []Container) []string {
 	var out []string
 	for _, c := range cs {

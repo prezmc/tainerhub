@@ -48,12 +48,14 @@ Each row has buttons for **Logs**, **Stop** or **Start** (or **Resume** for a pa
 | **Terminal** | Opens a shell in the container. Admins only, running containers only. |
 | **Pause** / **Resume** | Freezes and unfreezes the container's processes. |
 | **Kill** | Sends `SIGKILL` at once, with no clean shutdown. |
-| **Pull & recreate** | For standalone containers: pulls the newest version of its image and replaces the container with an identical one. If the new one doesn't start, the old one is put back automatically. |
-| **Update via its stack** | For containers that belong to a compose project: opens the Stacks page for that project. |
+| **Pull & recreate** | For standalone containers, including a compose project of just one container that TainerHub doesn't manage (see below): pulls the newest version of its image and replaces the container with an identical one. If the new one doesn't start, the old one is put back automatically. |
+| **Update via its stack** | For containers that share a compose project with others, or belong to a stack TainerHub manages: opens the Stacks page for that project. |
 | **Move to another host…** | For standalone containers: recreates it, with its volumes, on another host. Admins only. See [Moving a container to another host](#moving-a-container-to-another-host). |
 | **Move with its stack…** | For containers that belong to a compose project: they move with their stack. Admins only. |
 
 Stop, Kill, Remove and Pull & recreate ask you to confirm first.
+
+**A compose project of one container** (a single-service compose file started by hand or by another tool, which TainerHub doesn't manage as a stack) updates like a standalone container: it gets **Pull & recreate** and its own automatic-update switch, with no need to take it over first. The new container keeps its compose labels, and its image label is set to the new image, so a later `docker compose up` on that file sees it as the service's container and leaves it alone. Containers that share their project with others still update with their stack, because replacing one by itself can cut the others off (for example the apps in a VPN container's network). A stack TainerHub manages updates with **Pull & redeploy**, even with a single service.
 
 **TainerHub's own containers** (the hub, its database and the agents) get an extra warning. Where the agent refuses the action (Stop, Kill, Pause, Remove, or Pull & recreate on anything in the compose project it runs in, which on the hub's server includes the hub and its database), the dialog says so up front, explains what would break, and gives the commands to do it on purpose on the server (for example `docker stop tainerhub`, and `docker compose -p tainerhub up -d` to bring it back). Where it would go through, the dialog says what breaks and you have to tick a box first: removing an agent cuts its host off from TainerHub until the agent runs again (or, without its volume, is reinstalled with a new join token), and stopping or removing the hub or its database takes TainerHub down for every host. Deleting or pruning a volume, or removing a network, that belongs to TainerHub asks the same way. TainerHub's own containers can't be moved to another host.
 
@@ -98,7 +100,7 @@ Agents also check on their own every 6 hours, without registry logins, for hubs 
 
 To update:
 
-- **Standalone container**: **More actions → Pull & recreate**.
+- **Standalone container**, or a compose project of one container that TainerHub doesn't manage: **More actions → Pull & recreate**.
 - **Container in a stack**: **Pull & redeploy** on its stack.
 - **TainerHub's own containers**: the update card on the Hosts page.
 
@@ -111,7 +113,7 @@ To have this done for you at night, see [Automatic updates](#automatic-updates).
 Automatic updates are off until an admin turns them on for a stack or a container, one at a time:
 
 - **A stack**: the **Automatic updates** switch on the stack's page (managed stacks only).
-- **A standalone container**: the same switch in its details panel. A container that belongs to a compose project can't be turned on by itself, because its stack's containers update together: turn it on for the stack (take the project over first if it was started outside TainerHub).
+- **A standalone container**: the same switch in its details panel. A compose project of one container that TainerHub doesn't manage counts as standalone here. A container that shares its compose project with others can't be turned on by itself, because its stack's containers update together: turn it on for the stack (take the project over first if it was started outside TainerHub).
 
 Opted-in stacks show an **auto** badge in the Stacks list.
 

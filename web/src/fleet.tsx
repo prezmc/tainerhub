@@ -209,7 +209,7 @@ export function useContainerAction() {
       // when it goes down, and can't follow it to a replacement.
       const netAction = action === 'stop' || action === 'kill' || action === 'restart' || action === 'remove' ? action : null
       const users = netAction || action === 'recreate' ? networkUsers(c, qc.getQueryData<Container[]>(['containers']) ?? []) : []
-      if (users.length > 0 && action === 'recreate' && !c.project) {
+      if (users.length > 0 && action === 'recreate' && (!c.project || c.solo)) {
         await confirm({
           title: `Recreate ${c.name} together with ${users.length === 1 ? users[0] : 'the containers in its network'}`,
           body: (

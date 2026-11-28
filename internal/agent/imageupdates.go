@@ -228,8 +228,16 @@ func (d *SocketDocker) recreate(ctx context.Context, id string, auths []wire.Reg
 		return res, err
 	}
 	name := strings.TrimPrefix(meta.Name, "/")
+	// A compose project's only container updates on its own, keeping its
+	// compose labels, so `docker compose up` still sees it as the service's
+	// container. One of several updates with its stack: replacing it alone
+	// could leave the others on a network or dependency that's gone.
 	if p := meta.Config.Labels["com.docker.compose.project"]; p != "" {
-		return res, fmt.Errorf("%s belongs to the %s compose stack: update it with the stack's Pull & redeploy", name, p)
+		if n, err := d.projectSize(ctx, p); err != nil {
+			return res, err
+		} else if n > 1 {
+			return res, fmt.Errorf("%s is one of %d containers in the %s compose stack: update it with the stack's Pull & redeploy, which updates them together", name, n, p)
+		}
 	}
 	if strings.HasPrefix(name, "tainerhub") {
 		return res, errors.New("TainerHub's own containers are updated from Hosts → Updates")
@@ -352,6 +360,7 @@ func (d *SocketDocker) createSpec(ctx context.Context, insp map[string]json.RawM
 		cfg["Env"] = withoutInherited(cfg["Env"], oldImg.Config["Env"])
 		cfg["Labels"] = labelsWithoutInherited(cfg["Labels"], oldImg.Config["Labels"])
 	}
+	cfg["Labels"] = d.withComposeImage(ctx, cfg["Labels"], ref)
 	if len(meta.ID) >= 12 && meta.Config.Hostname == meta.ID[:12] {
 		delete(cfg, "Hostname") // Docker's default (the old ID): let it pick the new one
 	}
@@ -419,6 +428,18 @@ func (d *SocketDocker) networkUsers(ctx context.Context, id, name string) ([]str
 	return wire.NetworkUsers(gw, cs), nil
 }
 
+// projectSize counts the containers (any state) in compose project p.
+func (d *SocketDocker) projectSize(ctx context.Context, p string) (int, error) {
+	filters, _ := json.Marshal(map[string][]string{"label": {"com.docker.compose.project=" + p}})
+	var raw []struct {
+		ID string `json:"Id"`
+	}
+	if err := d.getJSON(ctx, "/containers/json", url.Values{"all": {"1"}, "filters": {string(filters)}}, &raw); err != nil {
+		return 0, err
+	}
+	return len(raw), nil
+}
+
 // restore undoes a half-done recreate: give the old container its name back
 // and start it again. Best effort: it runs after something already failed.
 func (d *SocketDocker) restore(id, name string, start bool) {
@@ -470,6 +491,40 @@ func withoutInherited(container, image json.RawMessage) json.RawMessage {
 }
 
 // labelsWithoutInherited drops labels with exactly the old image's value.
+// composeImageLabel is where compose records the image ID a service's
+// container was created from; `docker compose up` recreates a container
+// whose label isn't the service image's ID. A compose container updated on
+// its own gets the new image's ID, or the next `up` would replace it.
+const composeImageLabel = "com.docker.compose.image"
+
+// withComposeImage sets composeImageLabel (only if the container has it) to
+// ref's ID as compose reads it: for this host's platform, which on the
+// containerd image store is the platform's manifest, not the image index.
+func (d *SocketDocker) withComposeImage(ctx context.Context, labels json.RawMessage, ref string) json.RawMessage {
+	var l map[string]string
+	if json.Unmarshal(labels, &l) != nil || l[composeImageLabel] == "" {
+		return labels
+	}
+	var v struct{ Os, Arch string }
+	var img struct {
+		ID string `json:"Id"`
+	}
+	q := url.Values{}
+	if d.getJSON(ctx, "/version", nil, &v) == nil && v.Os != "" && v.Arch != "" {
+		p, _ := json.Marshal(map[string]string{"os": v.Os, "architecture": v.Arch})
+		q.Set("platform", string(p))
+	}
+	if d.getJSON(ctx, "/images/"+url.PathEscape(ref)+"/json", q, &img) != nil || img.ID == "" {
+		// an older Docker, or no image for this platform: the plain ID
+		if d.getJSON(ctx, "/images/"+url.PathEscape(ref)+"/json", nil, &img) != nil || img.ID == "" {
+			return labels
+		}
+	}
+	l[composeImageLabel] = img.ID
+	b, _ := json.Marshal(l)
+	return b
+}
+
 func labelsWithoutInherited(container, image json.RawMessage) json.RawMessage {
 	var c, i map[string]string
 	_ = json.Unmarshal(container, &c)

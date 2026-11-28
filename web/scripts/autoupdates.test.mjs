@@ -1,7 +1,7 @@
 // Tests for src/autoupdates.ts. Run with `npm test`.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { containerAutoProblem, daysText, durationText, findTarget, resultLabel, resultText, resultTone, windowText } from '../src/autoupdates.ts'
+import { containerAutoProblem, updatesAlone, daysText, durationText, findTarget, resultLabel, resultText, resultTone, windowText } from '../src/autoupdates.ts'
 
 test('daysText names common sets', () => {
   assert.equal(daysText(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']), 'every day')
@@ -45,4 +45,19 @@ test('a rolled-back update reads differently from a failure', () => {
   assert.equal(resultTone('rolled_back'), 'warn')
   assert.equal(resultTone('failed'), 'bad')
   assert.equal(resultText('rolled_back', 'web is unhealthy'), 'rolled back: web is unhealthy')
+})
+
+test('updatesAlone: a compose project of one container, unless TainerHub manages it', () => {
+  const stacks = [
+    { name: 'Radarr', hostId: 'h1', managed: true },
+    { name: 'sonarr', hostId: 'h1', managed: false },
+  ]
+  assert.equal(updatesAlone({ hostId: 'h1' }, stacks), true) // docker run
+  assert.equal(updatesAlone({ hostId: 'h1', project: 'sonarr', solo: true }, stacks), true)
+  assert.equal(updatesAlone({ hostId: 'h1', project: 'radarr', solo: true }, stacks), false) // managed stack
+  assert.equal(updatesAlone({ hostId: 'h2', project: 'radarr', solo: true }, stacks), true) // same name, other host
+  assert.equal(updatesAlone({ hostId: 'h1', project: 'media', solo: false }, stacks), false) // one of several
+  assert.equal(updatesAlone({ hostId: 'h1', project: 'sonarr', solo: true }, undefined), false) // stacks not loaded yet
+  assert.equal(containerAutoProblem({ name: 'sonarr', project: 'sonarr', image: 'sonarr:4' }, true), null)
+  assert.match(containerAutoProblem({ name: 'vpn', project: 'media', image: 'gluetun:3' }, false), /compose project media/)
 })

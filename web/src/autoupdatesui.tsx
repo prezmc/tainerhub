@@ -19,7 +19,7 @@ import {
   type AutoWindow,
 } from './autoupdates'
 import { Badge, Button, Card, ErrorNote, Input, cx, useToast } from './ui'
-import { useOpenJob } from './stacks'
+import { useOpenJob, useUpdatesAlone } from './stacks'
 import { hubAdmin } from './hostscope'
 import { useMe } from './pages/AppLayout'
 
@@ -183,9 +183,10 @@ function AutoRollbackSetting({ path, on, label }: { path: string; on: boolean; l
 }
 
 /** Container details: the toggle for standalone containers, a pointer to the stack otherwise. */
-export function ContainerAutoUpdate({ c }: { c: { name: string; project?: string; image: string; hostId: string } }) {
-  const problem = containerAutoProblem(c)
-  if (c.project || c.name.startsWith('tainerhub')) return null // the stack's page has its own switch
+export function ContainerAutoUpdate({ c }: { c: { name: string; project?: string; solo?: boolean; image: string; hostId: string } }) {
+  const alone = useUpdatesAlone(c)
+  const problem = containerAutoProblem(c, alone)
+  if (!alone || c.name.startsWith('tainerhub')) return null // the stack's page has its own switch
   return <AutoUpdateToggle hostId={c.hostId} name={c.name} problem={problem} compact />
 }
 

@@ -175,6 +175,8 @@ export interface Container {
   hostNetwork?: boolean
   /** Runs in another container's network (network_mode container:<x>): that container's name or ID. Its ports are published there. */
   networkOf?: string
+  /** The only container of its compose project: unless TainerHub manages that project as a stack, it updates on its own (see updatesAlone). */
+  solo?: boolean
   hostId: string
   hostName: string
   /** A newer image is available for this container's tag. */

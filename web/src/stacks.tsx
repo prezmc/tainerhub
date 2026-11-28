@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowDownToLine, Boxes, CircleCheck, CircleX, Download, LoaderCircle, X } from 'lucide-react'
 import { useFleet, useLive } from './fleet'
+import { updatesAlone } from './autoupdates'
 import { api, ApiError, errorText, isRegistryAuthError, registryHint, type Container, type Host, type StackAction, type StackStatus, type StackSummary } from './api'
 import { Badge, IconButton, cx, download, useConfirm, useLayer, useToast, type Tone } from './ui'
 import { RegistryAuthHint } from './registries'
@@ -306,6 +307,10 @@ export function CodeEditor({
       />
     </div>
   )
+}
+
+export function useUpdatesAlone(c: Pick<Container, 'project' | 'solo' | 'hostId'>): boolean {
+  return updatesAlone(c, useStacks().data)
 }
 
 /**

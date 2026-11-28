@@ -1,3 +1,4 @@
+import type { Container, StackSummary } from './api'
 // Automatic updates: types for /api/auto-updates and small helpers (kept
 // free of React so `npm test` can check them).
 
@@ -125,10 +126,22 @@ export function findTarget(targets: AutoUpdateTarget[] | undefined, q: { stackId
   return targets?.find((t) => (q.stackId ? t.kind === 'stack' && t.stackId === q.stackId : t.kind === 'container' && t.hostId === q.hostId && t.containerName === q.name))
 }
 
+/**
+ * Whether a container updates on its own (Pull & recreate, automatic
+ * updates) rather than with its stack: it's not in a compose project, or
+ * it's the only container of one TainerHub doesn't manage (a one-service
+ * compose file started by hand). Mirrors wire.UpdatesAlone on the hub.
+ */
+export function updatesAlone(c: Pick<Container, 'project' | 'solo' | 'hostId'>, stacks: StackSummary[] | undefined): boolean {
+  if (!c.project) return true
+  if (!c.solo || !stacks) return false // until the stacks load, assume it's managed
+  return !stacks.some((s) => s.managed && s.hostId === c.hostId && s.name.toLowerCase() === c.project!.toLowerCase())
+}
+
 /** Why a container can't be opted in on its own (null if it can), mirroring the hub. */
-export function containerAutoProblem(c: { name: string; project?: string; image: string }): string | null {
+export function containerAutoProblem(c: { name: string; project?: string; image: string }, alone = !c.project): string | null {
   if (c.name.startsWith('tainerhub')) return "TainerHub's own containers are updated from Hosts → Updates."
-  if (c.project) return `It belongs to the compose project ${c.project}, so it updates with its stack: turn automatic updates on for the stack instead.`
+  if (!alone) return `It belongs to the compose project ${c.project}, so it updates with its stack: turn automatic updates on for the stack instead.`
   if (c.image.includes('@') || c.image.startsWith('sha256:')) return 'It uses a pinned image (by digest or ID), so there is never a newer one.'
   return null
 }
