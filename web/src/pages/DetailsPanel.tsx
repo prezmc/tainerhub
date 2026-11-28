@@ -125,19 +125,19 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
               />
             </div>
           )}
-          {container.size && (
-            <div className="mt-3 rounded-md bg-white/[0.05] p-3 ring-1 ring-white/10" title="The agent measures disk use every half hour. Folders bind-mounted from the host aren't counted, and a volume shared with other containers counts for each.">
-              <div className="flex items-center justify-between text-xs text-ink-100/60">
-                <span className="flex items-center gap-1.5">
-                  <Database className="size-3.5" /> Storage
-                </span>
-                <span className="mono text-white">{bytes(storageOf(container))}</span>
-              </div>
-              <p className="mt-1.5 text-xs text-ink-100/50">
-                {storageDetail(container.size)} · measured {timeAgo(new Date(container.size.at * 1000).toISOString())}
-              </p>
+          <div className="mt-3 rounded-md bg-white/[0.05] p-3 ring-1 ring-white/10" title="The agent measures disk use every half hour. Folders bind-mounted from the host aren't counted, and a volume shared with other containers counts for each.">
+            <div className="flex items-center justify-between text-xs text-ink-100/60">
+              <span className="flex items-center gap-1.5">
+                <Database className="size-3.5" /> Storage
+              </span>
+              <span className="mono text-white">{bytes(storageOf(container))}</span>
             </div>
-          )}
+            <p className="mt-1.5 text-xs text-ink-100/50">
+              {container.size
+                ? `${storageDetail(container.size)} · measured ${timeAgo(new Date(container.size.at * 1000).toISOString())}`
+                : "Not measured yet. The agent measures a minute after it starts, then every half hour. If this stays, update the host's agent on the Hosts page."}
+            </p>
+          </div>
         </header>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
