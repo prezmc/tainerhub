@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowRightLeft, Clock, Cpu, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, Plug, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
+import { ArrowRightLeft, Clock, Cpu, Database, Eye, EyeOff, HardDrive, HeartPulse, Network, Play, Plug, RotateCw, ScrollText, Settings2, Square, SquareTerminal, Tag, Trash2, Variable, X, type LucideIcon } from 'lucide-react'
 import { can, errorText, isStoppable, mem, timeAgo, type Container, type ContainerDetail, type Host } from '../api'
 import { addressText, loopback, portMappings } from '../ports'
 import { PublishedLink } from './HostPorts'
@@ -12,6 +12,7 @@ import { Badge, Button, ErrorNote, IconButton, StatusDot, cx, toneOf, useLayer }
 import { useMe } from './AppLayout'
 import { ContainerMoveNotes, MoveContainerDialog, movable } from './MoveContainer'
 import { ContainerAutoUpdate } from '../autoupdatesui'
+import { bytes, storageDetail, storageOf } from '../storage'
 
 /** Slide-over with everything Docker knows about one container. */
 export function DetailsPanel({ container, onClose }: { container: Container; onClose: () => void }) {
@@ -122,6 +123,19 @@ export function DetailsPanel({ container, onClose }: { container: Container; onC
                 value={container.mem_limit ? `${mem(container.mem)} / ${mem(container.mem_limit)}` : mem(container.mem)}
                 pct={container.mem && container.mem_limit ? (container.mem / container.mem_limit) * 100 : 0}
               />
+            </div>
+          )}
+          {container.size && (
+            <div className="mt-3 rounded-md bg-white/[0.05] p-3 ring-1 ring-white/10" title="The agent measures disk use every half hour. Folders bind-mounted from the host aren't counted, and a volume shared with other containers counts for each.">
+              <div className="flex items-center justify-between text-xs text-ink-100/60">
+                <span className="flex items-center gap-1.5">
+                  <Database className="size-3.5" /> Storage
+                </span>
+                <span className="mono text-white">{bytes(storageOf(container))}</span>
+              </div>
+              <p className="mt-1.5 text-xs text-ink-100/50">
+                {storageDetail(container.size)} · measured {timeAgo(new Date(container.size.at * 1000).toISOString())}
+              </p>
             </div>
           )}
         </header>

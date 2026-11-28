@@ -3,12 +3,14 @@ import { Link } from '@tanstack/react-router'
 import { ArrowRight, Cpu, MemoryStick, PartyPopper, Plus, RotateCw, ScrollText, Server, WifiOff } from 'lucide-react'
 import { can, isUnhealthy, mem, timeAgo, type Activity, type Container, type Host } from '../api'
 import { loadPref, savePref, sortFns, useContainerAction, useFleet, useOpenDetails, useOpenLogs, type SortKey } from '../fleet'
+import { bytes, storageOf } from '../storage'
 import { Button, Card, EmptyState, ErrorNote, cx } from '../ui'
 import { useMe } from './AppLayout'
 
 const SORTS: { key: SortKey; label: string }[] = [
   { key: 'cpu', label: 'CPU' },
   { key: 'memory', label: 'Memory' },
+  { key: 'storage', label: 'Storage' },
   { key: 'name', label: 'Name' },
   { key: 'status', label: 'Status' },
 ]
@@ -16,7 +18,7 @@ const SORTS: { key: SortKey; label: string }[] = [
 export function OverviewPage() {
   const me = useMe()
   const { containers, hosts, activity, loading, error } = useFleet()
-  const [sort, setSort] = useState<SortKey>(() => loadPref('th.sort', ['cpu', 'memory', 'name', 'status'] as const, 'cpu'))
+  const [sort, setSort] = useState<SortKey>(() => loadPref('th.sort', ['cpu', 'memory', 'storage', 'name', 'status'] as const, 'cpu'))
 
   const issues = containers.filter(isUnhealthy)
   const offline = hosts.filter((h) => !h.online)
@@ -132,8 +134,9 @@ function Rack({ host, containers, sort }: { host: Host; containers: Container[];
   const [all, setAll] = useState(false)
   const sorted = useMemo(() => {
     const list = [...containers].sort(sortFns[sort])
-    // Stopped containers sink to the bottom except when sorting by name.
-    return sort === 'name' ? list : [...list.filter((c) => c.state !== 'exited' && c.state !== 'created'), ...list.filter((c) => c.state === 'exited' || c.state === 'created')]
+    // Stopped containers sink to the bottom except when sorting by name or
+    // storage (a stopped container's files take space all the same).
+    return sort === 'name' || sort === 'storage' ? list : [...list.filter((c) => c.state !== 'exited' && c.state !== 'created'), ...list.filter((c) => c.state === 'exited' || c.state === 'created')]
   }, [containers, sort])
   const shown = all ? sorted : sorted.slice(0, MAX_ROWS)
   const cpuTotal = containers.reduce((a, c) => a + (c.cpu ?? 0), 0)
@@ -171,11 +174,11 @@ function Rack({ host, containers, sort }: { host: Host; containers: Container[];
           <div className="mono mt-4 flex px-3 text-[10px] tracking-[0.15em] text-ink-100/50">
             <span className="flex-1 pl-3.5">CONTAINER</span>
             <span className="w-14 text-right">CPU</span>
-            <span className="w-16 text-right">MEM</span>
+            <span className="w-16 text-right">{sort === 'storage' ? 'DISK' : 'MEM'}</span>
           </div>
           <div className="mt-1.5 space-y-1.5 rounded-[3px] bg-black/25 p-2 ring-1 ring-white/[0.07]">
             {shown.map((c) => (
-              <Bar key={c.id} c={c} onClick={() => openDetails(c)} />
+              <Bar key={c.id} c={c} disk={sort === 'storage'} onClick={() => openDetails(c)} />
             ))}
             {containers.length === 0 && <div className="py-4 text-center text-xs text-ink-100/50">No containers</div>}
           </div>
@@ -200,7 +203,8 @@ const barTone = {
   warn: { line: 'bg-amber-400', fill: 'bg-amber-400/15', ring: 'ring-amber-400/30', bg: 'bg-amber-400/[0.05]' },
 }
 
-function Bar({ c, onClick }: { c: Container; onClick: () => void }) {
+/** disk: show the container's storage in place of its memory. */
+function Bar({ c, disk, onClick }: { c: Container; disk?: boolean; onClick: () => void }) {
   const stopped = c.state === 'exited' || c.state === 'created'
   if (stopped && !isUnhealthy(c)) {
     return (
@@ -208,6 +212,7 @@ function Bar({ c, onClick }: { c: Container; onClick: () => void }) {
         <span className="h-4 w-[3px] bg-ink-500" />
         <span className="flex-1 truncate">{c.name}</span>
         <span className="text-[11px]">stopped</span>
+        {disk && <span className="mono w-16 text-right text-[11px] tabular-nums">{bytes(storageOf(c))}</span>}
       </button>
     )
   }
@@ -223,7 +228,7 @@ function Bar({ c, onClick }: { c: Container; onClick: () => void }) {
       <span className={cx('relative h-4 w-[3px] shrink-0', t.line)} />
       <span className="relative flex-1 truncate text-[13px] font-semibold text-white">{c.name}</span>
       <span className={cx('mono relative w-14 text-right text-[11px] tabular-nums', cpu >= 50 ? 'text-rose-300' : 'text-ink-200')}>{c.cpu === undefined ? '–' : `${cpu.toFixed(1)}%`}</span>
-      <span className="mono relative w-16 text-right text-[11px] tabular-nums text-ink-100/70">{mem(c.mem)}</span>
+      <span className="mono relative w-16 text-right text-[11px] tabular-nums text-ink-100/70">{disk ? bytes(storageOf(c)) : mem(c.mem)}</span>
     </button>
   )
 }

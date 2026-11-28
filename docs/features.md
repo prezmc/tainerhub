@@ -15,7 +15,7 @@ The dot next to the search box shows the live connection to the hub. Green means
 The Overview shows your whole fleet at a glance:
 
 - **Counters** at the top: hosts connected (for example `3/3`), running and stopped containers, and **Alerts** (unhealthy containers plus offline hosts).
-- **Fleet map.** One block per host with a tile per container. Sort the tiles by **Status**, **CPU**, **Memory** or **Name**.
+- **Fleet map.** One block per host with a tile per container. Sort the tiles by **CPU**, **Memory**, **Storage**, **Name** or **Status**. Sorting by storage shows each container's disk use in place of its memory.
 - **Needs attention.** Unhealthy containers and offline hosts. When nothing is wrong it says so.
 - **Top consumers.** The containers using the most CPU or memory right now. Switch between **By CPU** and **By memory**.
 - **Live activity.** Container starts, stops and health changes, and hosts connecting or going offline, as they happen.
@@ -31,7 +31,7 @@ Every container on every host in one list.
 - **View buttons**: **All**, **Running**, **Stopped**, **Issues** (unhealthy, restarting, dead, or exited with an error code) and **Updates** (a newer image is available; this button only appears when there is one).
 - **Filter** box: matches the container name, image, stack and host.
 - **Group by**: **host**, **stack** or **state**. Each group is a section you can fold. **Collapse all** / **Expand all** folds or opens every section.
-- **Sort** by clicking the **Container**, **Status**, **CPU** or **Memory** column headings.
+- **Sort** by clicking the **Container**, **Status**, **CPU**, **Memory** or **Disk** column headings. The **Disk** column is each container's storage (see the details panel below); containers not measured yet, or on hosts with an older agent, show **–** and sort last.
 - Clicking a host card on the Hosts page opens this list filtered to that host. A **Host:** chip appears; click its `×` to show all hosts again.
 
 Published ports are links. Click one to open `http://<host address>:<port>` in a new tab.
@@ -152,6 +152,7 @@ The hub reads `image:` lines from the compose file without evaluating variables,
 Click a container's name, or **More actions → Details**, to open the details panel. It shows:
 
 - **Live CPU and memory**.
+- **Storage**: the disk space the container uses, for example **1.2 GB** with "40 MB written by the container, 1.2 GB in volumes". The first part is the container's own writable layer (what it wrote outside its volumes, not the image); the second adds up the Docker volumes it mounts. Network share volumes and folders bind-mounted from the host aren't counted, and a volume shared by several containers counts for each. Measuring makes Docker walk the files, so the agent does it a minute after it connects and then every half hour, never with the live stats; the panel says when it last measured. Hosts with an older agent show no storage.
 - **Overview**: image and image ID, created and started (or exited) times, restart policy (a warning badge if it's `no`), the command, and resource limits or the privileged flag when set.
 - **Health check**: current status and recent results, if the container has a health check.
 - **Ports**: each published port as host address and port → container port and protocol, for example `8080 → 80/tcp` (all addresses) or `127.0.0.1:9000 → 9000/udp` (this host only), with a link to open it. A port published on both IPv4 and IPv6 (`0.0.0.0` and `::`) shows once, as **all addresses**. Ports the image exposes but that aren't published are listed after them. For a stopped container it shows the ports it will take when it starts; a container on the host's network says so, since it listens on the host's ports without publishing them.

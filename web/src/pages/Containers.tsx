@@ -11,6 +11,7 @@ import { StackLink, useUpdatesAlone } from '../stacks'
 import { MoveContainerDialog, movable } from './MoveContainer'
 import { ownContainer } from '../own'
 import { networkOwner } from '../sharednet'
+import { bytes, storageDetail, storageOf } from '../storage'
 
 const routeApi = getRouteApi('/app/containers')
 
@@ -20,7 +21,7 @@ type Group = 'host' | 'stack' | 'state'
 type Section = { key: string; title: string; subtitle: string; items: Container[]; host?: Host; accent: string }
 
 // One grid for the header and every row, so columns line up.
-const COLS = 'md:grid md:grid-cols-[minmax(170px,1.5fr)_minmax(140px,1.3fr)_minmax(110px,1fr)_120px_64px_76px_168px] md:items-center md:gap-4'
+const COLS = 'md:grid md:grid-cols-[minmax(170px,1.5fr)_minmax(140px,1.3fr)_minmax(110px,1fr)_120px_64px_76px_76px_168px] md:items-center md:gap-4'
 
 /** Folded sections, remembered per browser (keys like "host:<id>", "stack:<name>"). */
 function useCollapsed() {
@@ -58,7 +59,7 @@ export function ContainersPage() {
   const [view, setView] = useState<View>(views.includes(search.view as View) ? (search.view as View) : 'all')
   const onlyHost = hosts.find((h) => h.id === search.host)
   const [group, setGroup] = useState<Group>(() => loadPref('th.group', ['host', 'stack', 'state'] as const, 'host'))
-  const [sort, setSort] = useState<SortKey>(() => loadPref('th.csort', ['status', 'name', 'cpu', 'memory'] as const, 'status'))
+  const [sort, setSort] = useState<SortKey>(() => loadPref('th.csort', ['status', 'name', 'cpu', 'memory', 'storage'] as const, 'status'))
   const [q, setQ] = useState('')
   const { collapsed, toggle, setAll } = useCollapsed()
   const operator = can(me.user, 'operator')
@@ -210,6 +211,7 @@ export function ContainersPage() {
           <SortHead k="status" label="Status" sort={sort} onPick={pickSort} />
           <SortHead k="cpu" label="CPU" right sort={sort} onPick={pickSort} />
           <SortHead k="memory" label="Memory" right sort={sort} onPick={pickSort} />
+          <SortHead k="storage" label="Disk" right sort={sort} onPick={pickSort} />
           <span className="flex justify-end">
             {sections.length > 1 && (
               <button
@@ -386,6 +388,9 @@ const Row = memo(function Row({ c, host, operator, admin, showHost, busy, run, v
       </div>
       <div className={cx('mono hidden text-right text-xs tabular-nums md:block', (c.cpu ?? 0) >= 50 ? 'text-rose-300' : 'text-ink-100/80')}>{running && c.cpu !== undefined ? `${c.cpu.toFixed(1)}%` : '–'}</div>
       <div className="mono hidden text-right text-xs tabular-nums text-ink-100/80 md:block">{running ? mem(c.mem) : '–'}</div>
+      <div className="mono hidden text-right text-xs tabular-nums text-ink-100/80 md:block" title={c.size ? storageDetail(c.size) : 'Not measured yet'}>
+        {bytes(storageOf(c))}
+      </div>
       <div className="mt-1.5 flex items-center justify-end gap-0.5 md:mt-0">
         <IconButton icon={ScrollText} label="Logs" onClick={() => openLogs(c)} />
         {operator && (

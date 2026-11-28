@@ -5,6 +5,7 @@ import { api, can, errorText, pullErrorText, type Activity, type Container, type
 import { cx, useConfirm, useToast } from './ui'
 import { ownConsequence, ownContainer, ownServerCommands, type OwnContainer } from './own'
 import { networkUsers, sharedNetConsequence } from './sharednet'
+import { byStorage } from './storage'
 
 /** Actions that leave a container down (the agent's self-guard covers these, plus recreate). */
 const takesDown = (a: Action) => a === 'stop' || a === 'kill' || a === 'pause' || a === 'remove' || a === 'recreate'
@@ -332,6 +333,7 @@ export const sortFns = {
   memory: (a: Container, b: Container) => (b.mem ?? -1) - (a.mem ?? -1) || a.name.localeCompare(b.name),
   name: (a: Container, b: Container) => a.name.localeCompare(b.name),
   status: (a: Container, b: Container) => rank(a) - rank(b) || a.name.localeCompare(b.name),
+  storage: byStorage,
 }
 export type SortKey = keyof typeof sortFns
 

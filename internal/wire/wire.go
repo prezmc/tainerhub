@@ -173,10 +173,27 @@ type Container struct {
 	Mem      int64   `json:"mem,omitempty"`       // bytes, excluding page cache
 	MemLimit int64   `json:"mem_limit,omitempty"` // bytes
 
+	// Size is the disk space it uses, as of the agent's last measurement
+	// (every half hour: measuring walks the filesystem, so it's never done
+	// per snapshot). Nil from older agents and until the first measurement.
+	Size *ContainerSize `json:"size,omitempty"`
+
 	// UpdateAvailable: the registry's image for this container's tag (as of
 	// the last check, every few hours; see OpImagesCheckUpdates) isn't the
 	// image this container runs.
 	UpdateAvailable bool `json:"update,omitempty"`
+}
+
+// ContainerSize is a container's disk use in bytes.
+type ContainerSize struct {
+	// RW is what the container wrote itself (its writable layer, Docker's
+	// SizeRw), not counting the image it shares with others.
+	RW int64 `json:"rw"`
+	// Volumes adds up the Docker volumes it mounts (local driver only: a
+	// network share's size isn't known). A volume another container also
+	// mounts counts for both. Bind mounts aren't measured.
+	Volumes int64 `json:"volumes,omitempty"`
+	At      int64 `json:"at"` // unix seconds of the measurement
 }
 
 // PortBinding is one published port: host address and port to the

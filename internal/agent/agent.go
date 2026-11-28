@@ -49,8 +49,11 @@ type Config struct {
 	IdleSnapshotEvery time.Duration // default 5m while nobody does
 	StatsEvery        time.Duration // default 10s while someone has TainerHub open; negative disables stats
 	IdleStatsEvery    time.Duration // default 60s while nobody does
-	PingEvery         time.Duration // default 20s
-	DeadAfter         time.Duration // default 90s
+	// SizesEvery is how often the agent measures containers' disk use,
+	// which makes Docker walk their files; negative disables it.
+	SizesEvery time.Duration // default 30m
+	PingEvery  time.Duration // default 20s
+	DeadAfter  time.Duration // default 90s
 
 	// The hub's client certificates expire (after a year by default), so the
 	// agent renews its own once it is within RenewBefore of expiry: before
@@ -97,6 +100,9 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.IdleStatsEvery == 0 {
 		cfg.IdleStatsEvery = 60 * time.Second
+	}
+	if cfg.SizesEvery == 0 {
+		cfg.SizesEvery = 30 * time.Minute
 	}
 	if cfg.PingEvery == 0 {
 		cfg.PingEvery = 20 * time.Second
@@ -677,10 +683,11 @@ func (a *Agent) session(parent context.Context, cert tls.Certificate) error {
 	}
 	a.log.Info("connected to hub", "hub", a.cfg.HubAddr, "proto", resp.Proto)
 
-	wg.Add(4)
+	wg.Add(5)
 	go func() { defer wg.Done(); s.snapshotLoop() }()
 	go func() { defer wg.Done(); s.eventLoop() }()
 	go func() { defer wg.Done(); s.statsLoop() }()
+	go func() { defer wg.Done(); s.sizesLoop() }()
 	go func() { defer wg.Done(); s.renewLoop() }()
 	s.requestSnapshot()
 
@@ -866,6 +873,36 @@ func (s *session) statsLoop() {
 		s.host = host
 		s.mu.Unlock()
 		s.publish()
+	}
+}
+
+// sizesLoop measures containers' disk use a minute after connecting and
+// then every SizesEvery, and sends a snapshot carrying the new figures. A
+// reconnect doesn't measure again before SizesEvery is up.
+func (s *session) sizesLoop() {
+	d, ok := s.a.cfg.Docker.(interface {
+		RefreshSizes(context.Context, time.Duration) (bool, error)
+	})
+	if !ok || s.a.cfg.SizesEvery < 0 {
+		return
+	}
+	wait := time.Minute
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = s.a.cfg.SizesEvery
+		ctx, cancel := context.WithTimeout(s.ctx, 10*time.Minute)
+		// A little under the period, so a timer that fires early still measures.
+		measured, err := d.RefreshSizes(ctx, s.a.cfg.SizesEvery*9/10)
+		cancel()
+		if err != nil {
+			s.a.log.Warn("measure container sizes", "err", err)
+		} else if measured {
+			s.requestSnapshot()
+		}
 	}
 }
 

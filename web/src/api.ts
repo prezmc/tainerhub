@@ -2,6 +2,7 @@ import type { PublicKeyCredentialCreationOptionsJSON, PublicKeyCredentialRequest
 import type { ShareInfo } from './shares'
 import type { StackFile } from './stackfiles'
 import type { DetailPort, PortBinding } from './ports'
+import type { ContainerSize } from './storage'
 
 // The WebAuthn helpers are only needed during a passkey ceremony: load them then.
 const webauthn = () => import('@simplewebauthn/browser')
@@ -184,6 +185,8 @@ export interface Container {
   cpu?: number // % of one core
   mem?: number // bytes
   mem_limit?: number
+  /** Disk use as of the agent's last measurement (every half hour); missing from older agents. */
+  size?: ContainerSize
 }
 
 export interface Activity {

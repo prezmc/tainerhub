@@ -52,6 +52,7 @@ type SocketDocker struct {
 	c       *http.Client
 	socket  string      // path of the Docker socket inside this container
 	updates updateCache // last image update check, shown on each container
+	sizes   sizeCache   // last disk use measurement (see RefreshSizes)
 	// hubChecks tracks update checks the hub asked for (with registry
 	// logins), so the agent's own scheduled check can stand down.
 	hubChecks hubCheckTimes
@@ -299,6 +300,7 @@ func (d *SocketDocker) List(ctx context.Context) ([]wire.Container, error) {
 			HostNetwork:     r.HostConfig.NetworkMode == "host",
 			NetworkOf:       wire.SharedNetworkTarget(r.HostConfig.NetworkMode),
 			Labels:          r.Labels,
+			Size:            d.sizes.get(r.ID),
 		})
 	}
 	markSolo(out)
